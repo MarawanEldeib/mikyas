@@ -1,0 +1,8 @@
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+    fixtures:
+      glob: "crates/**/fixtures/**"
+      run: node scripts/check-fixtures.mjs {staged_files}

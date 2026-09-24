@@ -1,0 +1,21 @@
+[package]
+name = "claude-usage-widget"
+description = "Floating, token-free Claude usage widget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "cuw_widget_lib"
+# Desktop only: staticlib/cdylib are for mobile targets and triple LLVM memory use.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+cuw-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png"] }

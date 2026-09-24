@@ -1,0 +1,23 @@
+title = "claude-usage-widget secret scan"
+
+[extend]
+useDefault = true
+
+# Anthropic subscription OAuth access/refresh tokens are not covered by the default rules.
+[[rules]]
+id = "anthropic-oauth-token"
+description = "Anthropic Claude OAuth access or refresh token"
+regex = '''sk-ant-o[ar]t\d{2}-[A-Za-z0-9_\-]{20,}'''
+keywords = ["sk-ant-oat", "sk-ant-ort"]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}'''
+keywords = ["sk-ant-api"]
+
+[[rules]]
+id = "claude-session-cookie"
+description = "claude.ai sessionKey cookie"
+regex = '''sk-ant-sid\d{2}-[A-Za-z0-9_\-]{20,}'''
+keywords = ["sk-ant-sid"]
