@@ -1,57 +1,101 @@
 <script lang="ts">
-  // M0 spike UI: static mock values used only to judge window effects and RAM.
-  const windows = [
-    { label: "5h", pct: 29, reset: "3h 12m" },
-    { label: "7d", pct: 59, reset: "2d 4h" },
-  ];
-  const R = 18;
-  const C = 2 * Math.PI * R;
-  const color = (p: number) => (p >= 70 ? "var(--red)" : p >= 40 ? "var(--orange)" : "var(--green)");
+  import Card from "./lib/components/Card.svelte";
+  import Pill from "./lib/components/Pill.svelte";
+  import Settings from "./lib/components/Settings.svelte";
+  import { startDragging } from "./lib/ipc";
+  import { app } from "./lib/stores.svelte";
+  import { createTicker, type Ticker } from "./lib/tick";
+  import { onMount, untrack } from "svelte";
+
+  const root = document.documentElement;
+
+  // Browser-only stage options (?bg=dark|light|photo); ignored inside Tauri.
+  if (app.mock) {
+    root.classList.add("mock");
+    root.dataset.bg = new URLSearchParams(location.search).get("bg") ?? "photo";
+  }
+
+  let ticker: Ticker | null = null;
+
+  onMount(() => {
+    void app.init();
+    ticker = createTicker(
+      () => app.tickTargets(),
+      (now) => (app.now = now),
+    );
+    return () => {
+      ticker?.stop();
+      app.dispose();
+    };
+  });
+
+  // Re-arm the tick whenever a new snapshot changes the set of displayed instants.
+  $effect(() => {
+    void app.snapshot;
+    untrack(() => ticker?.refresh());
+  });
+
+  $effect(() => {
+    root.dataset.effect = app.settings?.effect ?? "auto";
+    root.dataset.view = app.ui.view;
+    root.toggleAttribute("data-ghost", app.ui.click_through);
+  });
+
+  const opacity = $derived(
+    app.settings ? (app.ui.click_through ? app.settings.ghost_opacity : app.settings.opacity) : 1,
+  );
+
+  const NO_DRAG = "button, a, input, select, textarea, label, pre, code, [role='switch'], [data-no-drag]";
+
+  // Tauri 2's data-tauri-drag-region does not cover child elements, so dragging is started
+  // manually. mousedown (not pointerdown) carries the click count in `detail`: the OS drag
+  // loop swallows the second click, so a double-click is recognised here instead of dblclick.
+  function onmousedown(e: MouseEvent) {
+    if (e.button !== 0 || app.ui.click_through) return;
+    if (e.target instanceof Element && e.target.closest(NO_DRAG)) return;
+    if (e.detail >= 2) {
+      if (app.ui.view === "pill") void app.setView("card");
+      return;
+    }
+    startDragging();
+  }
 </script>
 
-<main class="card">
-  <header>
-    <span class="chip">Opus 5.5 · 1M</span>
-    <span class="muted">ctx 34%</span>
-  </header>
-  <section class="rings">
-    {#each windows as w}
-      <div class="ring">
-        <svg viewBox="0 0 44 44" width="56" height="56">
-          <circle cx="22" cy="22" r={R} fill="none" stroke="var(--hairline)" stroke-width="5" />
-          <circle
-            cx="22" cy="22" r={R} fill="none" stroke={color(w.pct)} stroke-width="5" stroke-linecap="round"
-            stroke-dasharray={C} stroke-dashoffset={C * (1 - w.pct / 100)} transform="rotate(-90 22 22)"
-          />
-          <text x="22" y="26" text-anchor="middle" font-size="11" fill="currentColor">{w.pct}%</text>
-        </svg>
-        <div>
-          <div class="label">{w.label}</div>
-          <div class="muted">resets in {w.reset}</div>
-        </div>
-      </div>
-    {/each}
-  </section>
-  <footer class="muted">spike · effect preview</footer>
-</main>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
+  {#if !app.ready}
+    {#if app.error}
+      <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>
+    {/if}
+  {:else if app.ui.view === "pill"}
+    <Pill />
+  {:else if app.ui.view === "settings"}
+    <Settings />
+  {:else}
+    <Card />
+  {/if}
+</div>
 
 <style>
-  .card {
-    box-sizing: border-box;
-    height: 100%;
-    padding: 12px 14px;
-    background: var(--surface);
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .widget {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: var(--radius);
+    background: rgb(var(--surface-rgb) / var(--surface-a));
+    box-shadow:
+      inset 0 0 0 1px var(--stroke),
+      inset 0 1px 0 0 var(--highlight);
+    opacity: var(--widget-opacity);
+    transition: opacity 200ms ease-out;
   }
-  header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
-  .chip { padding: 2px 8px; border-radius: 999px; background: var(--hairline); font-weight: 600; }
-  .rings { display: flex; flex-direction: column; gap: 8px; }
-  .ring { display: flex; align-items: center; gap: 10px; }
-  .label { font-weight: 600; font-size: 13px; }
-  .muted { color: var(--muted); font-size: 12px; }
-  footer { margin-top: auto; font-size: 11px; }
+  .ghost,
+  .ghost :global(*) {
+    pointer-events: none;
+  }
+  .fatal {
+    margin: 0;
+    padding: 12px;
+    color: var(--fg-2);
+  }
 </style>

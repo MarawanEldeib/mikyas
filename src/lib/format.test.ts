@@ -18,6 +18,7 @@ import {
   modelLabel,
   pillCountdown,
   resetLine,
+  splitUnits,
   windowLabel,
   windowShort,
 } from "./format";
@@ -154,6 +155,21 @@ describe("reset lines", () => {
     expect(resetLine({ phase: "reset_awaiting_data", reset: exact }, NOW)).toBe("reset — waiting for data");
     expect(resetLine({ phase: "active", reset: { type: "exact", at_ms: NOW - 1 } }, NOW)).toBe("reset — waiting for data");
     expect(pillCountdown({ phase: "reset_awaiting_data", reset: exact }, NOW)).toBe("reset");
+  });
+});
+
+describe("splitUnits", () => {
+  it("separates numbers from unit letters", () => {
+    expect(splitUnits("~3h 12m")).toEqual([
+      { text: "~", unit: true },
+      { text: "3", unit: false },
+      { text: "h ", unit: true },
+      { text: "12", unit: false },
+      { text: "m", unit: true },
+    ]);
+    expect(splitUnits("9:05")).toEqual([{ text: "9:05", unit: false }]);
+    expect(splitUnits("reset")).toEqual([{ text: "reset", unit: true }]);
+    expect(splitUnits("")).toEqual([]);
   });
 });
 

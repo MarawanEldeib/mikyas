@@ -190,6 +190,17 @@ export function pillCountdown(w: Pick<WindowView, "phase" | "reset">, now: numbe
   return `${isEstimated(w.reset) ? "~" : ""}${formatCountdown(at - now)}`;
 }
 
+/** A run of a display string: digits (`unit: false`) or the letters/marks between them. */
+export interface TextRun {
+  text: string;
+  unit: boolean;
+}
+
+/** Splits "~3h 12m" into number and unit runs so units can be typeset smaller. */
+export function splitUnits(s: string): TextRun[] {
+  return Array.from(s.matchAll(/(\d[\d:]*)|(\D+)/g), (m) => ({ text: m[0], unit: m[1] === undefined }));
+}
+
 /** Card reset line: "resets 15:40 · in 3h 12m" (with "~" when estimated). */
 export function resetLine(w: Pick<WindowView, "phase" | "reset">, now: number, opts: ClockOptions = {}): string {
   if (awaitingReset(w, now)) return "reset — waiting for data";
