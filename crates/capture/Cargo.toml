@@ -10,9 +10,27 @@ rust-version.workspace = true
 name = "cuw-capture"
 path = "src/main.rs"
 
+# Test-only helper spawned by the integration tests (echoes stdin, exits with a chosen code).
+[[bin]]
+name = "cuw-test-child"
+path = "src/bin/cuw-test-child.rs"
+test = false
+doc = false
+
 [dependencies]
 cuw-core.workspace = true
 serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true
