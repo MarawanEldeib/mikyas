@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { liveWindow } from "../format";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
@@ -16,7 +17,7 @@
     const main = ["five_hour", "seven_day"]
       .map((k) => ws.find((w) => w.kind === k))
       .filter((w): w is WindowView => w !== undefined);
-    return main.length ? main : ws.slice(0, 2);
+    return (main.length ? main : ws.slice(0, 2)).map((w) => liveWindow(w, app.now));
   });
   const noLimits = $derived(snap?.warnings.some((w) => w.type === "no_plan_limits") ?? false);
 </script>

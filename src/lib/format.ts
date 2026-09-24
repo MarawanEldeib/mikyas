@@ -39,13 +39,15 @@ export function formatCountdown(remainingMs: number): string {
 
 /**
  * A static duration (e.g. "1h 20m before reset"): `>= 1d` "2d 4h", `>= 1h` "1h 20m",
- * `>= 1m` "42m", below that "<1m".
+ * `>= 1m` "42m", below that "<1m". A zero minor unit is dropped ("12h", "2d").
  */
 export function formatSpan(ms: number): string {
   if (!Number.isFinite(ms) || ms < MIN) return "<1m";
   if (ms < HOUR) return `${Math.floor(ms / MIN)}m`;
-  if (ms < DAY) return `${Math.floor(ms / HOUR)}h ${Math.floor(ms / MIN) % 60}m`;
-  return `${Math.floor(ms / DAY)}d ${Math.floor(ms / HOUR) % 24}h`;
+  const major = ms < DAY ? `${Math.floor(ms / HOUR)}h` : `${Math.floor(ms / DAY)}d`;
+  const minor = ms < DAY ? Math.floor(ms / MIN) % 60 : Math.floor(ms / HOUR) % 24;
+  // Unlike a ticking countdown, a static span reads better without a zero tail ("12h", not "12h 0m").
+  return minor === 0 ? major : `${major} ${minor}${ms < DAY ? "m" : "h"}`;
 }
 
 /** Relative age: "just now", "2m ago", "3h ago", "2d ago". Future times read as "just now". */
@@ -180,6 +182,22 @@ export function awaitingReset(w: Pick<WindowView, "phase" | "reset">, now: numbe
   if (w.phase === "reset_awaiting_data") return true;
   const at = resetAt(w.reset);
   return at !== null && at <= now;
+}
+
+/**
+ * The window as it should be displayed at `now`. Between snapshots the reset instant can pass
+ * on the UI's clock before Rust reports `reset_awaiting_data`; show it the way Rust will
+ * (merge.rs: phase awaiting, pct 0, not stale, no limit/burn) rather than "100% · reset".
+ */
+export function liveWindow(w: WindowView, now: number): WindowView {
+  if (w.phase === "reset_awaiting_data" || !awaitingReset(w, now)) return w;
+  return { ...w, pct: 0, limit_reached: false, stale: false, burn: null, phase: "reset_awaiting_data" };
+}
+
+/** True when a data source's last update is at least `staleMin` minutes old. */
+export function sourceStale(atMs: number, now: number, staleMin: number): boolean {
+  // `>=` so the flip coincides with the minute tick that renders the matching age.
+  return now - atMs >= staleMin * MIN;
 }
 
 /** Pill countdown: "3h 12m", "~3h 12m" when estimated, "reset" after it, "—" when unknown. */

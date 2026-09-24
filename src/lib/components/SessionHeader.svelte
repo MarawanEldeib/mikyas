@@ -38,7 +38,7 @@
   });
   const chipTip = $derived(
     session
-      ? [surface?.name, session.model_id, session.project ? `Project: ${session.project}` : null, session.concurrent > 1 ? `${session.concurrent} sessions active` : null]
+      ? [surface?.name, modelLabel(session), session.model_id, session.project ? `Project: ${session.project}` : null, session.concurrent > 1 ? `${session.concurrent} sessions active` : null]
           .filter(Boolean)
           .join("\n")
       : "",
@@ -52,8 +52,10 @@
       <span class="model">{modelLabel(session)}</span>
       {#if session.concurrent > 1}<span class="more" aria-label="{session.concurrent} sessions">+{session.concurrent - 1}</span>{/if}
     </span>
-    <!-- Reversed wrapping row: the project name is shown only when it fits in full. -->
+    <!-- Reversed wrapping row: the age and then the project name are shown only when they fit
+         in full; the empty lead item lets even the age wrap onto the hidden second line. -->
     <span class="meta">
+      <span class="lead"></span>
       <span class="age">{formatAge(session.last_active_ms, now)}</span>
       {#if showProject && session.project}<span class="project" title={session.project}>{session.project}</span>{/if}
     </span>
@@ -66,8 +68,11 @@
   </div>
 {:else}
   <div class="head none" title="The model and context are read from Claude Code (terminal, Desktop Code tab or Cowork) sessions. Claude Desktop's chat doesn't expose which model it uses.">
-    <span class="none-title">No Claude Code session —</span>
-    <span class="none-sub">Desktop chat model isn't exposed</span>
+    <Icon name="info" size={14} />
+    <p>
+      <span class="none-title">No Claude Code session</span><span class="sr"> — </span>
+      <span class="none-sub">Desktop chat model isn't exposed</span>
+    </p>
   </div>
 {/if}
 
@@ -91,12 +96,20 @@
     color: var(--fg);
     font-weight: 600;
     white-space: nowrap;
-    flex: none;
+    /* Shrinks (model name ellipsized) before the context bar is pushed out of the card. */
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .model {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .chip :global(.icon) {
     color: var(--fg-2);
   }
   .more {
+    flex: none;
     font-size: 10px;
     font-weight: 600;
     color: var(--fg-2);
@@ -110,7 +123,8 @@
     height: 16px;
     overflow: hidden;
     min-width: 0;
-    flex: 1 1 auto;
+    /* Only takes space the model chip and the context bar leave over. */
+    flex: 1 1 0;
     color: var(--fg-2);
     font-size: 11px;
     line-height: 16px;
@@ -119,6 +133,10 @@
   .age,
   .project {
     flex: none;
+  }
+  .lead {
+    width: 0;
+    margin-left: -4px;
   }
   .project::after {
     content: " ·";
@@ -148,13 +166,16 @@
     border-radius: 2px;
     transition: width var(--dur) var(--ease);
   }
-  /* Two tight lines: the sentence does not fit the 296px header on one line. */
+  /* A quiet two-line note (the sentence does not fit the 296px header on one line). */
   .none {
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 0;
+    gap: 6px;
     height: 24px;
+    color: var(--fg-2);
+  }
+  .none p {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
     font-size: 11px;
     line-height: 12px;
     white-space: nowrap;
@@ -162,7 +183,13 @@
   .none-title {
     font-weight: 600;
   }
-  .none-sub {
-    color: var(--fg-2);
+  /* Keeps the sentence's dash for screen readers without a dangling dash on screen. */
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 </style>

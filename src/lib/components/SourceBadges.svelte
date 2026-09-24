@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MIN, formatAge, formatAgeShort } from "../format";
+  import { formatAge, formatAgeShort, sourceStale } from "../format";
   import type { SourceHealth } from "../types";
 
   interface Props {
@@ -31,7 +31,7 @@
 
 <ul class="badges" aria-label="Data sources">
   {#each badges as b (b.name)}
-    {@const stale = now - b.at > staleMin * MIN}
+    {@const stale = sourceStale(b.at, now, staleMin)}
     <li class="badge" class:stale title="{b.full}: updated {formatAge(b.at, now)}{stale ? ' (stale)' : ''}">
       <span class="dot" aria-hidden="true"></span>{b.name} · {formatAgeShort(b.at, now)}
     </li>

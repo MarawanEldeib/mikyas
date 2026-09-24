@@ -16,7 +16,10 @@
   const p = $derived(clampPct(w.pct));
   const label = $derived(windowLabel(w.kind));
   const span = $derived(w.kind === "five_hour" ? "24 hours" : "7 days");
-  const color = $derived(w.stale ? "var(--fg-3)" : fillColor(p));
+  // Stale data, or a window that just reset and has no new reading yet, is drawn neutral: the
+  // history before the reset should not be coloured by the fresh 0%.
+  const muted = $derived(w.stale || w.phase === "reset_awaiting_data");
+  const color = $derived(muted ? "var(--fg-3)" : fillColor(p));
   const tip = $derived(estimateTooltip(w.reset));
 </script>
 
@@ -37,7 +40,7 @@
         {resetLine(w, now)}{#if tip}<span class="pm" aria-hidden="true">±</span>{/if}
       </div>
     </div>
-    <Sparkline points={w.spark} pct={p} stale={w.stale} width={100} height={36} label="{label} usage over the last {span}" />
+    <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" />
   </div>
   <div class="bar" role="progressbar" aria-label="{label} usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)}>
     <div class="fill" style:width="{p}%" style:background={color}></div>

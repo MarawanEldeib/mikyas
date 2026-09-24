@@ -15,14 +15,16 @@ import {
   formatSpan,
   formatTime,
   formatTokens,
+  liveWindow,
   modelLabel,
   pillCountdown,
   resetLine,
+  sourceStale,
   splitUnits,
   windowLabel,
   windowShort,
 } from "./format";
-import type { Burn, ResetInfo } from "./types";
+import type { Burn, ResetInfo, WindowView } from "./types";
 
 // Thursday 2026-09-24 12:00 UTC.
 const NOW = Date.UTC(2026, 8, 24, 12, 0, 0);
@@ -63,6 +65,50 @@ describe("formatSpan", () => {
     expect(formatSpan(5 * MIN)).toBe("5m");
     expect(formatSpan(30 * SEC)).toBe("<1m");
     expect(formatSpan(3 * DAY + 2 * HOUR)).toBe("3d 2h");
+  });
+  it("drops a zero minor unit", () => {
+    expect(formatSpan(12 * HOUR)).toBe("12h");
+    expect(formatSpan(12 * HOUR + 30 * SEC)).toBe("12h");
+    expect(formatSpan(2 * DAY + 20 * MIN)).toBe("2d");
+    expect(formatSpan(HOUR + MIN)).toBe("1h 1m");
+  });
+});
+
+describe("liveWindow", () => {
+  const w: WindowView = {
+    kind: "five_hour",
+    pct: 100,
+    reset: { type: "exact", at_ms: NOW + 5 * SEC },
+    source: "cli",
+    observed_at_ms: NOW - 20 * MIN,
+    stale: true,
+    limit_reached: true,
+    phase: "active",
+    burn: { slope_pct_per_h: 3, t100_ms: null, pct_at_reset: 110, hits_limit_before_reset: false },
+    spark: [],
+  };
+  it("returns the window unchanged before its reset", () => {
+    expect(liveWindow(w, NOW)).toBe(w);
+  });
+  it("shows a passed reset as 0% awaiting data, as Rust does", () => {
+    const live = liveWindow(w, NOW + 5 * SEC);
+    expect(live).toMatchObject({ pct: 0, limit_reached: false, stale: false, burn: null, phase: "reset_awaiting_data" });
+    expect(live.spark).toBe(w.spark);
+  });
+  it("also applies to passed estimated resets", () => {
+    const est: WindowView = { ...w, reset: { type: "estimated", at_ms: NOW - MIN, plus_minus_ms: 10 * MIN, confidence: "low" } };
+    expect(liveWindow(est, NOW).pct).toBe(0);
+  });
+  it("keeps windows Rust already marked as awaiting", () => {
+    const awaiting: WindowView = { ...w, pct: 0, limit_reached: false, stale: false, burn: null, phase: "reset_awaiting_data" };
+    expect(liveWindow(awaiting, NOW)).toBe(awaiting);
+  });
+});
+
+describe("sourceStale", () => {
+  it("flips exactly when the age reaches the stale threshold", () => {
+    expect(sourceStale(NOW - 15 * MIN + 1, NOW, 15)).toBe(false);
+    expect(sourceStale(NOW - 15 * MIN, NOW, 15)).toBe(true);
   });
 });
 

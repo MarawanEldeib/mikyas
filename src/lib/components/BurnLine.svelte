@@ -18,11 +18,14 @@
     }
     return burnText(w.burn, w.reset, now);
   });
-  const slope = $derived(w.burn ? `Recent pace: ${Math.round(w.burn.slope_pct_per_h * 10) / 10}% per hour` : undefined);
+  // Full text in the tooltip too: very long localized clock times can still be ellipsized.
+  const tip = $derived(
+    line ? [line.text, w.burn ? `Recent pace: ${Math.round(w.burn.slope_pct_per_h * 10) / 10}% per hour` : null].filter(Boolean).join("\n") : undefined,
+  );
 </script>
 
 {#if line}
-  <p class="burn {line.tone}" title={slope}>
+  <p class="burn {line.tone}" title={tip}>
     {#if line.tone !== "muted" && !w.limit_reached}<span class="arrow" aria-hidden="true">↗</span>{/if}{line.text}
   </p>
 {/if}

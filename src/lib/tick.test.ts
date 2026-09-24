@@ -135,6 +135,28 @@ describe("createTicker", () => {
     expect(doc.listeners.size).toBe(0);
   });
 
+  it("does not leak a second timer chain on repeated 'visible' events", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const doc = fakeDoc();
+    const ticks: number[] = [];
+    const t = createTicker(() => ({ deadlines: [NOW + HOUR + 30 * SEC], pasts: [] }), (n) => ticks.push(n), {
+      doc: doc as unknown as Document,
+    });
+    // Two visibilitychange events while already visible (no "hidden" in between).
+    doc.fire();
+    doc.fire();
+    expect(ticks.length).toBe(2);
+    expect(vi.getTimerCount()).toBe(1);
+    // Exactly one tick per displayed change from here on.
+    vi.advanceTimersByTime(30 * SEC + 1);
+    expect(ticks.length).toBe(3);
+    vi.advanceTimersByTime(MIN);
+    expect(ticks.length).toBe(4);
+    t.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("re-arms on refresh with new targets", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

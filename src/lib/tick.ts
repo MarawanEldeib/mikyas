@@ -100,7 +100,12 @@ export function createTicker(getTargets: () => TickTargets, onTick: (now: number
     onTick(now());
     schedule();
   };
-  const onVisibility = () => (hidden() ? clear() : fire());
+  // Always cancel the armed timer first: `fire()` re-arms, and a "visible" event that is not
+  // preceded by "hidden" would otherwise orphan the pending timer and start a second chain.
+  const onVisibility = () => {
+    clear();
+    if (!hidden()) fire();
+  };
 
   doc?.addEventListener("visibilitychange", onVisibility);
   schedule();

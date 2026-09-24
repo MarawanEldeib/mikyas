@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { ctxLabel, estimateTooltip, formatAge, formatPct, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
+  import { ctxLabel, estimateTooltip, formatAge, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
   import Ring from "./Ring.svelte";
 
   const snap = $derived(app.snapshot);
-  const shown = $derived(pickWindows(snap?.windows ?? []));
+  const shown = $derived(pickWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
   const warn = $derived(notices(snap));
   const session = $derived(snap?.session ?? null);
 
@@ -44,7 +44,7 @@
     {#each shown as w, i (w.kind)}
       {#if i > 0}<div class="sep" aria-hidden="true"></div>{/if}
       <div class="win" role="img" aria-label={describe(w)}>
-        <Ring pct={w.pct} size={38} stale={w.stale} locked={w.limit_reached} />
+        <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
           <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
           <span class="count" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
@@ -52,26 +52,32 @@
       </div>
     {/each}
   {/if}
+  {#if !app.ui.click_through}
+    <!-- Keyboard path to the card (double-click is mouse-only). It ignores the pointer so the
+         whole pill stays draggable, and draws its focus ring around the pill. -->
+    <button type="button" class="expand" aria-label="Show details" onclick={() => app.setView("card")}></button>
+  {/if}
   {#if warn.length}
     <span class="dot" aria-label="{warn.length} warning{warn.length > 1 ? 's' : ''}" role="img"></span>
   {/if}
 </div>
 
 <style>
+  /* 240px wide: each half leaves 60px for text, enough for the widest countdown "~23h 59m". */
   .pill {
     position: relative;
     height: 100%;
     display: flex;
     align-items: center;
-    padding: 0 12px;
-    gap: 10px;
+    padding: 0 10px;
+    gap: 8px;
   }
   .win {
     flex: 1 1 0;
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
   }
   .text {
     display: flex;
@@ -85,6 +91,8 @@
     color: var(--fg-2);
     letter-spacing: 0.02em;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .stale-tag {
     margin-left: 4px;
@@ -124,6 +132,18 @@
     border-radius: 50%;
     background: var(--warn-fill);
     box-shadow: 0 0 0 1.5px rgb(var(--surface-rgb) / 0.9);
+  }
+  .expand {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    pointer-events: none;
+  }
+  .expand:focus-visible {
+    outline-offset: -3px;
   }
   .empty {
     display: flex;
