@@ -209,6 +209,8 @@ fn tee() {
             retain(&mut head, chunk);
         });
     }
+    // In the pipe form the user's statusline reads until EOF; let it run while we capture.
+    close_stdout();
     capture_input("tee", &head, pump.timed_out);
 }
 
@@ -229,6 +231,7 @@ fn argv(command: &[OsString]) -> i32 {
 
     let Some((program, args)) = command.split_first() else {
         capture_and_print_line("argv", &head, timed_out);
+        log_failure(&Paths::detect().capture_dir(), "argv", "no_program");
         return 0;
     };
 
@@ -243,12 +246,22 @@ fn argv(command: &[OsString]) -> i32 {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn();
-    let Ok(mut child) = spawned else {
-        capture_and_print_line("argv", &head, timed_out);
-        if let Some(job) = &job {
-            job.release();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            capture_and_print_line("argv", &head, timed_out);
+            // The user's statusline was replaced by the fallback line: record why (kind only;
+            // the program name could be a private path).
+            log_failure(
+                &Paths::detect().capture_dir(),
+                "argv",
+                &format!("spawn_{:?}", e.kind()),
+            );
+            if let Some(job) = &job {
+                job.release();
+            }
+            return 0;
         }
-        return 0;
     };
     if !shim_in_job {
         if let Some(job) = &job {
@@ -317,10 +330,20 @@ fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) -> Option<CaptureRec
         (None, false) => None,
     };
     if let Some(note) = note {
-        let line = format!("{} {mode} {note}\n", iso_now());
-        let _ = append_capped(&dir.join(ERRORS_LOG), line.as_bytes(), ERRORS_LOG_MAX);
+        log_failure(&dir, mode, &note);
     }
     rec
+}
+
+/// Appends one `<timestamp> <mode> <note>` line to `<capture_dir>/_errors.log`. `note` is an
+/// error kind, never input content.
+fn log_failure(capture_dir: &Path, mode: &str, note: &str) {
+    let line = format!("{} {mode} {note}\n", iso_now());
+    let _ = append_capped(
+        &capture_dir.join(ERRORS_LOG),
+        line.as_bytes(),
+        ERRORS_LOG_MAX,
+    );
 }
 
 fn error_kind(e: &CaptureError) -> String {
@@ -387,6 +410,42 @@ fn write_stdout(bytes: &[u8]) {
     let mut out = io::stdout().lock();
     let _ = out.write_all(bytes).and_then(|()| out.flush());
 }
+
+/// Closes stdout (already flushed) so a reader on the other end of the pipe sees EOF now rather
+/// than when the process exits. The standard handle is detached first, so later stdout writes
+/// become silent no-ops (Rust treats a missing standard handle as a sink) instead of reaching
+/// whatever a reused handle value might point to.
+#[cfg(windows)]
+fn close_stdout() {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+
+    // SAFETY: plain Win32 calls on this process's own standard handles. The handle is closed only
+    // after it has been removed from the standard-handle table, and only once.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        // One duplex handle serving as stdin too (the watchdog may have left a read pending on
+        // it): leave it alone.
+        if out.is_null() || out == INVALID_HANDLE_VALUE || out == GetStdHandle(STD_INPUT_HANDLE) {
+            return;
+        }
+        if SetStdHandle(STD_OUTPUT_HANDLE, std::ptr::null_mut()) == 0 {
+            return;
+        }
+        // A parent may pass one handle value for both streams; do not leave stderr dangling.
+        if GetStdHandle(STD_ERROR_HANDLE) == out {
+            SetStdHandle(STD_ERROR_HANDLE, std::ptr::null_mut());
+        }
+        CloseHandle(out);
+    }
+}
+
+/// Without `dup2` (no libc dependency) closing fd 1 would let the next `open` reuse it, so stdout
+/// simply stays open until exit.
+#[cfg(not(windows))]
+fn close_stdout() {}
 
 // ---------------------------------------------------------------------------------------------
 // --default line

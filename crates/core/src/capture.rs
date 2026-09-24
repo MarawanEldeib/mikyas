@@ -340,7 +340,10 @@ fn non_negative_u64(v: Option<&Value>) -> Option<u64> {
 /// `resets_at` as epoch seconds. Claude Code sends integer seconds; epoch milliseconds and
 /// RFC 3339 strings are also accepted (see [`crate::time::json_time_to_ms`]). Zero or negative → `None`.
 fn epoch_secs(v: &Value) -> Option<i64> {
-    crate::time::json_time_to_ms(v).map(|ms| ms.div_euclid(1000))
+    // Checked after the conversion: sub-second numbers and pre-1970 strings round to <= 0.
+    crate::time::json_time_to_ms(v)
+        .map(|ms| ms.div_euclid(1000))
+        .filter(|&secs| secs > 0)
 }
 
 fn valid_window_key(key: &str) -> bool {
@@ -602,6 +605,24 @@ mod tests {
     }
 
     #[test]
+    fn resets_at_that_rounds_to_zero_or_before_the_epoch_is_skipped() {
+        let json = json!({
+            "session_id": SID,
+            "rate_limits": {
+                "half_second": { "used_percentage": 1, "resets_at": 0.5 },
+                "subnormal": { "used_percentage": 1, "resets_at": 1e-300 },
+                "pre_epoch": { "used_percentage": 1, "resets_at": "1969-12-31T23:59:59Z" },
+                "epoch_plus_half": { "used_percentage": 1, "resets_at": "1970-01-01T00:00:00.5Z" },
+                "one_second": { "used_percentage": 1, "resets_at": 1 }
+            }
+        });
+        let rec = extract_whitelisted(&json, NOW).unwrap();
+        let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["one_second"]);
+        assert_eq!(rec.rate_limits["one_second"].resets_at, 1);
+    }
+
+    #[test]
     fn missing_optional_sections_yield_none() {
         let rec = extract_whitelisted(&json!({ "session_id": SID }), NOW).unwrap();
         assert_eq!(rec.model, None);
@@ -765,6 +786,40 @@ mod tests {
             assert!(read_capture(&fs::read(&path).unwrap()).is_some());
             assert_eq!(file_names(dir), [format!("{SID}.json")]);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_target_retries_the_rename_then_fails_without_leaving_tmp() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let path = dir.join(format!("{SID}.json"));
+        fs::write(&path, b"held by another process").unwrap();
+        // No sharing at all: neither the pre-read nor the rename can touch the file.
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let err = write_capture(dir, rec_at(NOW)).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(is_sharing_violation(&err), "{err:?}");
+        assert!(
+            elapsed >= RENAME_RETRY_DELAY * RENAME_RETRIES,
+            "expected {RENAME_RETRIES} retries, took {elapsed:?}"
+        );
+        assert_eq!(file_names(dir), [format!("{SID}.json")], "no .tmp left");
+
+        drop(lock);
+        assert_eq!(fs::read(&path).unwrap(), b"held by another process");
+        assert_eq!(
+            write_capture(dir, rec_at(NOW)).unwrap(),
+            WriteOutcome::Written
+        );
     }
 
     #[test]
