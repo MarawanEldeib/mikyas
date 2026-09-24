@@ -1,0 +1,36 @@
+{
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "DISABLE_TELEMETRY": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(cargo test:*)",
+      "Read(C:/Users/tester/Projects/**)"
+    ],
+    "deny": [
+      "Read(./secrets/**)"
+    ],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"C:/Users/tester/.claude/hooks/notify.ps1\""
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/tester/.claude/statusline.ps1\""
+  },
+  "model": "opus",
+  "alwaysThinkingEnabled": true
+}
