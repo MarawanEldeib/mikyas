@@ -1,0 +1,17 @@
+{
+  "sessionId": "local_00000000-0000-4000-8000-000000000020",
+  "cliSessionId": "00000000-0000-4000-8000-000000000001",
+  "title": "Refactor the parser",
+  "model": "claude-opus-5-5[1m]",
+  "cwd": "C:\\Users\\tester\\proj",
+  "originCwd": "C:\\Users\\tester\\proj",
+  "createdAt": 1790251000000,
+  "lastFocusedAt": 1790251260000,
+  "lastActivityAt": "2026-09-24T12:05:00.000Z",
+  "permissionMode": "default",
+  "isArchived": false,
+  "effort": "high",
+  "worktree": { "enabled": false, "branch": null },
+  "messages": [{ "role": "user", "text": "never parsed" }],
+  "tags": ["a", "b"]
+}
