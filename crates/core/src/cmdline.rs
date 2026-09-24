@@ -45,6 +45,15 @@
 //! - For the PowerShell kinds an unquoted `&` that is not the call operator (PowerShell 7's
 //!   background operator, which ends the statement) also counts as compound; a line break right
 //!   after `|` continues the pipeline and does not.
+//! - Both PowerShell forms only work when the original's first command is a native program:
+//!   after `| ` a cmdlet, script block or `.ps1` script gets the JSON as pipeline objects (a
+//!   script reading `[Console]::In` sees nothing), and Argv can only spawn programs. Statement
+//!   keywords (`if`, `try`, …), `.ps1` scripts, script blocks, built-in aliases and
+//!   `<approved verb>-<noun>` cmdlet names → `NeedsReview`. So is a `-name:value` token under
+//!   LegacyPowerShell: after `--` PowerShell passes it to the shim as two arguments.
+//! - cmd.exe also mis-serialises an `if` command on the right of a pipe (`if exist x y` fails
+//!   with "y was unexpected at this time"), so a Cmd original with an `if` command →
+//!   `NeedsReview`.
 
 use serde::{Deserialize, Serialize};
 
@@ -104,24 +113,34 @@ pub enum CmdlineError {
 }
 
 /// Converts a filesystem path to the form used in commands (forward slashes).
+///
+/// A verbatim prefix (`\\?\C:\…`, as returned by `std::fs::canonicalize` on Windows, or
+/// `\\?\UNC\server\share\…`) is dropped first: cmd.exe cannot run `"//?/C:/…"`.
 pub fn shim_path_for_command(path: &std::path::Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let text = path.to_string_lossy();
+    let plain = match text.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned(),
+    };
+    plain.replace('\\', "/")
 }
 
 /// Characters that are special inside a double-quoted string (or that end one) in at least one
 /// supported shell. `\` is included because command paths always use forward slashes and bash
 /// collapses `\\` inside double quotes; the Unicode quotes are string delimiters in PowerShell.
+/// `?` and `*` never occur in a Windows file name, only in a verbatim `//?/` prefix, which
+/// cmd.exe cannot run.
 const FORBIDDEN_SHIM_CHARS: &[char] = &[
-    '%', '^', '!', '&', '|', '<', '>', '$', '`', '"', '\'', '(', ')', ';', '\\', '\u{2018}', '\u{2019}', '\u{201A}',
-    '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}',
+    '%', '^', '!', '&', '|', '<', '>', '$', '`', '"', '\'', '(', ')', ';', '\\', '?', '*', '\u{2018}', '\u{2019}',
+    '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}',
 ];
 
 /// Rejects paths containing any of `% ^ ! & | < > $ \` " ' ( ) ;` or control characters, and
 /// paths not ending in [`SHIM_EXE_NAME`] (case-insensitive).
 ///
-/// Also rejects backslashes (command paths use forward slashes, see [`shim_path_for_command`])
-/// and PowerShell's typographic quotes, and requires [`SHIM_EXE_NAME`] to be the whole final
-/// path component.
+/// Also rejects backslashes (command paths use forward slashes, see [`shim_path_for_command`]),
+/// `?` / `*` (a verbatim `//?/` path) and PowerShell's typographic quotes, and requires
+/// [`SHIM_EXE_NAME`] to be the whole final path component.
 pub fn validate_shim_path(path: &str) -> Result<(), CmdlineError> {
     let unsafe_path = || CmdlineError::UnsafeShimPath(path.to_owned());
     if path.chars().any(|c| c.is_control() || FORBIDDEN_SHIM_CHARS.contains(&c)) {
@@ -173,8 +192,12 @@ pub fn wrap(original: Option<&str>, shim_path: &str, shell: ShellKind) -> Result
             // unquoted `^` escapes are consumed twice (`echo x^&y` would run `y`), redirections
             // move to the end (into an open quote), and paren blocks change meaning.
             // `cmd /c` also stops reading at a line break, and `rem` / `::` misbehave in a pipe.
-            let cmd_unsafe =
-                s.escapes || s.parens || s.unterminated || s.trailing_comment || original.contains(['\n', '\r']);
+            let cmd_unsafe = s.escapes
+                || s.parens
+                || s.unterminated
+                || s.trailing_comment
+                || s.if_command
+                || original.contains(['\n', '\r']);
             if shell == ShellKind::Cmd && cmd_unsafe {
                 return Err(CmdlineError::NeedsReview);
             }
@@ -203,7 +226,7 @@ pub fn wrap(original: Option<&str>, shim_path: &str, shell: ShellKind) -> Result
             if s.compound {
                 return Err(CmdlineError::Unsupported);
             }
-            if !pwsh_starts_with_command(&original, true) {
+            if !pwsh_starts_with_command(&original, true) || s.colon_parameter {
                 return Err(CmdlineError::NeedsReview);
             }
             (format!("{head} -- {original}"), WrapMode::Argv)
@@ -266,7 +289,8 @@ fn is_pwsh_double_quote(c: char) -> bool {
 /// Rejected: nothing but comments; expressions (`$x`, `(…)`, `"…"`, `5`, `-1`, `>…`), which are
 /// only allowed as the FIRST element of a pipeline. For Argv also the call / dot-source operators
 /// (`&`, `. x`, `.$x`), which are only operators at a command's start, and a line break before
-/// the command, which would end the shim's statement right after `--`.
+/// the command, which would end the shim's statement right after `--`. For both, a command that
+/// is not a native program (see [`pwsh_native_name`]) or is a script block.
 fn pwsh_starts_with_command(original: &str, argv: bool) -> bool {
     let c: Vec<char> = original.chars().collect();
     let mut i = 0;
@@ -320,19 +344,95 @@ fn pwsh_starts_with_command(original: &str, argv: bool) -> bool {
     if expression {
         return false;
     }
-    if argv {
-        let dot_source = first == '.'
-            && second.is_none_or(|n| {
-                n.is_whitespace()
-                    || matches!(n, '$' | '(' | '{' | '@')
-                    || is_pwsh_single_quote(n)
-                    || is_pwsh_double_quote(n)
-            });
-        if newline_before || first == '&' || dot_source {
-            return false;
+    let dot_source = first == '.'
+        && second.is_none_or(|n| {
+            n.is_whitespace()
+                || matches!(n, '$' | '(' | '{' | '@')
+                || is_pwsh_single_quote(n)
+                || is_pwsh_double_quote(n)
+        });
+    if argv && (newline_before || first == '&' || dot_source) {
+        return false;
+    }
+    // The command name, after an optional call / dot-source operator.
+    if first == '&' || dot_source {
+        i += 1;
+        while c.get(i).is_some_and(|ch| ch.is_whitespace()) {
+            i += 1;
         }
     }
-    true
+    let name: String = match c.get(i) {
+        // A script block runs in-process: native programs inside it do not get the piped JSON.
+        None | Some('{') => return false,
+        // A computed command name (`& $cmd`, `& (…)`): nothing to check statically.
+        Some('$' | '(' | '@') => return true,
+        Some(&q) if is_pwsh_single_quote(q) || is_pwsh_double_quote(q) => {
+            let single = is_pwsh_single_quote(q);
+            let close = |x: char| if single { is_pwsh_single_quote(x) } else { is_pwsh_double_quote(x) };
+            c[i + 1..].iter().take_while(|&&x| !close(x)).collect()
+        }
+        Some(_) => c[i..]
+            .iter()
+            .take_while(|&&x| !x.is_whitespace() && !matches!(x, '(' | ')' | '{' | '}' | ';' | ',' | '|' | '&'))
+            .collect(),
+    };
+    pwsh_native_name(&name)
+}
+
+/// PowerShell statement keywords: at a statement's start they begin a statement, but after
+/// `| ` or `-- ` they are just (unknown) command names. Checked against pwsh 7.6 and 5.1.
+const PWSH_KEYWORDS: &[&str] = &[
+    "begin", "break", "class", "clean", "configuration", "continue", "data", "define", "do", "dynamicparam", "end",
+    "enum", "exit", "filter", "for", "foreach", "from", "function", "if", "param", "parallel", "process", "return",
+    "sequence", "switch", "throw", "trap", "try", "using", "var", "while", "workflow",
+];
+
+/// Built-in aliases and functions of pwsh 7.6 and Windows PowerShell 5.1 (on Windows), which
+/// resolve to cmdlets / script functions rather than native programs.
+const PWSH_ALIASES: &[&str] = &[
+    "?", "%", "ac", "asnp", "cat", "cd", "cd..", "cd\\", "cd~", "cfs", "chdir", "clc", "clear", "clhy", "cli", "clp",
+    "cls", "clv", "cnsn", "compare", "copy", "cp", "cpi", "cpp", "curl", "cvpa", "dbp", "del", "diff", "dir", "dnsn",
+    "ebp", "echo", "epal", "epcsv", "epsn", "erase", "etsn", "exsn", "fc", "fhx", "fl", "foreach", "ft", "fw", "gal",
+    "gbp", "gc", "gci", "gcm", "gcs", "gdr", "gerr", "ghy", "gi", "gjb", "gl", "gm", "gmo", "gp", "gps", "gpv", "group",
+    "gsn", "gsnp", "gsv", "gu", "gv", "gwmi", "h", "help", "history", "icm", "iex", "ihy", "ii",
+    "importsystemmodules", "ipal", "ipcsv", "ipmo", "ipsn", "irm", "ise", "iwmi", "iwr", "kill", "lp", "ls", "man",
+    "md", "measure", "mi", "mkdir", "more", "mount", "move", "mp", "mv", "nal", "ndr", "ni", "nmo", "npssc", "nsn",
+    "nv", "ogv", "oh", "oss", "pause", "popd", "prompt", "ps", "pushd", "pwd", "r", "rbp", "rcjb", "rcsn", "rd", "rdr",
+    "ren", "ri", "rjb", "rm", "rmdir", "rmo", "rni", "rnp", "rp", "rsn", "rsnp", "rujb", "rv", "rvpa", "rwmi", "sajb",
+    "sal", "saps", "sasv", "sbp", "sc", "select", "set", "shcm", "si", "sl", "sleep", "sls", "sort", "sp", "spjb",
+    "spps", "spsv", "start", "sujb", "sv", "swmi", "tabexpansion2", "tee", "trcm", "type", "wget", "where", "wjb",
+    "write",
+];
+
+/// PowerShell's approved verbs (`Get-Verb`) plus the unapproved ones built-in commands use
+/// (`ForEach-Object`, `Where-Object`, `Sort-Object`, `Tee-Object`, …): `<verb>-<noun>` names
+/// are cmdlets or functions.
+const PWSH_VERBS: &[&str] = &[
+    "add", "approve", "assert", "backup", "block", "build", "checkpoint", "clear", "close", "compare", "complete",
+    "compress", "confirm", "connect", "convert", "convertfrom", "convertto", "copy", "debug", "delete", "deny",
+    "deploy", "disable", "disconnect", "dismount", "edit", "enable", "enter", "exit", "expand", "export", "find",
+    "flush", "foreach", "format", "get", "grant", "group", "hide", "import", "initialize", "install", "invoke", "join",
+    "limit", "lock", "measure", "merge", "mount", "move", "new", "open", "optimize", "out", "ping", "pop", "protect",
+    "publish", "push", "read", "receive", "redo", "register", "remove", "rename", "repair", "request", "reset",
+    "resize", "resolve", "restart", "restore", "resume", "revoke", "save", "search", "select", "send", "set", "show",
+    "skip", "sort", "split", "start", "step", "stop", "submit", "suspend", "switch", "sync", "tee", "test", "trace",
+    "unblock", "undo", "uninstall", "unlock", "unprotect", "unpublish", "unregister", "update", "use", "wait", "watch",
+    "where", "write",
+];
+
+/// Whether a PowerShell command name can be a native program. Rejected: statement keywords,
+/// `.ps1` scripts (they read the JSON from `[Console]::In`, which the shim has already drained
+/// in the Pipe form and which Argv cannot spawn), built-in aliases / functions, and
+/// `<approved verb>-<noun>` cmdlet names.
+fn pwsh_native_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    if lower.ends_with(".ps1") || PWSH_KEYWORDS.contains(&lower.as_str()) || PWSH_ALIASES.contains(&lower.as_str()) {
+        return false;
+    }
+    let cmdlet = lower.split_once('-').is_some_and(|(verb, noun)| {
+        PWSH_VERBS.contains(&verb) && !noun.is_empty() && !noun.contains(['.', '/', '\\', ':'])
+    });
+    !cmdlet
 }
 
 /// What the quote-aware scan of a command found.
@@ -355,6 +455,12 @@ struct Scan {
     heredoc: bool,
     /// A cmd `&`, `&&`, `|` or `||` with no command after it (a syntax error inside `( … )`).
     trailing_operator: bool,
+    /// A cmd `if` command: cmd.exe mis-serialises `if exist` / `if defined` / `equ` … when it
+    /// re-parses the right side of a pipe ("… was unexpected at this time").
+    if_command: bool,
+    /// A PowerShell `-name:value` parameter token. After `--` PowerShell passes it to a native
+    /// program as two arguments (`-name:` and `value`), so the Argv form would change it.
+    colon_parameter: bool,
 }
 
 impl Scan {
@@ -510,6 +616,9 @@ fn scan_cmd(c: &[char]) -> Scan {
     let mut s = Scan::default();
     let mut i = 0;
     let mut redirect = false;
+    // Nothing but whitespace, `@` and the delimiters cmd skips before a command name since the
+    // start or an operator: the next word is the command name.
+    let mut command_start = true;
     // Whether anything but whitespace follows index `j`.
     let more_after = |j: usize| c.get(j + 1..).is_some_and(|rest| rest.iter().any(|ch| !ch.is_whitespace()));
     while i < c.len() {
@@ -519,6 +628,10 @@ fn scan_cmd(c: &[char]) -> Scan {
         // Checked at every unquoted word, since redirections may precede the command name.
         if (i == 0 || !c[i - 1].is_alphanumeric()) && cmd_comment_at(c, i) {
             s.trailing_comment = true;
+        }
+        if command_start && !(c[i].is_whitespace() || matches!(c[i], '@' | ';' | ',' | '=')) {
+            command_start = false;
+            s.if_command |= cmd_if_at(c, i);
         }
         match c[i] {
             '^' => {
@@ -551,6 +664,7 @@ fn scan_cmd(c: &[char]) -> Scan {
                     } else {
                         s.trailing_operator = true;
                     }
+                    command_start = true;
                 }
             }
             '|' => {
@@ -563,20 +677,33 @@ fn scan_cmd(c: &[char]) -> Scan {
                 } else if double {
                     s.compound = true;
                 }
+                command_start = true;
             }
             ';' => s.compound = true,
             '\n' => {
                 if separates(c, i) {
                     s.compound = true;
                 }
+                command_start = true;
             }
-            '(' | ')' => s.parens = true,
+            '(' => {
+                s.parens = true;
+                command_start = true;
+            }
+            ')' => s.parens = true,
             '<' | '>' => redirect = true,
             _ => {}
         }
         i += 1;
     }
     s
+}
+
+/// The cmd `if` command starts at `c[i]` (cmd ends the word `if` at whitespace, `;`, `,`, `=`
+/// or `(`; `if/i`, `if.exe` or `if"x"` are other command names).
+fn cmd_if_at(c: &[char], i: usize) -> bool {
+    c.get(i..i + 2).is_some_and(|w| w.iter().collect::<String>().eq_ignore_ascii_case("if"))
+        && c.get(i + 2).is_none_or(|ch| ch.is_whitespace() || matches!(ch, ';' | ',' | '=' | '('))
 }
 
 /// A cmd `rem` or `::` comment starts at `c[i]`.
@@ -641,6 +768,7 @@ fn scan_pwsh(c: &[char]) -> Scan {
         let at_token_start = std::mem::replace(&mut token_start, false);
         if at_token_start {
             token_begin = i;
+            s.colon_parameter |= pwsh_colon_parameter_at(c, i);
         }
         after_pipe = false;
         if ch == '`' {
@@ -718,6 +846,26 @@ fn scan_pwsh(c: &[char]) -> Scan {
     s
 }
 
+fn is_pwsh_dash(c: char) -> bool {
+    matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}')
+}
+
+/// Whether a PowerShell parameter token with a colon argument (`-name:value`, `-name:`) starts
+/// at `c[i]`. The name starts with a letter, `_` or `?` and runs up to whitespace, a quote or
+/// one of `(){};,|&.[`; `$` and `` ` `` do not end it (`-a$env:X` is `-a$env:` + `X`).
+fn pwsh_colon_parameter_at(c: &[char], i: usize) -> bool {
+    if !is_pwsh_dash(c[i]) || !c.get(i + 1).is_some_and(|&n| n.is_alphabetic() || n == '_' || n == '?') {
+        return false;
+    }
+    let ends = |ch: char| {
+        ch.is_whitespace()
+            || is_pwsh_single_quote(ch)
+            || is_pwsh_double_quote(ch)
+            || matches!(ch, '(' | ')' | '{' | '}' | ';' | ',' | '|' | '&' | '.' | '[')
+    };
+    c[i + 1..].iter().take_while(|&&ch| !ends(ch)).any(|&ch| ch == ':')
+}
+
 /// Whether the `&` at `c[i]` belongs to a PowerShell merging redirection such as `2>&1` or
 /// `*>&1`. PowerShell only lexes those as one token when they start a token (`x2>&1` is the word
 /// `x2>` followed by the background operator); `token_begin` is where the current token began.
@@ -780,8 +928,8 @@ mod tests {
     #[test]
     fn shim_path_rejects_every_forbidden_char() {
         for bad in [
-            "%", "^", "!", "&", "|", "<", ">", "$", "`", "\"", "'", "(", ")", ";", "\\", "\n", "\r", "\t", "\0",
-            "\u{7f}", "\u{85}", "\u{201C}", "\u{201D}", "\u{2018}", "\u{2019}",
+            "%", "^", "!", "&", "|", "<", ">", "$", "`", "\"", "'", "(", ")", ";", "\\", "?", "*", "\n", "\r", "\t",
+            "\0", "\u{7f}", "\u{85}", "\u{201C}", "\u{201D}", "\u{2018}", "\u{2019}",
         ] {
             let p = format!("C:/Users/tester/a{bad}b/cuw-capture.exe");
             assert_eq!(validate_shim_path(&p), Err(CmdlineError::UnsafeShimPath(p.clone())), "{bad:?}");
@@ -805,6 +953,21 @@ mod tests {
     fn shim_path_for_command_uses_forward_slashes() {
         let p = std::path::Path::new(r"C:\Users\tester\AppData\Local\ClaudeUsageWidget\bin\cuw-capture.exe");
         assert_eq!(shim_path_for_command(p), SHIM);
+    }
+
+    /// `std::fs::canonicalize` returns verbatim `\\?\` paths on Windows; cmd.exe cannot run
+    /// `"//?/C:/…/cuw-capture.exe"` ("The system cannot find the path specified").
+    #[test]
+    fn verbatim_shim_paths_are_normalised_or_rejected() {
+        let verbatim = std::path::Path::new(r"\\?\C:\Users\tester\AppData\Local\ClaudeUsageWidget\bin\cuw-capture.exe");
+        assert_eq!(shim_path_for_command(verbatim), SHIM);
+        let unc = std::path::Path::new(r"\\?\UNC\server\share\tools\cuw-capture.exe");
+        assert_eq!(shim_path_for_command(unc), "//server/share/tools/cuw-capture.exe");
+        for bad in
+            ["//?/C:/Users/tester/bin/cuw-capture.exe", "C:/Users/tester/a*b/cuw-capture.exe", "C:/a?b/cuw-capture.exe"]
+        {
+            assert!(validate_shim_path(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -1096,16 +1259,160 @@ mod tests {
         assert_eq!(w(" (a); b", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::PipeGrouped));
         assert_eq!(w("a; b # c\n", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::PipeGrouped));
         assert_eq!(w("cat <<<x; y", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::PipeGrouped));
-        assert_eq!(w("./x.ps1", ShellKind::LegacyPowerShell).map(|x| x.mode), Ok(WrapMode::Argv));
+        assert_eq!(w("./x.exe", ShellKind::LegacyPowerShell).map(|x| x.mode), Ok(WrapMode::Argv));
         assert_eq!(w("\n node sl.js", ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe));
-        assert_eq!(w(". ./x.ps1", ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe));
+        assert_eq!(w(". ./x.exe", ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe));
         assert_eq!(w("<# c #> node sl.js", ShellKind::LegacyPowerShell).map(|x| x.mode), Ok(WrapMode::Argv));
-        assert_eq!(w(".\\x.ps1 | Out-String", ShellKind::LegacyPowerShell).map(|x| x.mode), Ok(WrapMode::Argv));
+        assert_eq!(w(".\\x.exe | Out-String", ShellKind::LegacyPowerShell).map(|x| x.mode), Ok(WrapMode::Argv));
         assert_eq!(w("node sl.js |\n Out-String", ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe));
         assert_eq!(w("# c\nnode sl.js", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::PipeGrouped));
         assert_eq!(w("! false; true", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::PipeGrouped));
         assert_eq!(w("!x arg", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::Pipe));
         assert_eq!(w("timeout 5 node sl.js", ShellKind::Bash).map(|x| x.mode), Ok(WrapMode::Pipe));
+    }
+
+    /// Keywords after `| ` or `-- ` become command names ("The term 'if' is not recognized"),
+    /// so the wrapped statusline would fail although the original runs.
+    #[test]
+    fn powershell_statement_keywords_need_review() {
+        for p in [ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            for orig in [
+                "if ($true) { node sl.js }",
+                "If($true){node sl.js}",
+                "IF\t($true) { node sl.js }",
+                "foreach ($x in 1) { node sl.js }",
+                "switch (1) { 1 { node sl.js } }",
+                "try { node sl.js } catch { 'x' }",
+                "do { node sl.js } while ($false)",
+                "while ($false) {}",
+                "function f { node sl.js }",
+                "exit 3",
+                "return",
+                "throw 'x'",
+                "param($x)",
+                "<# c #> if ($true) { node sl.js }",
+                "trap { } ",
+            ] {
+                assert_eq!(w(orig, p), Err(CmdlineError::NeedsReview), "{orig:?} {p:?}");
+            }
+            for ok in ["iffy x", "ifconfig.exe", "node if", "trapeze", "node sl.js", "returns.exe x"] {
+                assert!(w(ok, p).is_ok(), "{ok:?} {p:?}");
+            }
+        }
+    }
+
+    /// The Pipe form only hands the JSON to a native program's stdin (a script reading
+    /// `[Console]::In`, a cmdlet or a script block sees something else), and the Argv form can
+    /// only spawn native programs. Verified with pwsh 7.6 and Windows PowerShell 5.1.
+    #[test]
+    fn powershell_non_native_commands_need_review() {
+        for p in [ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            for orig in [
+                "C:/Users/tester/.claude/statusline.ps1",
+                "./sl.ps1 -Theme dark",
+                ".\\sl.PS1",
+                "Write-Output x",
+                "get-content C:/Users/tester/x.txt",
+                "Invoke-Expression 'node sl.js'",
+                "Out-String",
+                "ForEach-Object { $_ }",
+                "where-object { $_ }",
+                "Sort-Object",
+                "Tee-Object -FilePath C:/Users/tester/x.txt",
+                "echo x",
+                "iex 'node sl.js'",
+                "sort",
+                "% { $_ }",
+                "more",
+                "cat C:/Users/tester/x.txt",
+            ] {
+                assert_eq!(w(orig, p), Err(CmdlineError::NeedsReview), "{orig:?} {p:?}");
+            }
+        }
+        for orig in [
+            "& \"C:/Users/tester/sl.ps1\"",
+            "& 'C:/Users/tester/sl.ps1' -x",
+            "& C:/Users/tester/sl.ps1",
+            ". C:/Users/tester/sl.ps1",
+            "&{ node sl.js }",
+            "& { node sl.js }",
+            ".{ node sl.js }",
+            "& \u{201C}C:/Users/tester/sl.ps1\u{201D}",
+        ] {
+            assert_eq!(w(orig, ShellKind::Pwsh), Err(CmdlineError::NeedsReview), "{orig:?}");
+        }
+        for (orig, p) in [
+            ("node sl.js | Out-String", ShellKind::Pwsh),
+            ("node sl.js | ForEach-Object { $_ }", ShellKind::LegacyPowerShell),
+            ("pwsh -NoProfile -File \"C:/Users/tester/sl.ps1\"", ShellKind::Pwsh),
+            ("powershell -File C:/Users/tester/sl.ps1", ShellKind::LegacyPowerShell),
+            ("& \"C:/Program Files/nodejs/node.exe\" sl.js", ShellKind::Pwsh),
+            ("cmd /c node sl.js", ShellKind::LegacyPowerShell),
+            ("npx -y ccstatusline@latest", ShellKind::Pwsh),
+            ("claude-powerline --style=minimal", ShellKind::LegacyPowerShell),
+            ("Get-Stats.exe", ShellKind::Pwsh),
+            ("sort.exe", ShellKind::LegacyPowerShell),
+            ("C:/Users/tester/bin/sl.cmd", ShellKind::LegacyPowerShell),
+        ] {
+            assert!(w(orig, p).is_ok(), "{orig:?} {p:?}");
+        }
+    }
+
+    /// After `--`, PowerShell passes a `-name:value` token to a native program as TWO arguments
+    /// (`-name:` and `value`), so the Argv form would change the original's arguments.
+    #[test]
+    fn legacy_argv_rejects_colon_parameters() {
+        let l = ShellKind::LegacyPowerShell;
+        for orig in [
+            "node sl.js -a:1",
+            "powershell -File C:/Users/tester/sl.ps1 -Mode:full",
+            "node sl.js -a:\"x y\"",
+            "node sl.js -a$env:X",
+            "node sl.js \u{2013}a:1",
+            "node sl.js -a:",
+        ] {
+            assert_eq!(w(orig, l), Err(CmdlineError::NeedsReview), "{orig:?}");
+            // Without the `--` the token is passed unchanged, so Pwsh's Pipe form is fine.
+            assert_eq!(w(orig, ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe), "{orig:?}");
+        }
+        for orig in [
+            "node sl.js --a:1",
+            "node sl.js -1:2",
+            "node sl.js \"-a:1\"",
+            "node sl.js '-a:1'",
+            "node sl.js --theme=dark",
+            "node sl.js -a 1",
+            "node sl.js x:y C:/x",
+            "node sl.js -a.b",
+        ] {
+            assert_eq!(w(orig, l).map(|x| x.mode), Ok(WrapMode::Argv), "{orig:?}");
+        }
+    }
+
+    /// cmd.exe re-serialises the right side of a pipe, and `if exist` / `if defined` /
+    /// `if errorlevel` / `equ` comparisons then fail with "… was unexpected at this time".
+    #[test]
+    fn cmd_if_commands_need_review() {
+        let c = ShellKind::Cmd;
+        for orig in [
+            "if exist C:/x node sl.js",
+            "IF DEFINED X node sl.js",
+            "@if 1==1 node sl.js",
+            " @ if errorlevel 0 node sl.js",
+            "if\t1 equ 1 node sl.js",
+            ";if 1==1 x",
+            "a & if exist x b",
+            "a && if exist x b",
+            "a || if exist x b",
+            "a | if exist x b",
+            "if",
+            "for %i in (x) do echo %i",
+        ] {
+            assert_eq!(w(orig, c), Err(CmdlineError::NeedsReview), "{orig:?}");
+        }
+        for orig in ["a & iffy", "node if.js", "echo if", "node sl.js --if x", "a 2>&1 if"] {
+            assert!(w(orig, c).is_ok(), "{orig:?}");
+        }
     }
 
     #[test]

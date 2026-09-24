@@ -989,6 +989,19 @@ mod tests {
             connect(review.as_bytes(), SHIM, ShellKind::Cmd, NOW),
             Err(SettingsError::Cmdline(CmdlineError::NeedsReview))
         );
+        // A script run in-process would read an already drained `[Console]::In` after `| `.
+        let script = r#"{"statusLine": {"type": "command", "command": "C:/Users/tester/.claude/statusline.ps1"}}"#;
+        for shell in [ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            assert_eq!(
+                connect(script.as_bytes(), SHIM, shell, NOW),
+                Err(SettingsError::Cmdline(CmdlineError::NeedsReview))
+            );
+        }
+        let cmd_if = r#"{"statusLine": {"type": "command", "command": "if exist sl.js node sl.js"}}"#;
+        assert_eq!(
+            connect(cmd_if.as_bytes(), SHIM, ShellKind::Cmd, NOW),
+            Err(SettingsError::Cmdline(CmdlineError::NeedsReview))
+        );
     }
 
     #[test]
