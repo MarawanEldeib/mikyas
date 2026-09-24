@@ -70,7 +70,8 @@ fn recently_focused_cli_id(sessions: &[DesktopSession], now_ms: Ms) -> Option<&s
         }
     }
     let (session, focused_ms) = best?;
-    if now_ms.saturating_sub(focused_ms) > FOCUS_TIE_MS {
+    // "Within" on both sides: a far-future focus (corrupt file, unit mix-up) is not recent.
+    if now_ms.abs_diff(focused_ms) > FOCUS_TIE_MS.unsigned_abs() {
         return None;
     }
     session.cli_session_id.as_deref().filter(|id| !id.is_empty())
@@ -154,6 +155,18 @@ mod tests {
         assert_eq!(pick(&tails, &desktop, NOW).map(|p| p.index), Some(0));
         let desktop = [desk(Some("b"), Some(NOW - FOCUS_TIE_MS))];
         assert_eq!(pick(&tails, &desktop, NOW).map(|p| p.index), Some(1), "boundary is inclusive");
+    }
+
+    #[test]
+    fn future_focus_must_also_be_within_the_window() {
+        // A focus timestamp far in the future (corrupt file, unit mix-up) is not "within
+        // FOCUS_TIE_MS of now" and must not pin the preference forever.
+        let tails = [tail("a", NOW - SECOND_MS), tail("b", NOW - 30 * SECOND_MS)];
+        let desktop = [desk(Some("b"), Some(NOW + FOCUS_TIE_MS + 1))];
+        assert_eq!(pick(&tails, &desktop, NOW).map(|p| p.index), Some(0));
+        // A small skew into the future is still within the window.
+        let desktop = [desk(Some("b"), Some(NOW + FOCUS_TIE_MS))];
+        assert_eq!(pick(&tails, &desktop, NOW).map(|p| p.index), Some(1));
     }
 
     #[test]

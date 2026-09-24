@@ -145,8 +145,11 @@ pub fn scan_tail(
 /// `subagents`, listing only via `reader.read_dir`) and returns `*.jsonl` files modified after
 /// `newer_than_ms`, newest first, at most `limit`. Unreadable dirs are skipped silently.
 ///
-/// Depth: files directly inside a root are at level 1. Ties on modification time are ordered by
-/// path; files the reader would refuse to open are left out; symlinks are not followed.
+/// Depth: files directly inside a root are at level 1. Only files inside a directory named
+/// `projects` (the root itself or one below it) count, matching the transcript locations in the
+/// module docs, so e.g. a Cowork session's `.claude/history.jsonl` is ignored. Ties on
+/// modification time are ordered by path; a file seen twice through overlapping roots is
+/// returned once; files the reader would refuse to open are left out; symlinks are not followed.
 pub fn find_recent(reader: &SafeReader, roots: &[PathBuf], newer_than_ms: Ms, limit: usize) -> Vec<RecentFile> {
     if limit == 0 {
         return Vec::new();
@@ -156,7 +159,7 @@ pub fn find_recent(reader: &SafeReader, roots: &[PathBuf], newer_than_ms: Ms, li
     for root in roots {
         walk_files(reader, root, MAX_WALK_DEPTH, &skip_subagents, &mut |entry| {
             let path = entry.path();
-            if !has_extension(&path, "jsonl") {
+            if !has_extension(&path, "jsonl") || !in_projects_dir(root, &path) {
                 return;
             }
             let Ok(meta) = entry.metadata() else { return };
@@ -172,8 +175,31 @@ pub fn find_recent(reader: &SafeReader, roots: &[PathBuf], newer_than_ms: Ms, li
             }
         });
     }
+    newest_first(found, limit)
+}
+
+/// True if `path` (found below `root`) lies inside a directory named `projects` that is `root`
+/// itself or below it, where Claude Code keeps transcripts (`<claude_home>/projects/…`, Cowork
+/// `…/.claude/projects/…`). Other `.jsonl` files in the Cowork tree, such as a session's
+/// `.claude/history.jsonl` prompt history, are not transcripts. Directories above `root` are not
+/// considered, so the result never depends on where the user profile lives.
+fn in_projects_dir(root: &Path, path: &Path) -> bool {
+    let is_projects = |name: &OsStr| name.eq_ignore_ascii_case("projects");
+    root.file_name().is_some_and(is_projects)
+        || path
+            .strip_prefix(root)
+            .ok()
+            .and_then(Path::parent)
+            .is_some_and(|rel| rel.components().any(|c| is_projects(c.as_os_str())))
+}
+
+/// Sorts newest first (ties by path), keeps one entry per path and applies `limit`.
+fn newest_first(mut found: Vec<RecentFile>, limit: usize) -> Vec<RecentFile> {
+    // Overlapping roots list a file twice, with different mtimes if it was appended to between
+    // the two listings: keep only the newest sighting of each path.
+    found.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| b.modified_ms.cmp(&a.modified_ms)));
+    found.dedup_by(|later, kept| later.path == kept.path);
     found.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms).then_with(|| a.path.cmp(&b.path)));
-    found.dedup_by(|a, b| a.path == b.path); // overlapping roots
     found.truncate(limit);
     found
 }
@@ -833,21 +859,26 @@ mod tests {
     fn partial_first_line_after_seek_is_dropped() {
         let e = env();
         let good = lines(&[assistant("claude-opus-5-5", 1_000, 0, 0)]);
-        // The line straddling the seek point continues with text that would parse as a
-        // qualifying assistant line if the partial first line were not dropped.
-        let mut decoy = assistant("claude-opus-5-5", 999_999, 0, 0);
-        let base_len = decoy.to_string().len() + 1;
-        let pad = TAIL_BYTES as usize - good.len() - base_len - r#","pad":"""#.len();
-        decoy.as_object_mut().unwrap().insert("pad".into(), json!("y".repeat(pad)));
-        let decoy = lines(&[decoy]);
-        assert_eq!(decoy.len() + good.len(), TAIL_BYTES as usize);
+        // The line straddling the seek point (a crashed write continued without a newline) ends
+        // with text that parses as a qualifying assistant line if the partial first line were
+        // not dropped. `extra == 1` makes the chunk (including its one extra byte) start exactly
+        // at the decoy's `{`, so only the partial-line drop keeps it out.
+        for extra in [0, 1] {
+            let mut decoy = assistant("claude-opus-5-5", 999_999, 0, 0);
+            let base_len = decoy.to_string().len() + 1;
+            let pad = TAIL_BYTES as usize + extra - good.len() - base_len - r#","pad":"""#.len();
+            decoy.as_object_mut().unwrap().insert("pad".into(), json!("y".repeat(pad)));
+            let decoy = lines(&[decoy]);
+            assert_eq!(decoy.len() + good.len(), TAIL_BYTES as usize + extra);
 
-        let mut bytes = filler_prefix(10_000);
-        bytes.extend_from_slice(&decoy);
-        bytes.extend_from_slice(&good);
-        let path = e.write("p/s.jsonl", &bytes);
-        let tail = e.scan(&path).unwrap();
-        assert_eq!((tail.ctx_tokens, tail.max_ctx_tokens_seen), (1_000, 1_000));
+            let mut bytes = filler_prefix(10_000);
+            bytes.extend_from_slice(&decoy);
+            bytes.extend_from_slice(&good);
+            let path = e.write(&format!("p/s{extra}.jsonl"), &bytes);
+            assert_eq!(bytes[bytes.len() - TAIL_BYTES as usize - 1] == b'{', extra == 1);
+            let tail = e.scan(&path).unwrap();
+            assert_eq!((tail.ctx_tokens, tail.max_ctx_tokens_seen), (1_000, 1_000), "extra={extra}");
+        }
     }
 
     #[test]
@@ -1105,7 +1136,8 @@ mod tests {
         assert!(find_recent(&e.reader, roots, T_NOON, 0).is_empty());
         assert_eq!(find_recent(&e.reader, roots, T_NOON - 1, 10).len(), 5, "strictly newer");
         // Overlapping roots do not duplicate files.
-        assert_eq!(find_recent(&e.reader, &[root.clone(), root.join("a")], T_NOON, 10).len(), 4);
+        let overlapping = [root.clone(), e.paths.claude_home().to_path_buf()];
+        assert_eq!(names(&find_recent(&e.reader, &overlapping, T_NOON, 10)), names(&all));
     }
 
     #[test]
@@ -1136,10 +1168,55 @@ mod tests {
         let outside = e.tmp.path().join("elsewhere");
         touch(&outside.join("x.jsonl"), T_NOON + 1);
         let cowork = e.paths.desktop_roots()[0].join("local-agent-mode-sessions");
-        touch(&cowork.join("a").join("b").join("c.jsonl"), T_NOON + 2);
+        touch(&cowork.join("a").join(".claude").join("projects").join("b").join("c.jsonl"), T_NOON + 2);
 
         let roots = [root, outside, e.tmp.path().join("missing"), cowork];
         let found = find_recent(&e.reader, &roots, 0, 10);
         assert_eq!(names(&found), ["c.jsonl", "ok.jsonl"]);
+    }
+
+    #[test]
+    fn find_recent_ignores_jsonl_outside_projects_dirs() {
+        // A Cowork session keeps a whole Claude Code config dir: its `.claude/history.jsonl`
+        // (prompt history) and other logs are not transcripts and must not be returned.
+        // A `projects` folder ABOVE the root (e.g. in the profile path) must not disable the check.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("projects");
+        let paths = Paths::with_roots(base.join(".claude"), vec![base.join("Claude")], base.join("data"));
+        let reader = SafeReader::new(&paths);
+        let cowork = paths.desktop_roots()[0].join("local-agent-mode-sessions");
+        let session = cowork.join("acct").join("org").join("sess");
+        touch(&session.join(".claude").join("projects").join("p").join("t.jsonl"), T_NOON + 1);
+        touch(&session.join(".claude").join("history.jsonl"), T_NOON + 5);
+        touch(&session.join("audit.jsonl"), T_NOON + 5);
+        let found = find_recent(&reader, &[cowork], 0, 10);
+        assert_eq!(names(&found), ["t.jsonl"]);
+    }
+
+    #[test]
+    fn duplicate_sightings_keep_only_the_newest() {
+        // Overlapping roots list a file twice; if it was appended to between the two listings
+        // the sightings have different mtimes and are not adjacent after sorting.
+        let rf = |name: &str, modified_ms: Ms| RecentFile {
+            path: PathBuf::from(name),
+            modified_ms,
+            len: 1,
+        };
+        let found = newest_first(vec![rf("x", 30), rf("y", 20), rf("x", 10), rf("y", 20)], 10);
+        assert_eq!(found, vec![rf("x", 30), rf("y", 20)]);
+        assert_eq!(newest_first(vec![rf("x", 10), rf("y", 20), rf("x", 30)], 1), vec![rf("x", 30)]);
+    }
+
+    #[test]
+    fn deeply_nested_message_content_is_skipped_not_fatal() {
+        let e = env();
+        let mut v = assistant("claude-opus-5-5", 4_242, 0, 0);
+        let depth = 1_000;
+        let nested = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        v["message"]["content"] = json!("__NESTED__");
+        let line = v.to_string().replace("\"__NESTED__\"", &nested);
+        assert!(serde_json::from_str::<serde_json::Value>(&line).is_err(), "deeper than serde's limit");
+        let path = e.write("p/s.jsonl", format!("{line}\n").as_bytes());
+        assert_eq!(e.scan(&path).map(|t| t.ctx_tokens), Some(4_242));
     }
 }
