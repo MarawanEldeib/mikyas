@@ -24,6 +24,9 @@
 //! - A kind seen for the first time starts from `KindAlertState::default()` (no key, `last_pct`
 //!   0), so it never emits `Reset`, but does alert for thresholds it is already above.
 //! - An unknown reset keeps the stored key, so a later exact/estimated key is compared with it.
+//! - pct is sanitised first (NaN → 0, clamped to 0..=100): serde_json writes non-finite floats as
+//!   `null`, which would make the persisted state unreadable. Missing fields in a persisted state
+//!   take their defaults.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +75,7 @@ pub enum AlertEvent {
 
 /// Alert bookkeeping for one window kind.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct KindAlertState {
     pub instance_key: Option<Ms>,
     pub fired: BTreeSet<u8>,
@@ -80,6 +84,7 @@ pub struct KindAlertState {
 
 /// Persisted as JSON; keyed by `WindowKind::key()`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AlertState {
     pub kinds: BTreeMap<String, KindAlertState>,
 }
@@ -113,7 +118,11 @@ impl KindAlertState {
         first_run: bool,
         events: &mut Vec<AlertEvent>,
     ) {
-        let pct = if window.pct.is_nan() { 0.0 } else { window.pct };
+        let pct = if window.pct.is_nan() {
+            0.0
+        } else {
+            window.pct.clamp(0.0, 100.0)
+        };
         let key = window.reset.at_ms().map(instance_key);
 
         let dropped = self.last_pct - pct >= RESET_DROP_PCT;
@@ -510,6 +519,47 @@ mod tests {
         // Extremes saturate instead of overflowing.
         let _ = instance_key(Ms::MAX);
         let _ = instance_key(Ms::MIN);
+    }
+
+    #[test]
+    fn non_finite_pct_keeps_state_persistable() {
+        // serde_json writes a non-finite f32 as `null`, which does not deserialize back into f32:
+        // one bad value would make alerts.json unreadable and every threshold would re-fire.
+        let mut s = AlertState::default();
+        let events = step(&mut s, fh(f32::INFINITY));
+        assert_eq!(events, vec![threshold(95, 100.0, Some(R))]);
+        let json = serde_json::to_string(&s).unwrap();
+        let restored: AlertState = serde_json::from_str(&json).expect("persisted state reloads");
+        assert_eq!(restored, s);
+        assert_eq!(fh_state(&restored).last_pct, 100.0);
+
+        let mut s = AlertState::default();
+        step(&mut s, fh(85.0));
+        assert_eq!(step(&mut s, fh(f32::NEG_INFINITY)), vec![reset_event()]);
+        assert_eq!(fh_state(&s).last_pct, 0.0);
+        let restored: AlertState = serde_json::from_str(&serde_json::to_string(&s).unwrap())
+            .expect("persisted state reloads");
+        assert_eq!(restored, s);
+    }
+
+    #[test]
+    fn persisted_state_tolerates_missing_fields() {
+        // Older/hand-edited alerts.json: a missing field must not discard the whole state.
+        let s: AlertState =
+            serde_json::from_str(r#"{"kinds":{"five_hour":{"instance_key":123}}}"#).unwrap();
+        assert_eq!(
+            fh_state(&s),
+            &KindAlertState {
+                instance_key: Some(123),
+                fired: BTreeSet::new(),
+                last_pct: 0.0,
+            }
+        );
+        let s: AlertState =
+            serde_json::from_str(r#"{"kinds":{"five_hour":{"fired":[80]}}}"#).unwrap();
+        assert_eq!(fh_state(&s).fired, BTreeSet::from([80]));
+        let empty: AlertState = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, AlertState::default());
     }
 
     #[test]

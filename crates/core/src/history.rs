@@ -24,6 +24,8 @@ pub const RETAIN_MS: Ms = 14 * DAY_MS;
 pub const SPARK_MAX_CARRY_MS: Ms = 2 * HOUR_MS;
 /// Values closer than this are "unchanged" for [`History::record`].
 pub const CHANGE_EPSILON: f32 = 0.05;
+/// [`History::spark`] never returns more points than this (the bucket count comes from the UI).
+pub const MAX_SPARK_BUCKETS: usize = 4096;
 
 /// How often an atomic rewrite retries the final rename (Windows reports sharing violations while
 /// another process, e.g. a virus scanner, briefly holds the target open).
@@ -64,10 +66,10 @@ impl History {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
         };
-        let mut rows: Vec<HistoryRow> = bytes
-            .split(|&b| b == b'\n')
-            .filter_map(parse_line)
-            .collect();
+        // Windows editors may have saved the file with a UTF-8 BOM.
+        let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+        let mut rows: Vec<HistoryRow> =
+            text.split(|&b| b == b'\n').filter_map(parse_line).collect();
         rows.sort_by_key(|r| r.t);
         Ok(Self { path, rows })
     }
@@ -178,7 +180,7 @@ impl History {
     /// Bucket `i` covers `[start_i, start_{i+1})`; the last bucket also includes `to_ms`. The
     /// carried value is the pct of the newest row before the bucket (the current usage at that
     /// point, which after a reset is lower than the previous bucket's max). Rows before `from_ms`
-    /// seed the carry for the first buckets.
+    /// seed the carry for the first buckets. `buckets` is capped at [`MAX_SPARK_BUCKETS`].
     pub fn spark(
         &self,
         kind: &WindowKind,
@@ -186,6 +188,7 @@ impl History {
         to_ms: Ms,
         buckets: usize,
     ) -> Vec<SparkPoint> {
+        let buckets = buckets.min(MAX_SPARK_BUCKETS);
         if buckets == 0 || to_ms <= from_ms {
             return Vec::new();
         }
@@ -201,7 +204,7 @@ impl History {
 
         let mut next = rows.partition_point(|r| r.t < from_ms);
         let mut last: Option<&HistoryRow> = next.checked_sub(1).and_then(|i| rows.get(i).copied());
-        let mut out = Vec::with_capacity(buckets.min(4096));
+        let mut out = Vec::with_capacity(buckets);
         for i in 0..buckets {
             let start = bucket_start(i);
             let end = (i + 1 < buckets).then(|| bucket_start(i + 1));
@@ -236,14 +239,18 @@ impl History {
     }
 }
 
-/// Parses one line; blank or malformed lines yield `None`.
+/// Parses one line; blank or malformed lines yield `None`. `p` is clamped to `0..=100` like every
+/// producer does.
 fn parse_line(line: &[u8]) -> Option<HistoryRow> {
     if line.iter().all(u8::is_ascii_whitespace) {
         return None;
     }
-    serde_json::from_slice::<HistoryRow>(line)
-        .ok()
-        .filter(|r| r.p.is_finite())
+    let mut row = serde_json::from_slice::<HistoryRow>(line).ok()?;
+    if !row.p.is_finite() {
+        return None;
+    }
+    row.p = row.p.clamp(0.0, 100.0);
+    Some(row)
 }
 
 fn ensure_parent(path: &Path) -> io::Result<()> {
@@ -377,12 +384,11 @@ mod tests {
         }
     }
 
-    /// A history whose rows are set directly (for the pure query functions).
-    fn with_rows(rows: Vec<HistoryRow>) -> History {
-        History {
-            path: PathBuf::from("unused.jsonl"),
-            rows,
-        }
+    /// A history whose rows are set directly (for the pure query functions). Its path lives in a
+    /// tempdir so an accidental rewrite can never land in the crate directory.
+    fn with_rows(rows: Vec<HistoryRow>) -> (tempfile::TempDir, History) {
+        let (dir, path) = tmp_history();
+        (dir, History { path, rows })
     }
 
     fn file_lines(path: &Path) -> Vec<String> {
@@ -460,6 +466,37 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         let h = History::open(path).unwrap();
         assert_eq!(h.rows(), &[row(1, "5h", 1.0)]);
+    }
+
+    #[test]
+    fn open_clamps_out_of_range_pct() {
+        // Hand-edited or foreign rows: every producer clamps, so load must too (spark/burn/record
+        // would otherwise see 500%).
+        let (_dir, path) = tmp_history();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "{\"t\":1,\"w\":\"5h\",\"p\":500,\"s\":\"cli\"}\n{\"t\":2,\"w\":\"5h\",\"p\":-3.5,\"s\":\"cli\"}\n",
+        )
+        .unwrap();
+        let h = History::open(path).unwrap();
+        let ps: Vec<f32> = h.rows().iter().map(|r| r.p).collect();
+        assert_eq!(ps, vec![100.0, 0.0]);
+    }
+
+    #[test]
+    fn open_skips_utf8_bom() {
+        // Windows editors (Notepad "UTF-8 with BOM") prepend EF BB BF; the first row must survive.
+        let (_dir, path) = tmp_history();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = b"\xEF\xBB\xBF".to_vec();
+        bytes.extend_from_slice(br#"{"t":1,"w":"5h","p":1.0,"r":null,"s":"cli","e":false}"#);
+        bytes.extend_from_slice(b"\r\n");
+        bytes.extend_from_slice(br#"{"t":2,"w":"5h","p":2.0,"r":null,"s":"cli","e":false}"#);
+        bytes.extend_from_slice(b"\r\n");
+        fs::write(&path, bytes).unwrap();
+        let h = History::open(path).unwrap();
+        assert_eq!(h.rows(), &[row(1, "5h", 1.0), row(2, "5h", 2.0)]);
     }
 
     #[test]
@@ -714,7 +751,7 @@ mod tests {
 
     #[test]
     fn compact_handles_extreme_now() {
-        let mut h = with_rows(vec![row(T0, "5h", 1.0)]);
+        let (_dir, mut h) = with_rows(vec![row(T0, "5h", 1.0)]);
         h.compact(Ms::MIN).unwrap();
         assert_eq!(h.rows().len(), 1);
     }
@@ -723,7 +760,7 @@ mod tests {
 
     #[test]
     fn samples_filter_kind_and_time() {
-        let h = with_rows(vec![
+        let (_dir, h) = with_rows(vec![
             row(1, "5h", 1.0),
             row(2, "7d", 50.0),
             row(3, "5h", 3.0),
@@ -759,7 +796,7 @@ mod tests {
     #[test]
     fn spark_bucket_is_max_and_carries_last_row() {
         let m = MINUTE_MS;
-        let h = with_rows(vec![
+        let (_dir, h) = with_rows(vec![
             row(T0 + 5 * m, "5h", 10.0),
             row(T0 + 20 * m, "5h", 80.0),
             row(T0 + 30 * m, "7d", 99.0),
@@ -778,7 +815,7 @@ mod tests {
 
     #[test]
     fn spark_carry_limit_is_inclusive() {
-        let h = with_rows(vec![row(T0 + HOUR_MS, "5h", 42.0)]);
+        let (_dir, h) = with_rows(vec![row(T0 + HOUR_MS, "5h", 42.0)]);
         let points = h.spark(&WindowKind::FiveHour, T0, T0 + 4 * HOUR_MS, 4);
         // Bucket 3 starts exactly 2 h after the row.
         assert_eq!(
@@ -789,7 +826,7 @@ mod tests {
 
     #[test]
     fn spark_seeds_carry_from_rows_before_range() {
-        let h = with_rows(vec![
+        let (_dir, h) = with_rows(vec![
             row(T0 - 3 * HOUR_MS, "5h", 99.0),
             row(T0 - 90 * MINUTE_MS, "5h", 17.0),
         ]);
@@ -801,21 +838,21 @@ mod tests {
     #[test]
     fn spark_last_bucket_includes_end_and_ignores_later_rows() {
         let end = T0 + 4 * HOUR_MS;
-        let h = with_rows(vec![row(end, "5h", 60.0), row(end + 1, "5h", 90.0)]);
+        let (_dir, h) = with_rows(vec![row(end, "5h", 60.0), row(end + 1, "5h", 90.0)]);
         let points = h.spark(&WindowKind::FiveHour, T0, end, 4);
         assert_eq!(pcts(&points), vec![None, None, None, Some(60.0)]);
     }
 
     #[test]
     fn spark_empty_history_is_all_gaps() {
-        let h = with_rows(vec![]);
+        let (_dir, h) = with_rows(vec![]);
         let points = h.spark(&WindowKind::SevenDay, T0, T0 + DAY_MS, 3);
         assert_eq!(pcts(&points), vec![None, None, None]);
     }
 
     #[test]
     fn spark_degenerate_ranges() {
-        let h = with_rows(vec![row(T0, "5h", 1.0)]);
+        let (_dir, h) = with_rows(vec![row(T0, "5h", 1.0)]);
         assert!(
             h.spark(&WindowKind::FiveHour, T0, T0 + HOUR_MS, 0)
                 .is_empty()
@@ -834,5 +871,19 @@ mod tests {
         let wide = h.spark(&WindowKind::FiveHour, Ms::MIN, Ms::MAX, 3);
         assert_eq!(wide.first().map(|p| p.t_ms), Some(Ms::MIN));
         assert_eq!(wide.len(), 3);
+    }
+
+    #[test]
+    fn spark_bucket_count_is_capped() {
+        // `buckets` comes from the UI; an absurd value must not allocate/loop without bound
+        // (usize::MAX would push until the process aborts on OOM).
+        let (_dir, h) = with_rows(vec![row(T0, "5h", 1.0)]);
+        let points = h.spark(&WindowKind::FiveHour, T0, T0 + DAY_MS, 1_000_000);
+        assert_eq!(points.len(), MAX_SPARK_BUCKETS);
+        assert_eq!(points[0].t_ms, T0);
+        assert!(points.windows(2).all(|w| w[0].t_ms < w[1].t_ms));
+        let huge = h.spark(&WindowKind::FiveHour, T0, T0 + DAY_MS, usize::MAX);
+        assert_eq!(huge.len(), MAX_SPARK_BUCKETS);
+        assert_eq!(huge.first().and_then(|p| p.pct), Some(1.0));
     }
 }
