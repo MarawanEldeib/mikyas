@@ -87,8 +87,10 @@
 
 <svelte:window
   onkeydown={(e) => {
-    // Esc leaves settings (the shortcut recorder handles its own Esc and stops propagation).
-    if (e.key === "Escape" && !e.defaultPrevented) void app.back();
+    // Esc leaves settings, except while typing in a field (the shortcut recorder handles its
+    // own Esc and stops propagation).
+    const typing = e.target instanceof Element && e.target.closest("input, select, textarea");
+    if (e.key === "Escape" && !e.defaultPrevented && !typing) void app.back();
   }}
 />
 

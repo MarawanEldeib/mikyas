@@ -37,7 +37,7 @@
         {resetLine(w, now)}{#if tip}<span class="pm" aria-hidden="true">±</span>{/if}
       </div>
     </div>
-    <Sparkline points={w.spark} pct={p} stale={w.stale} height={36} label="{label} usage over the last {span}" />
+    <Sparkline points={w.spark} pct={p} stale={w.stale} width={100} height={36} label="{label} usage over the last {span}" />
   </div>
   <div class="bar" role="progressbar" aria-label="{label} usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)}>
     <div class="fill" style:width="{p}%" style:background={color}></div>

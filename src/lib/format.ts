@@ -201,13 +201,16 @@ export function splitUnits(s: string): TextRun[] {
   return Array.from(s.matchAll(/(\d[\d:]*)|(\D+)/g), (m) => ({ text: m[0], unit: m[1] === undefined }));
 }
 
-/** Card reset line: "resets 15:40 · in 3h 12m" (with "~" when estimated). */
+/**
+ * Card reset line: "resets 15:40 · in 3h 12m"; an estimate is marked once, on the clock
+ * ("resets ~15:40 · in 3h 12m"), so 12-hour locales still fit beside the sparkline.
+ */
 export function resetLine(w: Pick<WindowView, "phase" | "reset">, now: number, opts: ClockOptions = {}): string {
   if (awaitingReset(w, now)) return "reset — waiting for data";
   const at = resetAt(w.reset);
   if (at === null) return "reset time unknown";
   const t = isEstimated(w.reset) ? "~" : "";
-  return `resets ${t}${formatClock(at, now, opts)} · in ${t}${formatCountdown(at - now)}`;
+  return `resets ${t}${formatClock(at, now, opts)} · in ${formatCountdown(at - now)}`;
 }
 
 /** Tooltip for an estimated reset, e.g. "Estimated from Claude Desktop history, ±25m (medium confidence)". */

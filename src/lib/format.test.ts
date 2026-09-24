@@ -144,7 +144,8 @@ describe("reset lines", () => {
     expect(pillCountdown({ phase: "active", reset: exact }, NOW)).toBe("3h 40m");
   });
   it("marks estimated resets with ~", () => {
-    expect(resetLine({ phase: "active", reset: est }, NOW, GB)).toBe("resets ~15:40 · in ~3h 40m");
+    expect(resetLine({ phase: "active", reset: est }, NOW, GB)).toBe("resets ~15:40 · in 3h 40m");
+    expect(resetLine({ phase: "active", reset: est }, NOW, US)).toMatch(/^resets ~3:40\sPM · in 3h 40m$/u);
     expect(pillCountdown({ phase: "active", reset: est }, NOW)).toBe("~3h 40m");
     expect(estimateTooltip(est)).toBe("Estimated from Claude Desktop history, ±25m (medium confidence)");
     expect(estimateTooltip(exact)).toBeUndefined();
