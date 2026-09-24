@@ -85,6 +85,13 @@
   );
 </script>
 
+<svelte:window
+  onkeydown={(e) => {
+    // Esc leaves settings (the shortcut recorder handles its own Esc and stops propagation).
+    if (e.key === "Escape" && !e.defaultPrevented) void app.back();
+  }}
+/>
+
 <div class="settings">
   <header class="bar">
     <IconButton icon="back" label="Back" size="m" onclick={() => app.back()} />
@@ -92,6 +99,9 @@
   </header>
 
   <div class="scroll" data-no-drag>
+    {#if app.error}
+      <p class="error" role="alert"><Icon name="warning" size={13} /><span>{app.error}</span></p>
+    {/if}
     {#if warn.length}
       <div class="block"><StatusBanner notices={warn} /></div>
     {/if}
@@ -113,7 +123,7 @@
       <h2 class="section">Alerts</h2>
       <div class="group">
         <div class="row">
-          <span class="label" id="lbl-t1">First alert at</span>
+          <span class="label">First alert at</span>
           <Stepper label="First alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => update({ thresholds: [v, t[1]] })} />
         </div>
         <div class="row">
@@ -121,7 +131,7 @@
           <Stepper label="Second alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => update({ thresholds: [t[0], v] })} />
         </div>
         <div class="row">
-          <span class="label" id="lbl-notify">Notify when a limit resets</span>
+          <span class="label">Notify when a limit resets</span>
           <Toggle label="Notify when a limit resets" checked={s.notify_reset} onchange={(v) => update({ notify_reset: v })} />
         </div>
       </div>
@@ -281,23 +291,26 @@
     padding: 4px 2px 16px 12px;
     scrollbar-gutter: stable;
   }
-  /* Slim overlay-style scrollbar (WebView2 is Chromium). */
-  .scroll::-webkit-scrollbar {
-    width: 10px;
-  }
-  .scroll::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
-    border-radius: 5px;
-    background: var(--fg-3) padding-box;
-  }
-  .scroll::-webkit-scrollbar-thumb:hover {
-    background-color: var(--fg-2);
-  }
-  .scroll::-webkit-scrollbar-button {
-    display: none;
-  }
   .block {
     margin-top: 8px;
+  }
+  .error {
+    display: flex;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--crit-bg);
+    color: var(--crit);
+    font-size: 11px;
+    line-height: 15px;
+  }
+  .error :global(.icon) {
+    flex: none;
+    margin-top: 1px;
+  }
+  .error span {
+    overflow-wrap: anywhere;
   }
   .section {
     margin: 16px 0 6px 2px;
@@ -368,6 +381,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-mono);
+    font-weight: 350;
     font-size: 11px;
   }
   .add {
@@ -385,6 +399,7 @@
       inset 0 0 0 1px var(--stroke-control),
       inset 0 -1px 0 var(--fg-3);
     font-family: var(--font-mono);
+    font-weight: 350;
     font-size: 11px;
     outline: none;
   }

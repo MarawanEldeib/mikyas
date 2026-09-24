@@ -396,12 +396,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
   const preview = (): ConnectPreview => {
     const before = connection.state === "foreign" ? connection.command : null;
     return {
-      before: before === null ? null : JSON.stringify({ type: "command", command: before }, null, 2),
-      after: JSON.stringify(
-        { type: "command", command: before ? `${CAPTURE} --wrap -- ${before}` : CAPTURE, padding: 0 },
-        null,
-        2,
-      ),
+      before,
+      after: before ? `${CAPTURE} --wrap -- ${before}` : CAPTURE,
       shell: "pwsh",
       warnings:
         scenario === "warnings"
@@ -415,7 +411,13 @@ export function createMockBackend(params: URLSearchParams): Backend {
     get_snapshot: () => snapshot,
     get_settings: () => settings,
     update_settings: (args) => {
-      settings = { ...settings, ...(args.patch as Partial<Settings>) };
+      const patch = args.patch as Partial<Settings>;
+      settings = { ...settings, ...patch };
+      if (patch.hotkey !== undefined && ui.hotkey_error) {
+        // Registering a different shortcut succeeds in the mock.
+        ui = { ...ui, hotkey_error: null };
+        emit("ui-state", ui);
+      }
       return settings;
     },
     get_ui_state: () => ui,

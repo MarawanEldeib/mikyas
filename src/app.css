@@ -1,6 +1,8 @@
 /* Design tokens, base styles and the browser-only mock stage.
-   Dark is the default; light overrides follow prefers-color-scheme. Text colours meet WCAG AA
-   on the surface at every backdrop setting; --fg-3 is for non-text marks only. */
+   Dark is the default; light overrides follow prefers-color-scheme. Every text colour (--fg,
+   --fg-2, --ok/--warn/--crit) keeps >= 4.5:1 on the surface even over a pure white (dark theme)
+   or pure black (light theme) wallpaper, given the surface tint per backdrop below; --fg-3 and
+   the *-fill colours are for non-text marks only. */
 
 :root {
   color-scheme: dark;
@@ -74,11 +76,11 @@
     --on-accent: #ffffff;
     --focus: #000000;
 
-    --ok: #0e7a0d;
+    --ok: #0b6b0b;
     --ok-fill: #10930f;
-    --warn: #9a5700;
+    --warn: #8a4b00;
     --warn-fill: #d67800;
-    --crit: #c42b1c;
+    --crit: #b01e14;
     --crit-fill: #d13438;
     --warn-bg: rgb(214 120 0 / 0.12);
     --crit-bg: rgb(209 52 56 / 0.1);
@@ -88,9 +90,11 @@
   }
 }
 
+/* Mica/Acrylic already tint heavily; raw blur has no tint and "none" has no backdrop at all.
+   "auto" assumes Rust picked Mica or Acrylic. */
 :root[data-effect="mica"] { --surface-a: 0.5; }
-:root[data-effect="acrylic"] { --surface-a: 0.55; }
-:root[data-effect="blur"] { --surface-a: 0.74; }
+:root[data-effect="acrylic"] { --surface-a: 0.7; }
+:root[data-effect="blur"] { --surface-a: 0.88; }
 :root[data-effect="none"] { --surface-a: 0.95; }
 
 *,
@@ -136,6 +140,27 @@ button {
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+/* Slim scrollbars without arrow buttons (WebView2 is Chromium). */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 5px;
+  background: var(--fg-3) padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fg-2);
+}
+::-webkit-scrollbar-button {
+  display: none;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

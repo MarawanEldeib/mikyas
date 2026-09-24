@@ -8,7 +8,7 @@ export interface Notice {
   detail: string;
 }
 
-/** Banners to show for a snapshot, most important first. */
+/** Banners to show for a snapshot: explicit warnings in snapshot order, then Desktop health. */
 export function notices(s: Snapshot | null): Notice[] {
   if (!s) return [];
   const out: Notice[] = [];

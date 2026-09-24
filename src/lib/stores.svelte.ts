@@ -58,11 +58,16 @@ class AppState {
     this.ui = u;
   }
 
-  /** Requests a view change; applied optimistically, confirmed by `ui-state`. */
+  /**
+   * Requests a view change. Applied once Rust has resized the window (not optimistically, so
+   * a view never renders into the previous view's size); `ui-state` confirms it as well.
+   */
   async setView(view: ViewMode): Promise<void> {
     if (view === this.ui.view) return;
-    this.#applyUi({ ...this.ui, view });
-    await this.#run(() => api.setView(view));
+    await this.#run(async () => {
+      await api.setView(view);
+      this.#applyUi({ ...this.ui, view });
+    });
   }
 
   /** Leaves settings for the view it was opened from. */

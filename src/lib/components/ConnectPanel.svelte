@@ -196,6 +196,8 @@
   code,
   pre {
     font-family: var(--font-mono);
+    /* Cascadia's regular weight reads heavy at 11px next to Segoe UI. */
+    font-weight: 350;
     font-size: 11px;
     line-height: 15px;
   }
@@ -237,8 +239,6 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;
-    max-height: 120px;
-    overflow: auto;
   }
   pre.after {
     box-shadow: inset 2px 0 0 var(--ok-fill);
