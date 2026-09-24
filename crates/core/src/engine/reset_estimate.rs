@@ -36,6 +36,13 @@
 //! - If every sample predates a past exact reset, the samples describe a window that is over:
 //!   FiveHour → Unknown (the next window starts with the next message), weekly → the fallback.
 //! - `plus_minus` is rounded up so the true start, anywhere in `(lo, hi]`, is always covered.
+//! - The newest sample `s[n]` shows usage (pct > 0), so its window was running at `s[n].t` and
+//!   began after `s[n].t - duration`: `lo` is raised to that in every case (this is the "window
+//!   cannot be older than `duration`" bound above, taken from the newest sample rather than
+//!   `now`, which may lie after the window ended). If the located start is not after it, a
+//!   boundary went unseen — the window reset inside a sampling gap shorter than `duration` and
+//!   the new one climbed past the old value — and the start is only known to lie in
+//!   `(s[n].t - duration, s[n].t]`. Either way the estimate is never before the newest sample.
 
 use std::borrow::Cow;
 
@@ -104,6 +111,14 @@ pub fn estimate_reset(
             )
         }
         None => return ResetInfo::Unknown,
+    };
+    // The last sample shows usage, so its window was still running then and began after
+    // `last - duration`. A located start at or before that means a boundary went unseen.
+    let floor = last.t_ms.saturating_sub(duration);
+    let (lo, hi) = if floor >= hi {
+        (floor, last.t_ms)
+    } else {
+        (lo.max(floor), hi)
     };
     estimate(lo, hi, duration, weekly, now_ms)
 }
@@ -342,6 +357,16 @@ mod tests {
         assert_eq!(conf(m(92)), Confidence::Low);
     }
 
+    /// Start in `(T - 4 h 15 min, T]`: at or before the first sample, after `newest - 5 h`.
+    fn from_first_sample_45_min_series() -> ResetInfo {
+        let (lo, hi) = (T + m(45) - FIVE_HOURS_MS, T);
+        est(
+            (lo + hi) / 2 + FIVE_HOURS_MS,
+            (hi - lo) / 2,
+            Confidence::Low,
+        )
+    }
+
     #[test]
     fn one_point_dip_is_noise() {
         // 41 → 40 is not a reset, so the window reaches back to the first sample.
@@ -354,10 +379,7 @@ mod tests {
             ],
             T + m(50),
         );
-        assert_eq!(
-            got,
-            est(T + FIVE_HOURS_MS / 2, FIVE_HOURS_MS / 2, Confidence::Low)
-        );
+        assert_eq!(got, from_first_sample_45_min_series());
     }
 
     #[test]
@@ -371,7 +393,8 @@ mod tests {
             ],
             T + 8 * HOUR_MS + m(20),
         );
-        let (lo, hi) = (T + 3 * HOUR_MS, T + 8 * HOUR_MS);
+        // Bounded by both the gap (> T + 3 h) and the newest sample (> T + 8 h 15 min - 5 h).
+        let (lo, hi) = (T + 3 * HOUR_MS + m(15), T + 8 * HOUR_MS);
         assert_eq!(
             got,
             est(
@@ -393,15 +416,47 @@ mod tests {
             ],
             T + m(50),
         );
-        assert_eq!(
-            got,
-            est(T + FIVE_HOURS_MS / 2, FIVE_HOURS_MS / 2, Confidence::Low)
-        );
-        // A single sample is the same case.
+        assert_eq!(got, from_first_sample_45_min_series());
+        // A single sample reaches back a whole window.
         assert_eq!(
             five(&[(T, 10.0)], T + m(5)),
             est(T + FIVE_HOURS_MS / 2, FIVE_HOURS_MS / 2, Confidence::Low)
         );
+    }
+
+    #[test]
+    fn estimate_never_precedes_the_last_active_sample() {
+        // Window A runs 09:00–14:00 and is seen rising 5 → 30 until 13:00. The laptop sleeps
+        // 13:00–16:00; meanwhile A resets and window B starts at 14:30 and climbs past A's last
+        // value. No drop, no gap over 5 h, no rise from 0: the boundary is invisible. But the
+        // 16:00 sample shows usage, so its window runs past 16:00 and began after 11:00.
+        let mut pts = vec![(T + 8 * HOUR_MS + m(45), 0.0)];
+        pts.extend((0..=16).map(|k| (T + 9 * HOUR_MS + k * m(15), 5.0 + k as f32 * 25.0 / 16.0)));
+        let last = T + 16 * HOUR_MS;
+        pts.push((last, 45.0));
+        let true_reset = T + 19 * HOUR_MS + m(30);
+        let got = five(&pts, last + MINUTE_MS);
+        let ResetInfo::Estimated {
+            at_ms,
+            plus_minus_ms,
+            confidence,
+        } = got
+        else {
+            panic!("{got:?}");
+        };
+        assert!(at_ms > last, "reset before the last active sample: {got:?}");
+        assert!((at_ms - true_reset).abs() <= plus_minus_ms, "{got:?}");
+        assert_eq!(confidence, Confidence::Low);
+
+        // Monotone for 4 h: the window began in (last - 5 h, first sample], not up to 5 h before
+        // the first sample.
+        let pts: Vec<(Ms, f32)> = (0..=16)
+            .map(|k| (T + k * m(15), 5.0 + 2.0 * k as f32))
+            .collect();
+        let last = T + 4 * HOUR_MS;
+        let got = five(&pts, last + MINUTE_MS);
+        assert_eq!(got, est(T + 4 * HOUR_MS + m(30), m(30), Confidence::Medium));
+        assert!(got.at_ms().is_some_and(|at| at > last));
     }
 
     #[test]
@@ -456,13 +511,14 @@ mod tests {
                 Confidence::Low
             )
         );
-        // Weekly monotone: reaches back a whole week.
+        // Weekly monotone: reaches back a week from the newest sample.
         let got = week(&[(T, 10.0), (T + HOUR_MS, 12.0)], None, T + HOUR_MS);
+        let (lo, hi) = (T + HOUR_MS - SEVEN_DAYS_MS, T);
         assert_eq!(
             got,
             est(
-                T + SEVEN_DAYS_MS / 2,
-                SEVEN_DAYS_MS / 2 + DAY_MS,
+                (lo + hi) / 2 + SEVEN_DAYS_MS,
+                (hi - lo) / 2 + DAY_MS,
                 Confidence::Low
             )
         );
@@ -653,10 +709,16 @@ mod tests {
             let samples: Vec<Sample> = points.iter().map(|&(t, pct)| Sample { t_ms: T + t, pct }).collect();
             let kind = if weekly { WindowKind::SevenDay } else { WindowKind::FiveHour };
             let duration = kind.duration_ms().unwrap();
+            let mut sorted = samples.clone();
+            sorted.sort_by_key(|s| s.t_ms);
             match estimate_reset(&kind, &samples, exact.map(|e| now + e), now) {
                 ResetInfo::Exact { at_ms } => prop_assert!(at_ms > now),
                 ResetInfo::Estimated { at_ms, plus_minus_ms, confidence } => {
                     prop_assert!(at_ms >= now - duration);
+                    // The newest sample's window was running then, so it resets later.
+                    if let Some(last) = sorted.last().filter(|l| l.t_ms <= now) {
+                        prop_assert!(at_ms >= last.t_ms, "{at_ms} < {}", last.t_ms);
+                    }
                     prop_assert!(plus_minus_ms >= 0);
                     if weekly {
                         prop_assert_eq!(confidence, Confidence::Low);

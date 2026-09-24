@@ -63,6 +63,8 @@ struct RawSample<'a> {
 /// several samples with the same `t`, the one written last wins. Error messages never quote the
 /// document, so they cannot leak the org.
 pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
+    // A UTF-8 BOM (added by some Windows editors) is not JSON whitespace to serde_json.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let doc: Value = serde_json::from_slice(bytes).map_err(json_error)?;
     let root = doc
         .as_object()
@@ -581,6 +583,17 @@ mod tests {
                 "cut at {cut}"
             );
         }
+    }
+
+    #[test]
+    fn utf8_bom_is_tolerated() {
+        // Notepad and some Windows tools prepend a BOM when re-saving a UTF-8 file.
+        let mut bytes = b"\xEF\xBB\xBF".to_vec();
+        bytes.extend_from_slice(
+            b"{\"version\":2,\r\n\"samples\":[{\"t\":1790208000000,\"u\":{\"fh\":7}}]}\r\n",
+        );
+        let u = parse(&bytes).unwrap();
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 7.0)]);
     }
 
     #[test]
