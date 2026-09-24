@@ -1,0 +1,58 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "C:\\Users\\tester\\.claude\\projects\\C--work-demo\\00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "C:\\work\\demo-cwd-sentinel",
+  "model": {
+    "id": "claude-opus-5-5[1m]",
+    "display_name": "Opus 5.5 (1M context)"
+  },
+  "workspace": {
+    "current_dir": "C:\\work\\workspace-sentinel",
+    "project_dir": "C:\\work\\project-sentinel",
+    "added_dirs": ["C:\\work\\added-sentinel"]
+  },
+  "version": "2.3.4",
+  "output_style": {
+    "name": "style-sentinel"
+  },
+  "cost": {
+    "total_cost_usd": 12.3456,
+    "total_duration_ms": 7654321987,
+    "total_api_duration_ms": 123456,
+    "total_lines_added": 987654321,
+    "total_lines_removed": 876543219
+  },
+  "context_window": {
+    "total_input_tokens": 340000,
+    "total_output_tokens": 12000,
+    "context_window_size": 1000000,
+    "used_percentage": 34.5,
+    "remaining_percentage": 65.5,
+    "current_usage": {
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cache_creation_input_tokens": 3000,
+      "cache_read_input_tokens": 336000
+    }
+  },
+  "exceeds_200k_tokens": true,
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 22.4,
+      "resets_at": 1790208000
+    },
+    "seven_day": {
+      "used_percentage": 61,
+      "resets_at": 1790553600
+    },
+    "seven_day_opus": {
+      "used_percentage": 12,
+      "resets_at": 1790553600
+    },
+    "spend_limit": {
+      "used_percentage": 5,
+      "resets_at": 1790553600
+    }
+  }
+}
