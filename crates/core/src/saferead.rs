@@ -47,11 +47,18 @@ enum Rule {
     TreeExt(PathBuf, &'static str),
     /// Exactly this file.
     File(PathBuf),
+    /// Cowork transcripts: `*.jsonl` below the root that sit inside a `.claude/projects`
+    /// directory pair (so a session's `.claude/history.jsonl` prompt history is not readable).
+    CoworkTranscripts(PathBuf),
 }
 
 #[derive(Debug, Clone)]
 pub struct SafeReader {
+    /// Lexically normalised rules, matched against the requested path.
     rules: Vec<Rule>,
+    /// The same rules with symlinks/junctions in their roots resolved (computed once), matched
+    /// against the resolved target of an existing file.
+    canonical: Vec<Rule>,
 }
 
 impl SafeReader {
@@ -64,9 +71,11 @@ impl SafeReader {
         for root in paths.desktop_roots() {
             rules.push(Rule::File(root.join("plan-usage-history.json")));
             rules.push(Rule::TreeExt(root.join("claude-code-sessions"), "json"));
-            rules.push(Rule::TreeExt(root.join("local-agent-mode-sessions"), "jsonl"));
+            rules.push(Rule::CoworkTranscripts(root.join("local-agent-mode-sessions")));
         }
-        Self { rules }
+        let rules: Vec<Rule> = rules.iter().map(|r| r.map(normalize)).collect();
+        let canonical = rules.iter().map(canonical_rule).collect();
+        Self { rules, canonical }
     }
 
     /// True if `path` may be read.
@@ -80,10 +89,7 @@ impl SafeReader {
             Ok(real) => {
                 let real = normalize(&real);
                 !is_denied(&real)
-                    && self
-                        .rules
-                        .iter()
-                        .any(|r| rule_matches(&canonical_rule(r), &real))
+                    && self.canonical.iter().any(|r| rule_matches(r, &real))
             }
             Err(_) => true,
         }
@@ -94,8 +100,10 @@ impl SafeReader {
         let d = normalize(dir);
         !is_denied(&d)
             && self.rules.iter().any(|r| match r {
-                Rule::Tree(root) | Rule::TreeExt(root, _) => starts_with(&d, &normalize(root)),
-                Rule::File(f) => normalize(f).parent().is_some_and(|p| p == d),
+                Rule::Tree(root) | Rule::TreeExt(root, _) | Rule::CoworkTranscripts(root) => {
+                    starts_with(&d, root)
+                }
+                Rule::File(f) => f.parent().is_some_and(|p| p == d),
             })
     }
 
@@ -129,26 +137,55 @@ impl SafeReader {
     }
 }
 
-fn canonical_rule(rule: &Rule) -> Rule {
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    match rule {
-        Rule::Tree(r) => Rule::Tree(canon(r)),
-        Rule::TreeExt(r, e) => Rule::TreeExt(canon(r), e),
-        Rule::File(f) => Rule::File(canon(f)),
+impl Rule {
+    fn map(&self, f: impl Fn(&Path) -> PathBuf) -> Rule {
+        match self {
+            Rule::Tree(r) => Rule::Tree(f(r)),
+            Rule::TreeExt(r, e) => Rule::TreeExt(f(r), e),
+            Rule::File(p) => Rule::File(f(p)),
+            Rule::CoworkTranscripts(r) => Rule::CoworkTranscripts(f(r)),
+        }
     }
 }
 
+/// Resolves symlinks/junctions in a (normalised) rule; roots that do not exist yet keep their
+/// lexical path.
+fn canonical_rule(rule: &Rule) -> Rule {
+    rule.map(|p| {
+        std::fs::canonicalize(p)
+            .map(|c| normalize(&c))
+            .unwrap_or_else(|_| p.to_path_buf())
+    })
+}
+
+/// `rule` and `path` are both normalised.
 fn rule_matches(rule: &Rule, path: &Path) -> bool {
     match rule {
-        Rule::Tree(root) => starts_with(path, &normalize(root)),
-        Rule::TreeExt(root, ext) => {
-            starts_with(path, &normalize(root))
-                && path
-                    .extension()
-                    .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext))
+        Rule::Tree(root) => starts_with(path, root),
+        Rule::TreeExt(root, ext) => starts_with(path, root) && has_ext(path, ext),
+        Rule::File(f) => path == f,
+        Rule::CoworkTranscripts(root) => {
+            starts_with(path, root) && has_ext(path, "jsonl") && under_claude_projects(root, path)
         }
-        Rule::File(f) => path == normalize(f),
     }
+}
+
+fn has_ext(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext))
+}
+
+/// True if a `.claude` directory directly followed by a `projects` directory lies between `root`
+/// and the file.
+fn under_claude_projects(root: &Path, path: &Path) -> bool {
+    let Some(dirs) = path.strip_prefix(root).ok().and_then(Path::parent) else {
+        return false;
+    };
+    let names: Vec<String> = dirs
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    names.windows(2).any(|w| w[0] == ".claude" && w[1] == "projects")
 }
 
 fn is_denied(path: &Path) -> bool {
@@ -216,7 +253,35 @@ mod tests {
         let d = &p.desktop_roots()[0];
         assert!(r.allows(&d.join("plan-usage-history.json")));
         assert!(r.allows(&d.join("claude-code-sessions").join("a").join("b").join("local_1.json")));
-        assert!(r.allows(&d.join("local-agent-mode-sessions").join("x").join("t.jsonl")));
+        let cowork = d.join("local-agent-mode-sessions").join("a").join("s");
+        assert!(r.allows(&cowork.join(".claude").join("projects").join("p").join("t.jsonl")));
+    }
+
+    #[test]
+    fn cowork_allows_only_transcripts_under_claude_projects() {
+        let (_t, p) = setup();
+        let r = SafeReader::new(&p);
+        let root = p.desktop_roots()[0].join("local-agent-mode-sessions");
+        let s = root.join("acct").join("org").join("sess");
+        assert!(r.allows(&s.join(".claude").join("projects").join("p").join("t.jsonl")));
+        assert!(r.allows(&s.join(".Claude").join("Projects").join("p").join("T.JSONL")) || !cfg!(windows));
+        assert!(!r.allows(&s.join(".claude").join("history.jsonl")), "prompt history is private");
+        assert!(!r.allows(&root.join("x").join("t.jsonl")));
+        assert!(!r.allows(&s.join("projects").join("t.jsonl")), "needs .claude/projects");
+        assert!(!r.allows(&s.join(".claude").join("x").join("projects").join("t.jsonl")));
+        assert!(!r.allows(&s.join(".claude").join("projects").join("p").join("t.json")));
+        assert!(r.allows_dir(&s.join(".claude")), "the walk may still descend");
+    }
+
+    #[test]
+    fn canonical_rules_are_cached_and_symlinked_roots_still_work() {
+        let (_t, p) = setup();
+        std::fs::create_dir_all(p.capture_dir()).unwrap();
+        let f = p.capture_dir().join("s.json");
+        std::fs::write(&f, b"{}").unwrap();
+        let r = SafeReader::new(&p);
+        assert_eq!(r.rules.len(), r.canonical.len());
+        assert!(r.allows(&f));
     }
 
     #[test]

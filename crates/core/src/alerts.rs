@@ -4,10 +4,12 @@
 //!
 //! Window instance identity (per kind):
 //! - The instance key is the reset `at_ms` rounded to 5 minutes (exact or estimated).
-//! - A changed key within ±30 min of the stored one, with no pct drop, is the SAME instance (an
-//!   alias — e.g. switching between an estimated and an exact reset); update the stored key.
+//! - A changed key within the kind's alias window ([`alias_ms`]: ±30 min for five_hour, ±1 day for
+//!   weekly and other kinds, whose estimates carry ±1 day) of the stored one, with no pct drop, is
+//!   the SAME instance (an alias — e.g. switching between an estimated and an exact reset); update
+//!   the stored key.
 //! - A NEW instance starts when pct drops by ≥ 1 point versus the stored `last_pct`, the phase is
-//!   ResetAwaitingData, or the key moves by more than 30 min. On a new instance `fired` is cleared.
+//!   ResetAwaitingData, or the key moves by more than the alias window. On a new instance `fired` is cleared.
 //!   If the previous instance's `last_pct > 0`, `settings.notify_reset` is on and `first_run` is
 //!   false, emit `Reset { kind }`.
 //! - Unknown reset + no drop → same instance.
@@ -33,12 +35,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::types::{Phase, WindowKind, WindowState};
-use crate::time::{MINUTE_MS, Ms};
+use crate::time::{DAY_MS, MINUTE_MS, Ms};
 
 /// Reset times are rounded to this before being used as an instance key.
 pub const INSTANCE_ROUND_MS: Ms = 5 * MINUTE_MS;
-/// Keys closer than this (inclusive) belong to the same window instance.
+/// Five-hour keys closer than this (inclusive) belong to the same window instance.
 pub const INSTANCE_ALIAS_MS: Ms = 30 * MINUTE_MS;
+/// Weekly (and other) keys closer than this (inclusive) belong to the same window instance:
+/// weekly reset estimates carry ±1 day.
+pub const WEEKLY_INSTANCE_ALIAS_MS: Ms = DAY_MS;
+
+/// Alias window of a kind (see the module docs).
+pub fn alias_ms(kind: &WindowKind) -> Ms {
+    match kind {
+        WindowKind::FiveHour => INSTANCE_ALIAS_MS,
+        _ => WEEKLY_INSTANCE_ALIAS_MS,
+    }
+}
 /// A pct drop of at least this many points versus the stored value starts a new instance.
 pub const RESET_DROP_PCT: f32 = 1.0;
 
@@ -128,7 +141,7 @@ impl KindAlertState {
         let dropped = self.last_pct - pct >= RESET_DROP_PCT;
         let moved_far = matches!(
             (self.instance_key, key),
-            (Some(old), Some(new)) if old.abs_diff(new) > INSTANCE_ALIAS_MS.unsigned_abs()
+            (Some(old), Some(new)) if old.abs_diff(new) > alias_ms(&window.kind).unsigned_abs()
         );
         if window.phase == Phase::ResetAwaitingData || dropped || moved_far {
             if self.last_pct > 0.0 && settings.notify_reset && !first_run {
@@ -356,6 +369,34 @@ mod tests {
         );
         assert_eq!(s.evaluate(&[exact], &settings, false), vec![]);
         assert_eq!(s.kinds["seven_day"].instance_key, Some(weekly_reset));
+    }
+
+    #[test]
+    fn weekly_alias_window_is_one_day() {
+        let settings = AlertSettings::default();
+        let weekly = |pct: f32, at_ms: Ms| {
+            win(
+                WindowKind::SevenDay,
+                pct,
+                ResetInfo::Estimated {
+                    at_ms,
+                    plus_minus_ms: DAY_MS,
+                    confidence: Confidence::Low,
+                },
+            )
+        };
+        let base = T0 + 3 * DAY_MS;
+        let mut s = AlertState::default();
+        assert_eq!(s.evaluate(&[weekly(82.0, base)], &settings, false).len(), 1);
+        // A re-estimate 20 h later is the same week: nothing fires again.
+        assert_eq!(s.evaluate(&[weekly(83.0, base + 20 * HOUR_MS)], &settings, false), vec![]);
+        assert_eq!(s.kinds["seven_day"].instance_key, Some(base + 20 * HOUR_MS));
+        // A key 26 h away from the stored one is a new week.
+        let events = s.evaluate(&[weekly(84.0, base + 46 * HOUR_MS)], &settings, false);
+        assert_eq!(events[0], AlertEvent::Reset { kind: WindowKind::SevenDay });
+        assert_eq!(events.len(), 2, "reset + re-armed threshold");
+        assert_eq!(alias_ms(&WindowKind::Other("seven_day_opus".into())), DAY_MS);
+        assert_eq!(alias_ms(&WindowKind::FiveHour), 30 * MINUTE_MS);
     }
 
     #[test]
