@@ -18,4 +18,20 @@ tauri-build = { version = "2", features = [] }
 cuw-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+notify.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-autostart = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true

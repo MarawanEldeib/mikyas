@@ -90,12 +90,15 @@
   }
 }
 
-/* Mica/Acrylic already tint heavily; raw blur has no tint and "none" has no backdrop at all.
-   "auto" assumes Rust picked Mica or Acrylic. */
+/* Mica/Acrylic already tint heavily; raw blur has no tint and "none" has no backdrop at all, so
+   it is nearly opaque to stay readable over busy wallpapers. In the app, "auto" applies no native
+   backdrop (Mica/Acrylic look flat while the non-activating widget is unfocused), so it matches
+   "none"; the browser mock stage keeps simulating a Mica backdrop for "auto". */
 :root[data-effect="mica"] { --surface-a: 0.5; }
 :root[data-effect="acrylic"] { --surface-a: 0.7; }
 :root[data-effect="blur"] { --surface-a: 0.88; }
-:root[data-effect="none"] { --surface-a: 0.95; }
+:root[data-effect="none"],
+:root:not(.mock)[data-effect="auto"] { --surface-a: 0.97; }
 
 *,
 *::before,
