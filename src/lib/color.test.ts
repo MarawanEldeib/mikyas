@@ -107,7 +107,9 @@ describe("accent palette (app.css)", () => {
 
   it("maps every named accent onto the chrome tokens", () => {
     for (const accent of ACCENTS.filter((a) => a !== "auto")) {
-      expect(css).toContain(`:root[data-accent="${accent}"] { --accent: var(--accent-${accent}); --accent-hover: var(--accent-${accent}-hover); --on-accent: var(--accent-${accent}-on); }`);
+      expect(css).toContain(
+        `:root[data-accent="${accent}"] { --accent: var(--accent-${accent}); --accent-hover: var(--accent-${accent}-hover); --on-accent: var(--accent-${accent}-on); }`,
+      );
     }
     expect(Object.keys(ACCENT_NAMES)).toEqual([...ACCENTS]);
   });

@@ -135,7 +135,15 @@ describe("nativeMenuAllowed", () => {
     // No selection, an empty one, or one elsewhere: the app's menu.
     expect(nativeMenuAllowed(pre, null)).toBe(false);
     expect(nativeMenuAllowed(pre, selection(false))).toBe(false);
-    expect(nativeMenuAllowed(pre, { isCollapsed: false, rangeCount: 0, getRangeAt: () => { throw new Error("no range"); } })).toBe(false);
+    expect(
+      nativeMenuAllowed(pre, {
+        isCollapsed: false,
+        rangeCount: 0,
+        getRangeAt: () => {
+          throw new Error("no range");
+        },
+      }),
+    ).toBe(false);
     expect(nativeMenuAllowed(other, selection(true))).toBe(false);
   });
 });

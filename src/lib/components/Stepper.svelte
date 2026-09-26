@@ -35,7 +35,7 @@
       type="text"
       inputmode="numeric"
       aria-label={label}
-      value={value}
+      {value}
       onchange={(e) => (e.currentTarget.value = String(commit(e.currentTarget.value)))}
       onkeydown={(e) => {
         if (e.key === "ArrowUp") {

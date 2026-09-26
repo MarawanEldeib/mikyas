@@ -18,12 +18,22 @@
 
 {#if notices.length && compact}
   {#if onopen}
-    <button type="button" class="chip" title={summary} aria-label="{notices.length} warning{notices.length > 1 ? 's' : ''}: {first.title}. Open settings" onclick={onopen}>
-      <Icon name="warning" size={12} /><span class="chip-text">{first.title}</span>{#if notices.length > 1}<span class="more">+{notices.length - 1}</span>{/if}
+    <button
+      type="button"
+      class="chip"
+      title={summary}
+      aria-label="{notices.length} warning{notices.length > 1 ? 's' : ''}: {first.title}. Open settings"
+      onclick={onopen}
+    >
+      <Icon name="warning" size={12} /><span class="chip-text">{first.title}</span>{#if notices.length > 1}<span class="more"
+          >+{notices.length - 1}</span
+        >{/if}
     </button>
   {:else}
     <span class="chip" title={summary} role="status">
-      <Icon name="warning" size={12} /><span class="chip-text">{first.title}</span>{#if notices.length > 1}<span class="more">+{notices.length - 1}</span>{/if}
+      <Icon name="warning" size={12} /><span class="chip-text">{first.title}</span>{#if notices.length > 1}<span class="more"
+          >+{notices.length - 1}</span
+        >{/if}
     </span>
   {/if}
 {:else if notices.length}

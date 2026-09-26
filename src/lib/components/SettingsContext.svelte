@@ -9,7 +9,6 @@
     const [first = 80, second = 90] = s?.ctx_thresholds ?? [];
     return [first, Math.min(100, Math.max(first + 1, second))] as const;
   });
-
 </script>
 
 {#if s}
@@ -23,11 +22,25 @@
       <legend class="sr">Context alert thresholds</legend>
       <div class="row">
         <span class="label">First alert at</span>
-        <Stepper label="First context alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => app.patch({ ctx_thresholds: [v, t[1]] })} />
+        <Stepper
+          label="First context alert threshold"
+          value={t[0]}
+          min={10}
+          max={t[1] - 1}
+          suffix="%"
+          onchange={(v) => app.patch({ ctx_thresholds: [v, t[1]] })}
+        />
       </div>
       <div class="row">
         <span class="label">Second alert at</span>
-        <Stepper label="Second context alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => app.patch({ ctx_thresholds: [t[0], v] })} />
+        <Stepper
+          label="Second context alert threshold"
+          value={t[1]}
+          min={t[0] + 1}
+          max={100}
+          suffix="%"
+          onchange={(v) => app.patch({ ctx_thresholds: [t[0], v] })}
+        />
       </div>
     </fieldset>
   </div>

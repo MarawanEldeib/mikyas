@@ -58,7 +58,13 @@
       <div class="seg" role="radiogroup" aria-labelledby="{uid}-close">
         {#each CLOSE_ACTIONS as c (c.value)}
           <label>
-            <input type="radio" name="{uid}-close" value={c.value} checked={s.close_action === c.value} onchange={() => update({ close_action: c.value })} />
+            <input
+              type="radio"
+              name="{uid}-close"
+              value={c.value}
+              checked={s.close_action === c.value}
+              onchange={() => update({ close_action: c.value })}
+            />
             <span>{c.label}</span>
           </label>
         {/each}
@@ -83,7 +89,12 @@
       <div class="seg" role="radiogroup" aria-labelledby="{uid}-updates">
         {#each UPDATE_MODES as m (m.label)}
           <label>
-            <input type="radio" name="{uid}-updates" checked={s.check_updates === m.value} onchange={() => update({ check_updates: m.value })} />
+            <input
+              type="radio"
+              name="{uid}-updates"
+              checked={s.check_updates === m.value}
+              onchange={() => update({ check_updates: m.value })}
+            />
             <span>{m.label}</span>
           </label>
         {/each}
@@ -94,7 +105,10 @@
         Version <span class="num">{APP_VERSION}</span>
         <span class="sub status {status?.tone ?? ''}" role="status">
           {#if status}
-            {#if status.tone === "ok"}<Icon name="check" size={12} />{:else if status.tone === "warn"}<Icon name="warning" size={12} />{:else if status.tone === "info"}<Icon name="update" size={12} />{/if}
+            {#if status.tone === "ok"}<Icon name="check" size={12} />{:else if status.tone === "warn"}<Icon
+                name="warning"
+                size={12}
+              />{:else if status.tone === "info"}<Icon name="update" size={12} />{/if}
             <span class="status-text">{status.text}</span>
           {/if}
         </span>

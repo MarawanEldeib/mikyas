@@ -22,7 +22,6 @@
     { value: "top", label: "Top edge" },
   ];
 
-
   function setRow(rows: CardRows, key: keyof CardRows, on: boolean) {
     app.patch({ card_rows: { ...rows, [key]: on } });
   }
@@ -36,7 +35,14 @@
       <div class="swatches" role="radiogroup" aria-labelledby="{uid}-accent">
         {#each ACCENTS as a (a)}
           <label class="swatch-hit" title={ACCENT_NAMES[a]}>
-            <input type="radio" name="{uid}-accent" value={a} checked={s.accent === a} aria-label={ACCENT_NAMES[a]} onchange={() => app.patch({ accent: a })} />
+            <input
+              type="radio"
+              name="{uid}-accent"
+              value={a}
+              checked={s.accent === a}
+              aria-label={ACCENT_NAMES[a]}
+              onchange={() => app.patch({ accent: a })}
+            />
             <span class="swatch" class:auto={a === "auto"} style:--c={a === "auto" ? undefined : `var(--accent-${a})`}></span>
           </label>
         {/each}
@@ -47,7 +53,13 @@
       <div class="seg" role="radiogroup" aria-labelledby="{uid}-gauge">
         {#each GAUGES as g (g.value)}
           <label>
-            <input type="radio" name="{uid}-gauge" value={g.value} checked={s.gauge_style === g.value} onchange={() => app.patch({ gauge_style: g.value })} />
+            <input
+              type="radio"
+              name="{uid}-gauge"
+              value={g.value}
+              checked={s.gauge_style === g.value}
+              onchange={() => app.patch({ gauge_style: g.value })}
+            />
             <span>{g.label}</span>
           </label>
         {/each}
@@ -58,7 +70,13 @@
       <div class="seg fill" role="radiogroup" aria-labelledby="{uid}-size">
         {#each UI_SIZES as z (z.value)}
           <label>
-            <input type="radio" name="{uid}-size" value={z.value} checked={size === z.value} onchange={() => app.patch({ ui_scale: z.value })} />
+            <input
+              type="radio"
+              name="{uid}-size"
+              value={z.value}
+              checked={size === z.value}
+              onchange={() => app.patch({ ui_scale: z.value })}
+            />
             <span>{z.label}</span>
           </label>
         {/each}

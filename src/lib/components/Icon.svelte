@@ -41,14 +41,7 @@
   let { name, size = 16, filled = false }: Props = $props();
 </script>
 
-<svg
-  class="icon"
-  width={size}
-  height={size}
-  viewBox="0 0 16 16"
-  aria-hidden="true"
-  focusable="false"
->
+<svg class="icon" width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
   <path
     d={PATHS[name]}
     fill={filled ? "currentColor" : "none"}

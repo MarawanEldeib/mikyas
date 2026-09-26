@@ -19,9 +19,7 @@
   const pill = $derived(app.ui.view === "pill");
   // The list floats over the card (the pill is too small): it closes with the card, in ghost
   // mode and once the updates are gone or put off.
-  const listShown = $derived(
-    listOpen && update !== null && !update.dismissed && app.ui.view === "card" && !app.ui.click_through,
-  );
+  const listShown = $derived(listOpen && update !== null && !update.dismissed && app.ui.view === "card" && !app.ui.click_through);
 
   async function openList() {
     listOpen = !listOpen || pill;
@@ -80,7 +78,13 @@
     >
       {bannerText(update, pill)}
     </button>
-    <button type="button" class="close" aria-label="Later: hide until a newer version" title="Later" onclick={(e) => later(e, update.latest)}>
+    <button
+      type="button"
+      class="close"
+      aria-label="Later: hide until a newer version"
+      title="Later"
+      onclick={(e) => later(e, update.latest)}
+    >
       <Icon name="close" size={pill ? 9 : 10} />
     </button>
   </div>

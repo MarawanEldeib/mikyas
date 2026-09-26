@@ -46,7 +46,9 @@
   <ul class="releases">
     {#each rows as r (r.version)}
       <li>
-        <span class="version">v{r.version}{#if r.latest}<span class="tag">latest</span>{/if}</span>
+        <span class="version"
+          >v{r.version}{#if r.latest}<span class="tag">latest</span>{/if}</span
+        >
         {#if r.notes.length}
           <ul class="notes">
             {#each r.notes as note, i (i)}
@@ -58,7 +60,9 @@
     {/each}
   </ul>
   <div class="actions">
-    <button type="button" class="btn primary" disabled={!url} onclick={open} title="Open the v{update.latest} release page to download it">Update</button>
+    <button type="button" class="btn primary" disabled={!url} onclick={open} title="Open the v{update.latest} release page to download it"
+      >Update</button
+    >
     <button type="button" class="btn" disabled={update.dismissed} onclick={later} title="Hide until a newer version appears">Later</button>
     <span class="hint">Opens the release page; nothing installs by itself.</span>
   </div>

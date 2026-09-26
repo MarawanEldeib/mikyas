@@ -5,3 +5,5 @@ src-tauri/
 crates/
 package-lock.json
 e2e/__screenshots__/
+# Hand-aligned one-line token tables (color.test.ts reads them as text).
+src/app.css

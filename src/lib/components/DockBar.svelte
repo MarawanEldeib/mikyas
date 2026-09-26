@@ -97,7 +97,8 @@
       <span class="label">{m.short}</span>
       <span class="track"><span class="fill" style:--p="{m.pct ?? 0}%" style:background={m.color}></span></span>
       <span class="pct" class:crit={m.locked}>
-        {#if m.locked}<Icon name="lock" size={11} />{:else if m.pct === null}–{:else}{formatPct(m.pct)}<span class="u">%</span>{#if m.worked}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
+        {#if m.locked}<Icon name="lock" size={11} />{:else if m.pct === null}–{:else}{formatPct(m.pct)}<span class="u">%</span
+          >{#if m.worked}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
       </span>
     </span>
   {/each}

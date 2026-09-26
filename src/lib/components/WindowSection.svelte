@@ -48,7 +48,9 @@
         {/if}
         <span class="label">{label}</span>
         {#if w.stale}
-          <span class="stale" title="Last updated {formatAgeShort(w.observed_at_ms, now)} ago">· {formatAgeShort(w.observed_at_ms, now)} old</span>
+          <span class="stale" title="Last updated {formatAgeShort(w.observed_at_ms, now)} ago"
+            >· {formatAgeShort(w.observed_at_ms, now)} old</span
+          >
         {/if}
       </div>
       <div class="reset" title={tip}>
@@ -56,7 +58,15 @@
       </div>
     </div>
     {#if sparkline}
-      <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" {underControls} />
+      <Sparkline
+        points={w.spark}
+        pct={p}
+        stale={muted}
+        width={100}
+        height={36}
+        label="{label} usage over the last {span}"
+        {underControls}
+      />
     {/if}
   </div>
   <div class="bar" role="progressbar" aria-label="{label} usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)}>

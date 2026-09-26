@@ -54,9 +54,7 @@
 
   const docked = $derived((app.settings?.dock ?? "off") !== "off" && !app.ui.dock_expanded);
 
-  const opacity = $derived(
-    app.settings ? (app.ui.click_through ? app.settings.ghost_opacity : app.settings.opacity) : 1,
-  );
+  const opacity = $derived(app.settings ? (app.ui.click_through ? app.settings.ghost_opacity : app.settings.opacity) : 1);
 
   const NO_DRAG = "button, a, input, select, textarea, label, pre, code, [role='switch'], [data-no-drag]";
 

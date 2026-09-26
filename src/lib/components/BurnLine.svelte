@@ -14,13 +14,18 @@
     if (w.limit_reached) {
       const at = resetAt(w.reset);
       const t = w.reset.type === "estimated" ? "~" : "";
-      return { text: at !== null && at > now ? `Limit reached — usable again at ${t}${formatClock(at, now)}` : "Limit reached", tone: "crit" };
+      return {
+        text: at !== null && at > now ? `Limit reached — usable again at ${t}${formatClock(at, now)}` : "Limit reached",
+        tone: "crit",
+      };
     }
     return burnText(w.burn, w.reset, now);
   });
   // Full text in the tooltip too: very long localized clock times can still be ellipsized.
   const tip = $derived(
-    line ? [line.text, w.burn ? `Recent pace: ${Math.round(w.burn.slope_pct_per_h * 10) / 10}% per hour` : null].filter(Boolean).join("\n") : undefined,
+    line
+      ? [line.text, w.burn ? `Recent pace: ${Math.round(w.burn.slope_pct_per_h * 10) / 10}% per hour` : null].filter(Boolean).join("\n")
+      : undefined,
   );
 </script>
 
