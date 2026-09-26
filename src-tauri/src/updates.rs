@@ -282,8 +282,9 @@ pub fn curl_args() -> Vec<String> {
         concat!("User-Agent: claude-usage-widget/", env!("CARGO_PKG_VERSION")),
         "--header",
         "X-GitHub-Api-Version: 2022-11-28",
+        // curl expands the "\n" itself, so the command line stays on one line.
         "--write-out",
-        "\n%{http_code}",
+        "\\n%{http_code}",
         LATEST_API,
     ]
     .map(String::from)
@@ -609,6 +610,8 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--proto" && w[1] == "=https"));
         assert!(args.contains(&format!("User-Agent: claude-usage-widget/{CURRENT_VERSION}")));
         assert!(args.iter().all(|a| !a.to_ascii_lowercase().contains("authorization")));
+        assert!(args.iter().all(|a| !a.contains(['\n', '\r', '"'])), "single-line, unquoted arguments");
+        assert!(args.windows(2).any(|w| w[0] == "--write-out" && w[1] == r"\n%{http_code}"));
         assert!(args.iter().all(|a| !["-L", "--location", "--cookie", "-b", "--user", "-u"].contains(&a.as_str())));
     }
 
