@@ -2,9 +2,14 @@
 // fixtures in a temp dir and drives it over the Chrome DevTools Protocol.
 //
 // Usage (Windows):
-//   cargo build -p claude-usage-widget          # needs src-tauri/binaries/cuw-capture-*.exe
+//   npm run build                               # the frontend the exe embeds (dist/)
+//   cargo build -p claude-usage-widget --features tauri/custom-protocol
+//                                               # needs src-tauri/binaries/cuw-capture-*.exe
 //   npm install --no-save playwright-core       # unless it is already a devDependency
 //   node scripts/app-e2e.mjs
+//
+// The feature matters: a plain `cargo build` compiles Tauri with cfg(dev), and that exe loads
+// the Vite dev server (devUrl) instead of the embedded frontend. The test fails on such a build.
 //
 // Env:
 //   CUW_APP_EXE        the debug exe (default <CARGO_TARGET_DIR or ./target>/debug/claude-usage-widget.exe)
@@ -33,13 +38,14 @@
 //   - Debug builds only honour CUW_BROWSER_ARGS (the remote debugging port); release builds
 //     ignore it.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CTX_SIZE, FIVE_HOUR_PCT, MODEL_NAME, writeFixtures } from "./app-e2e/fixtures.mjs";
+import { pageKind } from "./app-e2e/page.mjs";
 import { anyAlive, inspectTree, killTree, listNames, pidsNamed, unexpectedConnections } from "./app-e2e/win.mjs";
 
 const APP_NAME = "claude-usage-widget";
@@ -108,6 +114,14 @@ function realDataListing() {
   return listNames(dir, (rel) => /^capture\\.+/i.test(rel) || /\.tmp$/i.test(rel));
 }
 
+function rmdirIfEmpty(dir) {
+  try {
+    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    // left as it is
+  }
+}
+
 function readIfExists(path) {
   return existsSync(path) ? readFileSync(path) : null;
 }
@@ -137,6 +151,7 @@ async function main() {
   const { dataDir, claudeDir, webviewDir } = writeFixtures(root);
   const windowState = process.env.APPDATA ? join(process.env.APPDATA, IDENTIFIER, ".window-state.json") : null;
   const windowStateBefore = windowState ? readIfExists(windowState) : null;
+  const windowStateDirBefore = windowState ? existsSync(dirname(windowState)) : true;
   const realBefore = realDataListing();
   const port = await freePort();
 
@@ -173,12 +188,16 @@ async function main() {
       60_000,
       500,
     );
-    const page = await waitFor("the widget page", () =>
-      browser
-        .contexts()
-        .flatMap((c) => c.pages())
-        .find((p) => /^https?:\/\/tauri\.localhost\//.test(p.url())),
-    );
+    const page = await waitFor("the widget page", () => {
+      const pages = browser.contexts().flatMap((c) => c.pages());
+      const dev = pages.find((p) => pageKind(p.url()) === "dev");
+      if (dev) {
+        throw new Failure(
+          `the exe loads the dev server (${dev.url()}): build it with --features tauri/custom-protocol`,
+        );
+      }
+      return pages.find((p) => pageKind(p.url()) === "app");
+    });
     const invoke = (cmd, args) =>
       page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args ?? {}]);
 
@@ -250,6 +269,8 @@ async function main() {
     if (windowState) {
       if (windowStateBefore) writeFileSync(windowState, windowStateBefore);
       else if (existsSync(windowState)) unlinkSync(windowState);
+      // The plugin created the identifier dir if it was missing; remove it only while empty.
+      if (!windowStateDirBefore) rmdirIfEmpty(dirname(windowState));
     }
   }
 
