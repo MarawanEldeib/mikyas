@@ -310,15 +310,15 @@ mod tests {
         let base = T0 + 3 * DAY_MS;
         let mut s = PaceAlertState::default();
         assert_eq!(s.evaluate(&[weekly(base)], BOTH, T0).len(), 1);
-        // Re-estimated 20 h later, twice: 40 h from the first key, but each step is an alias.
-        assert_eq!(s.evaluate(&[weekly(base + 20 * HOUR_MS)], BOTH, T0 + HOUR_MS), vec![]);
-        assert_eq!(s.evaluate(&[weekly(base + 40 * HOUR_MS)], BOTH, T0 + 2 * HOUR_MS), vec![]);
-        assert_eq!(s.kinds["seven_day"].forecast_fired_for, Some(base + 40 * HOUR_MS));
+        // Re-estimated 40 h later, twice: 80 h from the first key, but each step is an alias.
+        assert_eq!(s.evaluate(&[weekly(base + 40 * HOUR_MS)], BOTH, T0 + HOUR_MS), vec![]);
+        assert_eq!(s.evaluate(&[weekly(base + 80 * HOUR_MS)], BOTH, T0 + 2 * HOUR_MS), vec![]);
+        assert_eq!(s.kinds["seven_day"].forecast_fired_for, Some(base + 80 * HOUR_MS));
         // The drift is followed while no forecast shows, too.
-        let mut calm = weekly(base + 60 * HOUR_MS);
+        let mut calm = weekly(base + 120 * HOUR_MS);
         calm.burn = None;
         assert_eq!(s.evaluate(&[calm], BOTH, T0 + 3 * HOUR_MS), vec![]);
-        assert_eq!(s.evaluate(&[weekly(base + 80 * HOUR_MS)], BOTH, T0 + 4 * HOUR_MS), vec![]);
+        assert_eq!(s.evaluate(&[weekly(base + 160 * HOUR_MS)], BOTH, T0 + 4 * HOUR_MS), vec![]);
     }
 
     #[test]
