@@ -3,8 +3,9 @@
 //! Real data (this user's Desktop file) shows why this is heuristic:
 //! - Samples are ~15 min apart but gaps of hours/days happen.
 //! - Many 5h resets are never observed at 0 (e.g. 73 → 13, 58 → 48): a reset plus fresh usage
-//!   inside one sampling gap. So ANY decrease greater than 1 point is a reset boundary, as is a
-//!   gap longer than the window, as is a rise from exactly 0.
+//!   inside one sampling gap. So ANY decrease of [`RESET_DROP_PCT`] (2) points or more is a reset
+//!   boundary (Desktop's samples are integers, so this is every decrease beyond a 1-point dip), as
+//!   is a gap longer than the window, as is a rise from exactly 0.
 //! - Weekly resets were observed 2–3 days apart several times (not a clean 7-day cycle), and one
 //!   weekly drop was 84 → 41. So weekly estimates are always `Confidence::Low`.
 //!
@@ -13,7 +14,7 @@
 //! - Only FiveHour / SevenDay (or `kind.duration_ms()`-known kinds) are estimated; others → Unknown.
 //! - Find the start of the current window by scanning `samples` (sorted ascending, all of this
 //!   kind) backwards from the newest sample `s[n]`: the first index `i` where `s[i]` begins a new
-//!   window — `s[i].pct < s[i-1].pct - 1.0`, or `s[i].t - s[i-1].t > duration`, or
+//!   window — `s[i-1].pct - s[i].pct >= RESET_DROP_PCT`, or `s[i].t - s[i-1].t > duration`, or
 //!   (`s[i-1].pct == 0.0 && s[i].pct > 0.0`). A past `last_exact_reset_ms` greater than `s[i-1].t`
 //!   also bounds the start from below.
 //!   The window started in `(lo, hi]` with `hi = s[i].t` and
@@ -29,8 +30,9 @@
 //! - If the last sample's pct is 0.0 → the current window hasn't started yet → Unknown.
 //! - Weekly fallback: if no boundary is found but `last_exact_reset_ms` is in the past, the next
 //!   reset is `last_exact_reset_ms + 7d` (Low, ±1 day) — rolled forward by whole weeks until > now.
-//! - Never return an estimate earlier than `now_ms - duration` (a stale estimate is still useful:
-//!   an estimate in the past signals "probably reset already" to the merge step).
+//! - An estimate in the past is returned as is, however old: it signals "probably reset already"
+//!   to the merge step, and it does not move while `now_ms` advances, so repeated snapshots of
+//!   unchanged data stay identical (and so do the alert keys derived from it).
 //!
 //! Implementation notes on the points above:
 //! - A past exact reset lying in `(s[i-1].t, s[i].t]` is itself a boundary: the older sample
@@ -48,12 +50,10 @@
 
 use std::borrow::Cow;
 
-use crate::engine::types::{Confidence, ResetInfo, Sample, WindowKind};
+use crate::engine::types::{Confidence, ResetInfo, Sample, WindowKind, is_reset_drop};
 use crate::time::{DAY_MS, MINUTE_MS, Ms};
 
-/// A decrease of more than this many points starts a new window. Desktop reports integers and
-/// the CLI one decimal, so a 1-point dip is rounding noise.
-pub const DROP_TOLERANCE_PCT: f32 = 1.0;
+pub use crate::engine::types::RESET_DROP_PCT;
 /// FiveHour estimates with `plus_minus` up to this are [`Confidence::High`].
 pub const HIGH_CONFIDENCE_MS: Ms = 10 * MINUTE_MS;
 /// FiveHour estimates with `plus_minus` up to this are [`Confidence::Medium`]; beyond, `Low`.
@@ -123,12 +123,12 @@ pub fn estimate_reset(
         (lo.max(floor), hi)
     };
     let zero_bound = boundary.is_some_and(|j| samples[j].pct <= 0.0 && samples[j].t_ms == lo);
-    estimate(lo, hi, duration, weekly, zero_bound, now_ms)
+    estimate(lo, hi, duration, weekly, zero_bound)
 }
 
 /// True if `cur` belongs to a later window than `prev`.
 fn starts_window(prev: &Sample, cur: &Sample, duration: Ms, past_reset: Option<Ms>) -> bool {
-    cur.pct < prev.pct - DROP_TOLERANCE_PCT
+    is_reset_drop(prev.pct, cur.pct)
         || cur.t_ms.saturating_sub(prev.t_ms) > duration
         || (prev.pct <= 0.0 && cur.pct > 0.0)
         || past_reset.is_some_and(|r| prev.t_ms < r && r <= cur.t_ms)
@@ -144,13 +144,11 @@ fn bound_by_reset(lo: Ms, past_reset: Option<Ms>, hi: Ms) -> Ms {
 
 /// Estimate for a window that started in `(lo, hi]` (`lo <= hi <= lo + duration`). `zero_bound`:
 /// `lo` is the time of a sample at 0, which caps the confidence at Medium.
-fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, zero_bound: bool, now_ms: Ms) -> ResetInfo {
+fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, zero_bound: bool) -> ResetInfo {
     let width = hi - lo;
     let mid = lo + width / 2;
     let half = width - width / 2;
-    let at_ms = mid
-        .saturating_add(duration)
-        .max(now_ms.saturating_sub(duration));
+    let at_ms = mid.saturating_add(duration);
     let (plus_minus_ms, confidence) = if weekly {
         (half.saturating_add(WEEKLY_EXTRA_MS), Confidence::Low)
     } else if half <= HIGH_CONFIDENCE_MS && !zero_bound {
@@ -657,22 +655,22 @@ mod tests {
     }
 
     #[test]
-    fn never_earlier_than_now_minus_duration() {
+    fn old_estimates_do_not_move_with_now() {
+        // A window located days ago: the estimate stays where the samples put it (in the past,
+        // which tells merge "probably reset"), so repeated ticks give identical snapshots.
         let s = [(T, 73.0), (T + m(15), 13.0)];
-        let now = T + 2 * DAY_MS;
-        assert_eq!(
-            five(&s, now),
-            est(now - FIVE_HOURS_MS, m(7) + 30_000, Confidence::High)
+        let five_expected = est(T + m(7) + 30_000 + FIVE_HOURS_MS, m(7) + 30_000, Confidence::High);
+        for now in [T + 8 * HOUR_MS, T + 2 * DAY_MS, T + 2 * DAY_MS + 30_000] {
+            assert_eq!(five(&s, now), five_expected, "{now}");
+        }
+        let week_expected = est(
+            T + m(7) + 30_000 + SEVEN_DAYS_MS,
+            m(7) + 30_000 + DAY_MS,
+            Confidence::Low,
         );
-        let now = T + 30 * DAY_MS;
-        assert_eq!(
-            week(&s, None, now),
-            est(now - SEVEN_DAYS_MS, m(7) + 30_000 + DAY_MS, Confidence::Low)
-        );
-        // Unclamped when recent enough: still in the past, which tells merge "probably reset".
-        let now = T + 8 * HOUR_MS;
-        let at = five(&s, now).at_ms().unwrap();
-        assert!(at < now && at > now - FIVE_HOURS_MS);
+        for now in [T + 30 * DAY_MS, T + 30 * DAY_MS + 30_000] {
+            assert_eq!(week(&s, None, now), week_expected, "{now}");
+        }
     }
 
     #[test]
@@ -769,13 +767,11 @@ mod tests {
             let now = T + now_offset;
             let samples: Vec<Sample> = points.iter().map(|&(t, pct)| Sample { t_ms: T + t, pct }).collect();
             let kind = if weekly { WindowKind::SevenDay } else { WindowKind::FiveHour };
-            let duration = kind.duration_ms().unwrap();
             let mut sorted = samples.clone();
             sorted.sort_by_key(|s| s.t_ms);
             match estimate_reset(&kind, &samples, exact.map(|e| now + e), now) {
                 ResetInfo::Exact { at_ms } => prop_assert!(at_ms > now),
                 ResetInfo::Estimated { at_ms, plus_minus_ms, confidence } => {
-                    prop_assert!(at_ms >= now - duration);
                     // The newest sample's window was running then, so it resets later.
                     if let Some(last) = sorted.last().filter(|l| l.t_ms <= now) {
                         prop_assert!(at_ms >= last.t_ms, "{at_ms} < {}", last.t_ms);

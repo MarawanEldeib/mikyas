@@ -14,9 +14,8 @@
 
 use std::collections::HashMap;
 
-use crate::engine::snapshot::FUTURE_SLACK_MS;
 use crate::engine::types::Entrypoint;
-use crate::time::{MINUTE_MS, Ms};
+use crate::time::{FUTURE_SLACK_MS, MINUTE_MS, Ms};
 
 pub const RECENT_MS: Ms = 10 * MINUTE_MS;
 

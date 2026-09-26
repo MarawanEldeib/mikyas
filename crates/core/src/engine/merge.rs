@@ -8,10 +8,10 @@
 //!    an idle session may carry an older, lower value). Call the winner C.
 //! 3. Let D be the Desktop observation (if any).
 //!    - a. C and D, D newer than C:
-//!      - D.observed_at >= C.resets_at → D is from a later window: pct = D, reset = `estimate`,
-//!        source Desktop.
-//!      - D.pct < C.pct - [`DESKTOP_TOLERANCE_PCT`] → early reset detected: pct = D,
-//!        reset = `estimate`, source Desktop.
+//!      - D.observed_at >= C.resets_at → D is from a later window: pct = D,
+//!        reset = `desktop_estimate`, source Desktop.
+//!      - C.pct - D.pct >= [`RESET_DROP_PCT`] → early reset detected: pct = D,
+//!        reset = `desktop_estimate`, source Desktop.
 //!      - otherwise → pct = D.pct, reset = Exact(C.resets_at), source Desktop, observed = D.
 //!    - b. C, and D missing or not newer → pct = C, reset = Exact(C.resets_at), source Cli.
 //!    - c. no C, D present → pct = D, reset = `estimate`, source Desktop. If an EXPIRED CLI reset
@@ -30,12 +30,15 @@
 //!   reduction is a max, so the result does not depend on the order of `cli`.
 //! - A `desktop` observation of another kind is treated as absent.
 //! - NaN pct values (malformed input) are treated as 0 before any comparison.
+//! - `estimate` may be the exact reset C reported (the snapshot folds the captures' reset times
+//!   into it), which in 3a is the reset of the window that has already ended. `desktop_estimate`
+//!   is built from the Desktop samples and past exact resets only; [`merge_window`] passes
+//!   `estimate` for both.
 
-use crate::engine::types::{Observation, Phase, ResetInfo, Source, WindowKind, WindowState};
+use crate::engine::types::{Observation, Phase, ResetInfo, Source, WindowKind, WindowState, is_reset_drop};
 use crate::time::Ms;
 
-/// Desktop reports integers while the CLI reports one decimal; differences within this are noise.
-pub const DESKTOP_TOLERANCE_PCT: f32 = 1.0;
+pub use crate::engine::types::RESET_DROP_PCT;
 /// CLI `resets_at` values within this are the same window.
 pub const RESET_GROUP_TOLERANCE_MS: Ms = 120_000;
 /// A window at or above this percentage counts as having reached its limit.
@@ -49,6 +52,20 @@ pub fn merge_window(
     cli: &[Observation],
     desktop: Option<&Observation>,
     estimate: ResetInfo,
+    now_ms: Ms,
+    stale_after_ms: Ms,
+) -> Option<WindowState> {
+    merge_window_with(kind, cli, desktop, estimate.clone(), estimate, now_ms, stale_after_ms)
+}
+
+/// [`merge_window`] with a separate `desktop_estimate` for rule 3a (see the module docs): the
+/// reset of a window Desktop saw start after the one the live CLI values describe.
+pub fn merge_window_with(
+    kind: &WindowKind,
+    cli: &[Observation],
+    desktop: Option<&Observation>,
+    estimate: ResetInfo,
+    desktop_estimate: ResetInfo,
     now_ms: Ms,
     stale_after_ms: Ms,
 ) -> Option<WindowState> {
@@ -72,9 +89,9 @@ pub fn merge_window(
         (Some(c), Some(d)) if d.observed_at_ms > c.observed_at_ms => {
             let d_pct = sanitize_pct(d.pct);
             let later_window = d.observed_at_ms >= c.resets_at_ms;
-            let early_reset = d_pct < c.pct - DESKTOP_TOLERANCE_PCT;
+            let early_reset = is_reset_drop(c.pct, d_pct);
             let reset = if later_window || early_reset {
-                estimate
+                desktop_estimate
             } else {
                 ResetInfo::Exact {
                     at_ms: c.resets_at_ms,
@@ -419,7 +436,7 @@ mod tests {
     #[test]
     fn desktop_tolerance_boundary() {
         let c = cli(40.0, 2 * HOUR_MS, 10 * MINUTE_MS);
-        let within = desk(39.0, MINUTE_MS);
+        let within = desk(38.1, MINUTE_MS);
         let s = merge(
             std::slice::from_ref(&c),
             Some(&within),
@@ -429,9 +446,9 @@ mod tests {
         assert_eq!(
             s.reset,
             exact(2 * HOUR_MS),
-            "a drop of exactly the tolerance is noise"
+            "a drop below two points is noise"
         );
-        let beyond = desk(38.9, MINUTE_MS);
+        let beyond = desk(38.0, MINUTE_MS);
         let s = merge(
             std::slice::from_ref(&c),
             Some(&beyond),
@@ -457,6 +474,28 @@ mod tests {
                 NOW - MINUTE_MS
             )
         );
+    }
+
+    #[test]
+    fn cli_decimal_then_lagging_desktop_integer_is_not_a_reset() {
+        let c = cli(80.2, 2 * HOUR_MS, 10 * MINUTE_MS);
+        let s = merge(&[c], Some(&desk(79.0, MINUTE_MS)), est(NOW + 5 * HOUR_MS)).unwrap();
+        assert_eq!((s.pct, s.reset), (79.0, exact(2 * HOUR_MS)));
+    }
+
+    #[test]
+    fn early_reset_uses_the_desktop_estimate_not_the_cli_reset() {
+        let c = cli(60.0, 2 * HOUR_MS, 20 * MINUTE_MS);
+        let d = desk(12.0, MINUTE_MS);
+        let desktop_estimate = est(NOW + 4 * HOUR_MS);
+        let s = merge_window_with(&FH, &[c], Some(&d), exact(2 * HOUR_MS), desktop_estimate.clone(), NOW, STALE)
+            .unwrap();
+        assert_eq!((s.pct, s.reset), (12.0, desktop_estimate));
+        // Without an early reset the other estimate is unused: the CLI reset stays exact.
+        let c = cli(60.0, 2 * HOUR_MS, 20 * MINUTE_MS);
+        let s = merge_window_with(&FH, &[c], Some(&desk(61.0, MINUTE_MS)), ResetInfo::Unknown, est(NOW), NOW, STALE)
+            .unwrap();
+        assert_eq!(s.reset, exact(2 * HOUR_MS));
     }
 
     #[test]

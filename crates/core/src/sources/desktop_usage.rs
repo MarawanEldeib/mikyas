@@ -11,26 +11,29 @@
 //! - `org` identifies the account's organization. PRIVACY: it must never be stored, logged,
 //!   serialised or shown. Compare orgs only in memory to keep samples of the org that owns the
 //!   newest sample (a different account's history is dropped), then discard the string.
+//!
+//! The file only grows, so it is not parsed into a JSON tree: typed visitors keep just `version`,
+//! each sample's `t`, `org` (borrowed from the input) and the numeric `u` values.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::io;
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
-use serde_json::{Map, Value};
+use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::engine::types::{Observation, Sample, Source, WindowKind};
 use crate::paths::Paths;
-use crate::saferead::{ReadError, SafeReader};
+use crate::saferead::SafeReader;
 use crate::sources::SourceError;
-use crate::time::{Ms, json_time_to_ms};
+use crate::time::{MAX_PLAUSIBLE_MS, Ms, json_time_to_ms, system_time_ms};
 
 pub const SUPPORTED_VERSION: u32 = 2;
 /// The file grows ~100 samples/day; refuse anything absurd.
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Latest plausible sample time (9999-12-31T23:59:59.999Z); anything later is corrupt.
-const MAX_SAMPLE_MS: Ms = 253_402_300_799_999;
 /// Longest `u` key accepted as a window name. Keys must also be `[A-Za-z0-9_]+`, so arbitrary
 /// strings from the file never become window names shown in the UI.
 const MAX_KEY_LEN: usize = 32;
@@ -47,18 +50,19 @@ pub struct DesktopUsage {
     pub last_sample_ms: Option<Ms>,
 }
 
-/// A structurally valid sample borrowing from the parsed document. Deliberately not `Debug`: it
-/// carries the org string, which must never be printed.
+/// A structurally valid sample. Deliberately not `Debug`: it carries the org string, which must
+/// never be printed.
 struct RawSample<'a> {
     t_ms: Ms,
-    org: Option<&'a str>,
-    /// `None` unless `u` is valid.
-    usage: Option<&'a Map<String, Value>>,
+    org: Option<Cow<'a, str>>,
+    /// `None` unless `u` is valid: the usable `(key, pct)` pairs in file order.
+    usage: Option<Vec<(Cow<'a, str>, f32)>>,
 }
 
-/// [`parse_until`] without a time limit.
+/// [`parse_until`] without a time limit (sample times are still range-checked by
+/// [`json_time_to_ms`]).
 pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
-    parse_until(bytes, MAX_SAMPLE_MS)
+    parse_until(bytes, MAX_PLAUSIBLE_MS)
 }
 
 /// Parses the file. `version != 2` → `Err(SourceError::SchemaChanged(v))`; missing/invalid
@@ -77,24 +81,21 @@ pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
 pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
     // A UTF-8 BOM (added by some Windows editors) is not JSON whitespace to serde_json.
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let doc: Value = serde_json::from_slice(bytes).map_err(json_error)?;
-    let root = doc
-        .as_object()
-        .ok_or_else(|| parse_error("top level is not an object"))?;
-    let version = root
-        .get("version")
+    let doc: Doc<'_> = serde_json::from_slice(bytes).map_err(json_error)?;
+    let Doc::Object { version, samples } = doc else {
+        return Err(parse_error("top level is not an object"));
+    };
+    let version = version
+        .as_ref()
         .and_then(as_version)
         .ok_or_else(|| parse_error("missing or invalid version"))?;
     if version != SUPPORTED_VERSION {
         return Err(SourceError::SchemaChanged(version));
     }
-    let entries = root
-        .get("samples")
-        .and_then(Value::as_array)
-        .ok_or_else(|| parse_error("missing samples array"))?;
+    let entries = samples.ok_or_else(|| parse_error("missing samples array"))?;
 
     let raw: Vec<RawSample<'_>> = entries
-        .iter()
+        .into_iter()
         .filter_map(|e| raw_sample(e, max_t_ms))
         .collect();
     // `max_by_key` returns the last of equal maxima, i.e. the later entry of an append-only file.
@@ -102,23 +103,21 @@ pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceErr
         .iter()
         .filter(|s| s.org.is_some() || s.usage.is_some())
         .max_by_key(|s| s.t_ms)
-        .map(|s| s.org);
+        .map(|s| s.org.as_deref());
 
     let mut series: BTreeMap<WindowKind, Vec<Sample>> = BTreeMap::new();
     let mut last_sample_ms = None;
-    for sample in raw.iter().filter(|s| Some(s.org) == owner) {
-        let Some(usage) = sample.usage else { continue };
+    for sample in raw.iter().filter(|s| Some(s.org.as_deref()) == owner) {
+        let Some(usage) = &sample.usage else { continue };
         last_sample_ms = last_sample_ms.max(Some(sample.t_ms));
-        for (key, value) in usage {
-            if let Some(pct) = usable_pct(key, value) {
-                series
-                    .entry(WindowKind::from_key(key))
-                    .or_default()
-                    .push(Sample {
-                        t_ms: sample.t_ms,
-                        pct,
-                    });
-            }
+        for (key, pct) in usage {
+            series
+                .entry(WindowKind::from_key(key))
+                .or_default()
+                .push(Sample {
+                    t_ms: sample.t_ms,
+                    pct: *pct,
+                });
         }
     }
     for samples in series.values_mut() {
@@ -177,7 +176,7 @@ pub fn load(
                     best = Some((usage, path));
                 }
             }
-            Err(SourceError::Read(ReadError::Io(e))) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(SourceError::NotFound) => {}
             Err(e) => {
                 if let SourceError::SchemaChanged(version) = e {
                     let mtime = modified_ms(&path);
@@ -219,8 +218,7 @@ fn read_file(reader: &SafeReader, path: &Path, max_t_ms: Ms) -> Result<DesktopUs
 
 /// The file's mtime in epoch ms, if the file system reports one.
 fn modified_ms(path: &Path) -> Option<Ms> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    Ms::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
+    system_time_ms(std::fs::metadata(path).ok()?.modified().ok()?)
 }
 
 fn parse_error(msg: &str) -> SourceError {
@@ -247,36 +245,326 @@ fn as_version(v: &Value) -> Option<u32> {
     u32::try_from(n).ok()
 }
 
-fn raw_sample(entry: &Value, max_t_ms: Ms) -> Option<RawSample<'_>> {
-    let obj = entry.as_object()?;
-    let t_ms = obj
-        .get("t")
-        .and_then(json_time_to_ms)
-        .filter(|t| *t <= max_t_ms.min(MAX_SAMPLE_MS))?;
-    let usage = obj
-        .get("u")
-        .and_then(Value::as_object)
-        .filter(|u| u.iter().any(|(k, v)| usable_pct(k, v).is_some()));
-    let org = obj
-        .get("org")
-        .and_then(Value::as_str)
-        .filter(|o| !o.is_empty());
+fn raw_sample(entry: Entry<'_>, max_t_ms: Ms) -> Option<RawSample<'_>> {
+    let Entry::Object { t, org, u } = entry else { return None };
+    let t_ms = t.as_ref().and_then(json_time_to_ms).filter(|t| *t <= max_t_ms)?;
+    let usage = u.map(|pairs| {
+        pairs
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let pct = usable_pct(&key, value?)?;
+                Some((key, pct))
+            })
+            .collect::<Vec<_>>()
+    });
+    let usage = usage.filter(|pairs| !pairs.is_empty());
+    let org = org.filter(|o| !o.is_empty());
     Some(RawSample { t_ms, org, usage })
 }
 
-/// The clamped percentage of one `u` entry, if the key is plausible and the value numeric.
-fn usable_pct(key: &str, value: &Value) -> Option<f32> {
-    if !is_window_key(key) {
+/// The clamped percentage of one `u` entry, if the key is plausible and the value finite.
+fn usable_pct(key: &str, value: f64) -> Option<f32> {
+    if !is_window_key(key) || !value.is_finite() {
         return None;
     }
-    let pct = value.as_f64().filter(|p| p.is_finite())?;
-    Some(pct.clamp(0.0, 100.0) as f32)
+    Some(value.clamp(0.0, 100.0) as f32)
 }
 
 fn is_window_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= MAX_KEY_LEN
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+// ---- typed document visitors ----
+//
+// Each accepts any JSON shape where the document might hold something unexpected, so a single odd
+// sample or field is skipped instead of failing the whole file (as the tree-based parser did).
+
+/// The top level: an object with (optionally) `version` and `samples`, or anything else.
+enum Doc<'a> {
+    Object {
+        version: Option<Value>,
+        /// `None` unless `samples` is an array.
+        samples: Option<Vec<Entry<'a>>>,
+    },
+    Other,
+}
+
+/// One element of `samples`: an object's `t`, `org` (if a string) and `u` (if an object: its
+/// numeric values by key, `None` for a non-numeric value), or anything else.
+enum Entry<'a> {
+    Object {
+        t: Option<Value>,
+        org: Option<Cow<'a, str>>,
+        u: Option<Vec<(Cow<'a, str>, Option<f64>)>>,
+    },
+    Other,
+}
+
+/// Visitor methods that accept any JSON scalar, so an unexpected shape yields `$value`.
+macro_rules! scalars_as {
+    ($ty:ty, $value:expr) => {
+        fn visit_bool<E>(self, _: bool) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_unit<E>(self) -> Result<$ty, E> {
+            Ok($value)
+        }
+    };
+}
+
+struct DocVisitor;
+
+impl<'de> Visitor<'de> for DocVisitor {
+    type Value = Doc<'de>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a usage history document")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Doc<'de>, A::Error> {
+        let (mut version, mut samples) = (None, None);
+        while let Some(StrField(key)) = map.next_key::<StrField<'de>>()? {
+            match key.as_deref().unwrap_or_default() {
+                "version" => version = Some(map.next_value::<Value>()?),
+                "samples" => samples = map.next_value::<SamplesField<'de>>()?.0,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(Doc::Object { version, samples })
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Doc<'de>, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| Doc::Other)
+    }
+
+    scalars_as!(Doc<'de>, Doc::Other);
+}
+
+impl<'de> Deserialize<'de> for Doc<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(DocVisitor)
+    }
+}
+
+/// `samples`: the entries when it is an array.
+struct SamplesField<'a>(Option<Vec<Entry<'a>>>);
+
+struct SamplesVisitor;
+
+impl<'de> Visitor<'de> for SamplesVisitor {
+    type Value = SamplesField<'de>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a samples array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<SamplesField<'de>, A::Error> {
+        let mut entries = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(entry) = seq.next_element::<Entry<'de>>()? {
+            entries.push(entry);
+        }
+        Ok(SamplesField(Some(entries)))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<SamplesField<'de>, A::Error> {
+        IgnoredAny.visit_map(map).map(|_| SamplesField(None))
+    }
+
+    scalars_as!(SamplesField<'de>, SamplesField(None));
+}
+
+impl<'de> Deserialize<'de> for SamplesField<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(SamplesVisitor)
+    }
+}
+
+struct EntryVisitor;
+
+impl<'de> Visitor<'de> for EntryVisitor {
+    type Value = Entry<'de>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a sample")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Entry<'de>, A::Error> {
+        let (mut t, mut org, mut u) = (None, None, None);
+        while let Some(StrField(key)) = map.next_key::<StrField<'de>>()? {
+            match key.as_deref().unwrap_or_default() {
+                "t" => t = Some(map.next_value::<Value>()?),
+                "org" => org = map.next_value::<StrField<'de>>()?.0,
+                "u" => u = map.next_value::<UsageField<'de>>()?.0,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(Entry::Object { t, org, u })
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Entry<'de>, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| Entry::Other)
+    }
+
+    scalars_as!(Entry<'de>, Entry::Other);
+}
+
+impl<'de> Deserialize<'de> for Entry<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(EntryVisitor)
+    }
+}
+
+/// A string (borrowed when it has no escapes), or `None` for any other value.
+struct StrField<'a>(Option<Cow<'a, str>>);
+
+struct StrVisitor;
+
+impl<'de> Visitor<'de> for StrVisitor {
+    type Value = StrField<'de>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a string")
+    }
+
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<StrField<'de>, E> {
+        Ok(StrField(Some(Cow::Borrowed(v))))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<StrField<'de>, E> {
+        Ok(StrField(Some(Cow::Owned(v.to_owned()))))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<StrField<'de>, A::Error> {
+        IgnoredAny.visit_map(map).map(|_| StrField(None))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<StrField<'de>, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| StrField(None))
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<StrField<'de>, E> {
+        Ok(StrField(None))
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<StrField<'de>, E> {
+        Ok(StrField(None))
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<StrField<'de>, E> {
+        Ok(StrField(None))
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<StrField<'de>, E> {
+        Ok(StrField(None))
+    }
+    fn visit_unit<E>(self) -> Result<StrField<'de>, E> {
+        Ok(StrField(None))
+    }
+}
+
+impl<'de> Deserialize<'de> for StrField<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(StrVisitor)
+    }
+}
+
+/// `u`: its values by key when it is an object (`None` for a non-numeric value).
+struct UsageField<'a>(Option<Vec<(Cow<'a, str>, Option<f64>)>>);
+
+struct UsageVisitor;
+
+impl<'de> Visitor<'de> for UsageVisitor {
+    type Value = UsageField<'de>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a usage object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<UsageField<'de>, A::Error> {
+        let mut pairs = Vec::new();
+        while let Some(StrField(key)) = map.next_key::<StrField<'de>>()? {
+            pairs.push((key.unwrap_or_default(), map.next_value::<NumField>()?.0));
+        }
+        Ok(UsageField(Some(pairs)))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<UsageField<'de>, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| UsageField(None))
+    }
+
+    scalars_as!(UsageField<'de>, UsageField(None));
+}
+
+impl<'de> Deserialize<'de> for UsageField<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(UsageVisitor)
+    }
+}
+
+/// A number as `f64`, or `None` for any other value.
+struct NumField(Option<f64>);
+
+struct NumVisitor;
+
+impl<'de> Visitor<'de> for NumVisitor {
+    type Value = NumField;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a number")
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<NumField, E> {
+        Ok(NumField(Some(v as f64)))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<NumField, E> {
+        Ok(NumField(Some(v as f64)))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<NumField, E> {
+        Ok(NumField(Some(v)))
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<NumField, E> {
+        Ok(NumField(None))
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<NumField, E> {
+        Ok(NumField(None))
+    }
+
+    fn visit_unit<E>(self) -> Result<NumField, E> {
+        Ok(NumField(None))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<NumField, A::Error> {
+        IgnoredAny.visit_map(map).map(|_| NumField(None))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<NumField, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| NumField(None))
+    }
+}
+
+impl<'de> Deserialize<'de> for NumField {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(NumVisitor)
+    }
 }
 
 /// Sorts by time; of several samples with the same `t`, the one written last wins.
@@ -964,7 +1252,7 @@ mod tests {
             file.set_modified(mtime).unwrap();
         }
         fn load(&self) -> Result<Option<DesktopUsage>, SourceError> {
-            self.load_until(MAX_SAMPLE_MS)
+            self.load_until(MAX_PLAUSIBLE_MS)
         }
         fn load_until(&self, max_t_ms: Ms) -> Result<Option<DesktopUsage>, SourceError> {
             load(&SafeReader::new(&self.paths), &self.paths, max_t_ms)

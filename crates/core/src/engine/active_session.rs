@@ -5,9 +5,13 @@
 //!   tied; among them prefer the one whose `session_id` equals the `cli_session_id` of the Desktop
 //!   session with the most recent `last_focused_ms`, if that focus happened within
 //!   [`FOCUS_TIE_MS`] of `now_ms`. Otherwise keep the newest.
-//! - `concurrent` = number of tails with `last_assistant_ms >= now_ms - CONCURRENT_WINDOW_MS`
-//!   (saturating at 255).
+//! - `concurrent` = number of distinct sessions with a tail whose `last_assistant_ms >= now_ms -
+//!   CONCURRENT_WINDOW_MS` (saturating at 255). Tails are the same session when they share a
+//!   non-empty `session_id` (e.g. a Cowork copy of a transcript), else when they share a path.
 //! - Empty input → `None`.
+
+use std::collections::HashSet;
+use std::path::Path;
 
 use crate::sources::desktop_sessions::DesktopSession;
 use crate::sources::transcript::TranscriptTail;
@@ -42,11 +46,33 @@ pub fn pick(tails: &[TranscriptTail], desktop_sessions: &[DesktopSession], now_m
         .unwrap_or(newest);
 
     let active_floor = now_ms.saturating_sub(CONCURRENT_WINDOW_MS);
-    let active = tails.iter().filter(|t| t.last_assistant_ms >= active_floor).count();
+    let active: HashSet<SessionId<'_>> = tails
+        .iter()
+        .filter(|t| t.last_assistant_ms >= active_floor)
+        .map(SessionId::of)
+        .collect();
+    let active = active.len();
     Some(ActivePick {
         index,
         concurrent: u8::try_from(active).unwrap_or(u8::MAX),
     })
+}
+
+/// What makes two tails the same session (see the module docs).
+#[derive(PartialEq, Eq, Hash)]
+enum SessionId<'a> {
+    Id(&'a str),
+    Path(&'a Path),
+}
+
+impl<'a> SessionId<'a> {
+    fn of(tail: &'a TranscriptTail) -> Self {
+        if tail.session_id.is_empty() {
+            SessionId::Path(&tail.path)
+        } else {
+            SessionId::Id(&tail.session_id)
+        }
+    }
 }
 
 /// Index of the tail with the largest `last_assistant_ms`; the first one wins exact ties.
@@ -120,6 +146,20 @@ mod tests {
     fn newest_wins() {
         let tails = [tail("a", NOW - 50 * MINUTE_MS), tail("b", NOW - SECOND_MS), tail("c", NOW - MINUTE_MS)];
         assert_eq!(pick(&tails, &[], NOW).map(|p| p.index), Some(1));
+    }
+
+    #[test]
+    fn concurrent_counts_distinct_sessions() {
+        // The same session seen through two files (e.g. a Cowork copy) is one session.
+        let mut copy = tail("a", NOW - MINUTE_MS);
+        copy.path = PathBuf::from("cowork/a.jsonl");
+        let tails = [tail("a", NOW - SECOND_MS), copy, tail("b", NOW - 2 * MINUTE_MS)];
+        assert_eq!(pick(&tails, &[], NOW).map(|p| p.concurrent), Some(2));
+        // Tails without a session id are told apart by their path.
+        let (mut x, mut y) = (tail("", NOW - SECOND_MS), tail("", NOW - SECOND_MS));
+        x.path = PathBuf::from("x.jsonl");
+        y.path = PathBuf::from("y.jsonl");
+        assert_eq!(pick(&[x, y], &[], NOW).map(|p| p.concurrent), Some(2));
     }
 
     #[test]

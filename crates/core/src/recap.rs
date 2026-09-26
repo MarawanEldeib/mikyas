@@ -9,16 +9,23 @@
 //! Fires once per ended window (persisted `last_recapped_end_ms`); if the app was closed at the
 //! reset, the next start within `CATCH_UP_MS` (24 h) after it still shows it once; older → skip.
 //! No recap for a window with fewer than `MIN_SAMPLES` weekly history rows (not enough data).
+//!
+//! The pipeline calls [`RecapState::evaluate`] on every tick; the history walk is repeated only
+//! when the history changed or [`RECHECK_MS`] passed since the last walk (an exact reset time
+//! passing is the only thing that can end a week without a new row, and a recap a minute late is
+//! fine).
 
 use serde::{Deserialize, Serialize};
 
 use crate::alerts::WEEKLY_INSTANCE_ALIAS_MS;
-use crate::engine::types::WindowKind;
-use crate::history::{History, HistoryRow, MIXED_SOURCE_DROP_PCT, ViewRange};
-use crate::time::{DAY_MS, Ms, SEVEN_DAYS_MS};
+use crate::engine::types::{WindowKind, is_reset_drop};
+use crate::history::{History, HistoryRow, ViewRange};
+use crate::time::{DAY_MS, MINUTE_MS, Ms, SEVEN_DAYS_MS};
 
 pub const CATCH_UP_MS: Ms = DAY_MS;
 pub const MIN_SAMPLES: usize = 6;
+/// With an unchanged history, the weekly rows are walked again at most this often.
+pub const RECHECK_MS: Ms = MINUTE_MS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeeklyRecap {
@@ -30,10 +37,27 @@ pub struct WeeklyRecap {
     pub peak_five_hour_pct: f32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecapState {
     pub last_recapped_end_ms: Option<Ms>,
+    /// The last history walk (in memory only; not part of the state's value).
+    #[serde(skip)]
+    checked: Option<Checked>,
+}
+
+/// What the last walk saw: the history's row count and newest row time, and when it ran.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Checked {
+    rows: usize,
+    last_t: Option<Ms>,
+    at_ms: Ms,
+}
+
+impl PartialEq for RecapState {
+    fn eq(&self, other: &Self) -> bool {
+        self.last_recapped_end_ms == other.last_recapped_end_ms
+    }
 }
 
 impl RecapState {
@@ -41,7 +65,20 @@ impl RecapState {
     /// in local time). An end within [`WEEKLY_INSTANCE_ALIAS_MS`] of the last recapped one is the
     /// same reset seen twice (e.g. the exact time, then the drop), so it does not repeat.
     pub fn evaluate(&mut self, history: &History, day_starts: &[Ms], now_ms: Ms) -> Option<WeeklyRecap> {
-        let week = last_ended_week(history.rows(), now_ms)?;
+        let rows = history.rows();
+        let seen = Checked {
+            rows: rows.len(),
+            last_t: rows.last().map(|r| r.t),
+            at_ms: now_ms,
+        };
+        let unchanged = self.checked.is_some_and(|c| {
+            c.rows == seen.rows && c.last_t == seen.last_t && (0..RECHECK_MS).contains(&now_ms.saturating_sub(c.at_ms))
+        });
+        if unchanged {
+            return None;
+        }
+        self.checked = Some(seen);
+        let week = last_ended_week(rows, now_ms)?;
         let end = week.end_ms;
         let new = self
             .last_recapped_end_ms
@@ -105,7 +142,7 @@ struct EndedWeek {
 }
 
 /// Walks the weekly rows with the reset rule of `History::view`: a row starts a new window when
-/// its pct is at least [`MIXED_SOURCE_DROP_PCT`] below the previous row (the window ended at that
+/// its pct is at least [`crate::history::MIXED_SOURCE_DROP_PCT`] below the previous row (the window ended at that
 /// row), or when the latest exact reset time known passed since the previous row (it ended then).
 /// An exact reset time that passed with no row after it ends the current window too. A window
 /// with too few rows is passed over, so a Desktop drop just before the exact reset time (a
@@ -113,7 +150,8 @@ struct EndedWeek {
 fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
     let weekly: Vec<&HistoryRow> = rows
         .iter()
-        .filter(|r| r.t <= now_ms && WindowKind::from_short(&r.w) == WindowKind::SevenDay)
+        .take_while(|r| r.t <= now_ms)
+        .filter(|r| r.is_kind(&WindowKind::SevenDay))
         .collect();
     let summarize = |window: &[&HistoryRow], prev_end: Option<Ms>, end_ms: Ms| {
         let start_ms = end_ms.saturating_sub(SEVEN_DAYS_MS).max(prev_end.unwrap_or(Ms::MIN));
@@ -134,7 +172,7 @@ fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
     for (i, row) in weekly.iter().enumerate() {
         if let Some(prev) = i.checked_sub(1).map(|p| weekly[p]) {
             let exact = known_reset.filter(|&r| prev.t < r && r <= row.t);
-            let dropped = prev.p - row.p >= MIXED_SOURCE_DROP_PCT;
+            let dropped = is_reset_drop(prev.p, row.p);
             if let Some(end_ms) = exact.or(dropped.then_some(row.t)) {
                 let week = summarize(&weekly[window_start..i], prev_end, end_ms);
                 ended = Some(week).filter(|w| w.samples >= MIN_SAMPLES).or(ended);
@@ -158,7 +196,7 @@ fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::{HOUR_MS, MINUTE_MS};
+    use crate::time::{HOUR_MS, MINUTE_MS, SECOND_MS};
     use pretty_assertions::assert_eq;
 
     /// 2026-09-24T00:00Z. The tests use UTC midnights as the "local" days.
@@ -244,6 +282,7 @@ mod tests {
         // The week before was recapped already: this one still is.
         let mut s = RecapState {
             last_recapped_end_ms: Some(START),
+            ..RecapState::default()
         };
         assert_eq!(s.evaluate(&h, &day_starts(), END + HOUR_MS).map(|r| r.window_end_ms), Some(END));
     }
@@ -299,6 +338,7 @@ mod tests {
         // The same reset seen again a little later (an exact time, a second drop) is not a new week.
         let mut s = RecapState {
             last_recapped_end_ms: Some(drop_at - 2 * HOUR_MS),
+            ..RecapState::default()
         };
         assert_eq!(s.evaluate(&h, &day_starts(), drop_at + 5 * MINUTE_MS), None);
         assert_eq!(s.last_recapped_end_ms, Some(drop_at - 2 * HOUR_MS));
@@ -403,9 +443,29 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_history_is_walked_again_only_after_a_minute() {
+        let (_d, h) = history(&week());
+        let mut s = RecapState::default();
+        assert_eq!(s.evaluate(&h, &day_starts(), END - 10 * SECOND_MS), None, "not over yet");
+        // The reset passed, but the same history was walked moments ago.
+        assert_eq!(s.evaluate(&h, &day_starts(), END + 30 * SECOND_MS), None);
+        let recap = s.evaluate(&h, &day_starts(), END - 10 * SECOND_MS + RECHECK_MS);
+        assert_eq!(recap.map(|r| r.window_end_ms), Some(END));
+        // A changed history is walked at once.
+        let mut s = RecapState::default();
+        assert_eq!(s.evaluate(&h, &day_starts(), END - 10 * SECOND_MS), None);
+        let mut rows = week();
+        rows.push((END + MINUTE_MS, "7d", 1.0, None));
+        let (_d2, h2) = history(&rows);
+        assert_eq!(s.evaluate(&h2, &day_starts(), END + 2 * MINUTE_MS - RECHECK_MS / 2).map(|r| r.window_end_ms), Some(END));
+        assert_eq!(s, RecapState { last_recapped_end_ms: Some(END), ..RecapState::default() }, "the walk is not part of the value");
+    }
+
+    #[test]
     fn state_round_trips() {
         let s = RecapState {
             last_recapped_end_ms: Some(END),
+            ..RecapState::default()
         };
         let back: RecapState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);

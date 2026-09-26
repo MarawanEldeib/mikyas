@@ -1,15 +1,17 @@
 //! Loads statusline captures written by the shim and turns them into observations.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, DirEntry};
 use std::io;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use crate::capture::{CaptureRecord, MAX_CAPTURE_FILE_BYTES, read_capture, read_capture_file};
+use crate::capture::{CaptureRecord, MAX_CAPTURE_FILE_BYTES, parse_capture, read_capture_file};
 use crate::engine::types::{Observation, Source, WindowKind};
 use crate::saferead::SafeReader;
-use crate::time::Ms;
+use crate::sources::fsutil::has_extension;
+use crate::time::{Ms, system_time_ms};
 
 /// Capture files older than this (by `written_at_ms`, falling back to mtime) are deleted by [`prune`].
 pub const CAPTURE_RETAIN_MS: Ms = 7 * crate::time::DAY_MS;
@@ -23,24 +25,72 @@ pub const FUTURE_RETAIN_MS: Ms = crate::time::DAY_MS;
 
 /// Reads every `<capture_dir>/*.json` whose name does not start with `.` or `_`, through the
 /// reader, skipping files larger than [`crate::capture::MAX_CAPTURE_FILE_BYTES`] and files that
-/// fail [`crate::capture::read_capture`], and records whose `changed_at_ms` or `written_at_ms` is
+/// fail [`crate::capture::parse_capture`], and records whose `changed_at_ms` or `written_at_ms` is
 /// more than [`FUTURE_TOLERANCE_MS`] after `now_ms`. A missing dir yields an empty vec. Sorted by
 /// `changed_at_ms` descending.
 pub fn load_captures(reader: &SafeReader, capture_dir: &Path, now_ms: Ms) -> Vec<CaptureRecord> {
-    // Missing, unlistable or denied dirs all mean "no captures".
-    let Ok(entries) = reader.read_dir(capture_dir) else {
-        return Vec::new();
-    };
-    let latest = now_ms.saturating_add(FUTURE_TOLERANCE_MS);
-    let mut records: Vec<CaptureRecord> = entries
-        .flatten()
+    let mut records = Vec::new();
+    for_each_capture_file(reader, capture_dir, &mut |entry| {
+        records.extend(read_record(reader, entry));
+    });
+    finish(records, now_ms)
+}
+
+/// [`load_captures`] across calls: a capture file is read again only when its listed size or
+/// modification time changed (the shim replaces a capture by renaming a new file over it), so a
+/// capture event does not re-read and re-validate every session's file.
+#[derive(Debug, Default)]
+pub struct CaptureCache {
+    files: HashMap<PathBuf, CachedCapture>,
+}
+
+#[derive(Debug)]
+struct CachedCapture {
+    stamp: (Option<SystemTime>, u64),
+    record: Option<CaptureRecord>,
+}
+
+impl CaptureCache {
+    /// What [`load_captures`] returns now, reading only new or changed files.
+    pub fn load(&mut self, reader: &SafeReader, capture_dir: &Path, now_ms: Ms) -> Vec<CaptureRecord> {
+        let mut next = HashMap::with_capacity(self.files.len());
+        for_each_capture_file(reader, capture_dir, &mut |entry| {
+            let Ok(meta) = entry.metadata() else { return };
+            let stamp = (meta.modified().ok(), meta.len());
+            let path = entry.path();
+            let cached = self.files.remove(&path).filter(|c| c.stamp == stamp);
+            let slot = cached.unwrap_or_else(|| CachedCapture {
+                stamp,
+                record: read_record(reader, entry),
+            });
+            next.insert(path, slot);
+        });
+        self.files = next;
+        finish(self.files.values().filter_map(|c| c.record.clone()).collect(), now_ms)
+    }
+}
+
+/// Calls `on_file` for every loadable capture file directly in `capture_dir`. Missing, unlistable
+/// or denied dirs all mean "no captures".
+fn for_each_capture_file(reader: &SafeReader, capture_dir: &Path, on_file: &mut dyn FnMut(&DirEntry)) {
+    let Ok(entries) = reader.read_dir(capture_dir) else { return };
+    for entry in entries.flatten() {
         // `DirEntry::file_type` does not follow links, so symlinks and junctions are skipped too.
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter(|e| is_loadable_name(&e.file_name()))
-        .filter_map(|e| reader.read(&e.path(), MAX_CAPTURE_FILE_BYTES).ok())
-        .filter_map(|bytes| read_capture(&bytes))
-        .filter(|r| r.changed_at_ms <= latest && r.written_at_ms <= latest)
-        .collect();
+        if entry.file_type().is_ok_and(|t| t.is_file()) && is_loadable_name(&entry.file_name()) {
+            on_file(&entry);
+        }
+    }
+}
+
+fn read_record(reader: &SafeReader, entry: &DirEntry) -> Option<CaptureRecord> {
+    let bytes = reader.read(&entry.path(), MAX_CAPTURE_FILE_BYTES).ok()?;
+    parse_capture(&bytes)
+}
+
+/// Drops records stamped too far ahead of `now_ms` and sorts newest first (ties by session id).
+fn finish(mut records: Vec<CaptureRecord>, now_ms: Ms) -> Vec<CaptureRecord> {
+    let latest = now_ms.saturating_add(FUTURE_TOLERANCE_MS);
+    records.retain(|r| r.changed_at_ms <= latest && r.written_at_ms <= latest);
     records.sort_by(|a, b| {
         b.changed_at_ms
             .cmp(&a.changed_at_ms)
@@ -149,40 +199,29 @@ enum Prunable {
     Tmp,
 }
 
-fn has_extension(name: &OsStr, ext: &str) -> bool {
-    Path::new(name)
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
-}
-
 fn is_loadable_name(name: &OsStr) -> bool {
     let Some(text) = name.to_str() else {
         return false;
     };
-    !text.starts_with('.') && !text.starts_with('_') && has_extension(name, "json")
+    !text.starts_with('.') && !text.starts_with('_') && has_extension(Path::new(name), "json")
 }
 
 fn prunable_kind(path: &Path) -> Option<Prunable> {
-    let name = path.file_name()?;
-    if has_extension(name, "json") {
+    path.file_name()?;
+    if has_extension(path, "json") {
         Some(Prunable::Capture)
-    } else if has_extension(name, "tmp") {
+    } else if has_extension(path, "tmp") {
         Some(Prunable::Tmp)
     } else {
         None
     }
 }
 
-fn system_time_ms(t: SystemTime) -> Option<Ms> {
-    let d = t.duration_since(UNIX_EPOCH).ok()?;
-    Some(Ms::try_from(d.as_millis()).unwrap_or(Ms::MAX))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use pretty_assertions::assert_eq;
 
@@ -257,6 +296,31 @@ mod tests {
     }
 
     #[test]
+    fn capture_cache_reads_only_changed_files() {
+        let (_tmp, reader, dir) = setup();
+        let (p1, p2) = (dir.join(format!("{SID1}.json")), dir.join(format!("{SID2}.json")));
+        write_json(&p1, &record(SID1, NOW - 2_000, &[("five_hour", 10.0, 1_790_210_000)]));
+        write_json(&p2, &record(SID2, NOW - 1_000, &[("five_hour", 11.0, 1_790_210_000)]));
+        set_mtime(&p1, NOW - 2_000);
+        let mut cache = CaptureCache::default();
+        let first = cache.load(&reader, &dir, NOW);
+        assert_eq!(first, load_captures(&reader, &dir, NOW));
+        assert_eq!(first.len(), 2);
+
+        // Same size and modification time: the cached record is kept.
+        write_json(&p1, &record(SID1, NOW - 2_000, &[("five_hour", 20.0, 1_790_210_000)]));
+        set_mtime(&p1, NOW - 2_000);
+        assert_eq!(cache.load(&reader, &dir, NOW), first);
+        // A replaced file is read again; a removed one is dropped.
+        set_mtime(&p1, NOW - 500);
+        fs::remove_file(&p2).unwrap();
+        let now = cache.load(&reader, &dir, NOW);
+        assert_eq!(now, load_captures(&reader, &dir, NOW));
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].rate_limits["five_hour"].used_percentage, 20.0);
+    }
+
+    #[test]
     fn load_returns_valid_captures_newest_first() {
         let (_tmp, reader, dir) = setup();
         let older = record(SID1, NOW - HOUR_MS, &[("five_hour", 10.0, 1_790_210_000)]);
@@ -292,7 +356,7 @@ mod tests {
         big.extend(std::iter::repeat_n(b' ', MAX_CAPTURE_FILE_BYTES as usize));
         big.push(b'}');
         assert!(
-            read_capture(&big).is_some(),
+            parse_capture(&big).is_some(),
             "only the size makes this file unacceptable"
         );
         fs::write(dir.join("oversize.json"), &big).unwrap();

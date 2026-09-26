@@ -4,8 +4,11 @@
 //! Per window kind present in any source (FiveHour, SevenDay, then others in key order):
 //! 1. `reset_estimate::estimate_reset` over the Desktop-sourced samples of that kind (Desktop
 //!    file series ∪ Desktop rows of the history, samples more than [`FUTURE_SLACK_MS`] in the
-//!    future dropped) with the last exact reset (max of the persisted value and the captures).
-//! 2. `merge::merge_window` of the CLI observations and the newest Desktop observation.
+//!    future dropped) with the last exact reset (`last_exact_resets`). A second estimate uses that
+//!    reset only if it has passed: after an early reset, or once Desktop sees a later window, the
+//!    live CLI reset belongs to the window that ended.
+//! 2. `merge::merge_window_with` of the CLI observations and the newest Desktop observation, with
+//!    both estimates.
 //! 3. `burn::compute` over the history samples (∪ the Desktop series) of that kind.
 //! 4. `History::spark`: 96 buckets over 24 h (five_hour) or 7 d (weekly kinds). The range end is
 //!    aligned up to the bucket step so the buckets do not shift on every recompute (which would
@@ -17,7 +20,11 @@
 //! Session: `active_session::pick` over the transcript tails; the capture with the same
 //! `session_id` and the Desktop Code-tab session whose `cli_session_id` matches feed
 //! `context::resolve`. Without any tail, the newest capture that names a model is shown instead.
-//! The display name uses a learned map (persisted names ∪ `model.display_name` of the captures).
+//! The display name uses the learned names (`learned_names`).
+//!
+//! The caller owns learning: `last_exact_resets` and `learned_names` must already include what
+//! [`learn_exact_resets`] and [`learn_model_names`] take from `captures` (the pipeline folds them
+//! in whenever it reloads the captures), so a build does not repeat that work.
 //! `project` only when `show_project`. `key` is [`session_key`] of the session id (an opaque FNV-1a
 //! hash, never the id itself).
 //!
@@ -53,8 +60,7 @@ use crate::sources::statusline;
 use crate::sources::transcript::TranscriptTail;
 use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, SECOND_MS};
 
-/// Samples further in the future than this (clock skew, corrupt files) are ignored.
-pub const FUTURE_SLACK_MS: Ms = 5 * MINUTE_MS;
+pub use crate::time::FUTURE_SLACK_MS;
 /// Sparkline resolution.
 pub const SPARK_BUCKETS: usize = 96;
 /// Sparkline span of the five-hour window.
@@ -95,9 +101,11 @@ pub struct EngineInputs<'a> {
     /// Transcript tails of recently active sessions.
     pub tails: &'a [TranscriptTail],
     pub desktop_sessions: &'a [DesktopSession],
-    /// Persisted newest exact reset per kind (from earlier captures).
+    /// Newest exact reset per kind: the persisted value with `captures` already folded in by
+    /// [`learn_exact_resets`].
     pub last_exact_resets: &'a BTreeMap<WindowKind, Ms>,
-    /// Persisted model display names by base id.
+    /// Model display names by base id: the persisted map with `captures` already folded in by
+    /// [`learn_model_names`].
     pub learned_names: &'a BTreeMap<String, String>,
     pub ctx_overrides: &'a BTreeMap<String, u64>,
     pub stale_after_ms: Ms,
@@ -119,24 +127,27 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         .chain(desktop_latest.iter())
         .map(|o| o.kind.clone())
         .collect();
-    let exact = merged_exact_resets(inputs.last_exact_resets, inputs.captures);
+    let exact = inputs.last_exact_resets;
 
     let newest_activity = inputs.tails.iter().map(|t| t.last_assistant_ms).max();
     let mut windows = Vec::new();
     for kind in &kinds {
         let desktop_series = desktop_samples(inputs, kind, now_ms);
-        let estimate = reset_estimate::estimate_reset(
-            kind,
-            &desktop_series,
-            exact.get(kind).copied(),
-            now_ms,
-        );
+        let last_exact = exact.get(kind).copied();
+        let estimate = reset_estimate::estimate_reset(kind, &desktop_series, last_exact, now_ms);
+        let past_exact = last_exact.filter(|&r| r <= now_ms);
+        let desktop_estimate = if past_exact == last_exact {
+            estimate.clone()
+        } else {
+            reset_estimate::estimate_reset(kind, &desktop_series, past_exact, now_ms)
+        };
         let desktop_obs = desktop_latest.iter().find(|o| &o.kind == kind);
-        let Some(state) = merge::merge_window(
+        let Some(state) = merge::merge_window_with(
             kind,
             &cli,
             desktop_obs,
             estimate,
+            desktop_estimate,
             now_ms,
             inputs.stale_after_ms,
         ) else {
@@ -258,23 +269,13 @@ fn spark(history: &History, kind: &WindowKind, now_ms: Ms) -> Vec<crate::engine:
     history.spark(kind, from, to, SPARK_BUCKETS)
 }
 
-fn merged_exact_resets(
-    persisted: &BTreeMap<WindowKind, Ms>,
-    captures: &[CaptureRecord],
-) -> BTreeMap<WindowKind, Ms> {
-    let mut map = persisted.clone();
-    learn_exact_resets(&mut map, captures);
-    map
-}
-
 /// Desktop samples of `kind`: the file's series ∪ Desktop rows of the history.
 fn desktop_samples(inputs: &EngineInputs<'_>, kind: &WindowKind, now_ms: Ms) -> Vec<Sample> {
     let since = now_ms.saturating_sub(SAMPLE_LOOKBACK_MS);
-    let from_history = inputs
-        .history
-        .rows()
+    let rows = inputs.history.rows();
+    let from_history = rows[rows.partition_point(|r| r.t < since)..]
         .iter()
-        .filter(|r| r.s == Source::Desktop && r.t >= since && WindowKind::from_short(&r.w) == *kind)
+        .filter(|r| r.s == Source::Desktop && kind.matches_short(&r.w))
         .map(|r| Sample { t_ms: r.t, pct: r.p });
     combine(from_history, desktop_series(inputs, kind), since, now_ms)
 }
@@ -338,15 +339,14 @@ fn tail_key(tail: &TranscriptTail) -> String {
 
 /// The header session and the recent-sessions list (see the module docs).
 fn session_views(inputs: &EngineInputs<'_>, now_ms: Ms) -> (Option<SessionView>, Vec<SessionView>) {
-    let mut learned = inputs.learned_names.clone();
-    learn_model_names(&mut learned, inputs.captures);
+    let learned = inputs.learned_names;
 
     let Some(pick) = active_session::pick(inputs.tails, inputs.desktop_sessions, now_ms) else {
-        let session = capture_only_session(inputs, &learned);
+        let session = capture_only_session(inputs, learned);
         let sessions = session.iter().cloned().collect();
         return (session, sessions);
     };
-    let active = tail_view(inputs, &inputs.tails[pick.index], &learned, pick.concurrent);
+    let active = tail_view(inputs, &inputs.tails[pick.index], learned, pick.concurrent);
 
     let floor = now_ms.saturating_sub(SESSIONS_WINDOW_MS);
     let mut recent: Vec<&TranscriptTail> = inputs
@@ -370,7 +370,7 @@ fn session_views(inputs: &EngineInputs<'_>, now_ms: Ms) -> (Option<SessionView>,
         sessions.push(if key == active.key {
             active.clone()
         } else {
-            tail_view(inputs, tail, &learned, pick.concurrent)
+            tail_view(inputs, tail, learned, pick.concurrent)
         });
     }
     if !seen.contains(&active.key) {
@@ -698,6 +698,25 @@ mod tests {
     }
 
     #[test]
+    fn early_reset_seen_by_desktop_gets_an_estimate_not_the_old_cli_reset() {
+        let mut f = Fixture::new();
+        // The CLI still reports the old window (60 %, resets in 2 h); Desktop saw it reset since.
+        let caps = [capture("s1", NOW - 30 * MINUTE_MS, &[("five_hour", 60.0, NOW + 2 * HOUR_MS)])];
+        // As the pipeline does: the capture's reset time is learned before the build.
+        assert!(learn_exact_resets(&mut f.exact, &caps));
+        let d = desktop(&[(NOW - HOUR_MS, 58.0), (NOW - 5 * MINUTE_MS, 12.0)], &[]);
+        let s = build_snapshot(&f.inputs(&caps, Some(&d), &[]), NOW);
+        let w = &s.windows[0].state;
+        assert_eq!((w.pct, w.source), (12.0, Source::Desktop));
+        match w.reset {
+            ResetInfo::Estimated { at_ms, .. } => {
+                assert!(at_ms > NOW - HOUR_MS + 5 * HOUR_MS - MINUTE_MS && at_ms <= NOW + 5 * HOUR_MS, "{at_ms}");
+            }
+            ref other => panic!("expected an estimate, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn expired_cli_only_awaits_data() {
         let f = Fixture::new();
         let caps = [capture("s1", NOW - 6 * HOUR_MS, &[("five_hour", 90.0, NOW - HOUR_MS)])];
@@ -766,12 +785,17 @@ mod tests {
 
     #[test]
     fn learned_names_come_from_captures() {
-        let f = Fixture::new();
+        let mut f = Fixture::new();
         let caps = [capture("s1", NOW - MINUTE_MS, &[])];
         let mut t = tail("s1", NOW - MINUTE_MS);
         t.model_id = Some("claude-opus-5-5".into());
-        let s = build_snapshot(&f.inputs(&caps, None, &[t]), NOW);
+        assert!(learn_model_names(&mut f.names, &caps));
+        let s = build_snapshot(&f.inputs(&caps, None, &[t.clone()]), NOW);
         assert_eq!(s.session.unwrap().display_name.as_deref(), Some("Opus 5.5"));
+        // The build uses the learned map it is given; it does not learn from the captures itself.
+        f.names.insert("claude-opus-5-5".into(), "Custom".into());
+        let s = build_snapshot(&f.inputs(&caps, None, &[t]), NOW);
+        assert_eq!(s.session.unwrap().display_name.as_deref(), Some("Custom"));
 
         let mut map = BTreeMap::new();
         assert!(learn_model_names(&mut map, &caps));

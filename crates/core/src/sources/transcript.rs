@@ -35,19 +35,19 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{DirEntry, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::engine::types::Entrypoint;
 use crate::model_names::split_1m;
-use crate::saferead::{ReadError, SafeReader};
+use crate::saferead::SafeReader;
 use crate::sources::SourceError;
-use crate::time::{DAY_MS, Ms, json_time_to_ms};
+use crate::sources::fsutil::{has_extension, lenient, walk_files};
+use crate::time::{DAY_MS, Ms, json_time_to_ms, system_time_ms};
 use crate::turns::TurnInfo;
 
 /// Bytes read from the end of the file on the first attempt.
@@ -74,7 +74,9 @@ pub struct TranscriptTail {
     pub path: PathBuf,
     pub session_id: String,
     pub entrypoint: Entrypoint,
-    /// `message.model` of the last qualifying line (never has `[1m]`).
+    /// `message.model` of the last qualifying line (never has `[1m]`). [`scan_tail`] always sets
+    /// it (a line without a model does not qualify); it stays an `Option` for tails built
+    /// elsewhere (the app's tests, the engine's fallbacks), and readers treat `None` as unknown.
     pub model_id: Option<String>,
     /// Context tokens of the last qualifying line.
     pub ctx_tokens: u64,
@@ -99,9 +101,30 @@ pub struct RecentFile {
     pub len: u64,
 }
 
-/// A head scan, cached per transcript by the caller: `None` until the head has been scanned, then
-/// the identity model id found there (e.g. `Some(Some("claude-opus-5-5[1m]"))`, or `Some(None)`).
-pub type HeadIdentity = Option<Option<String>>;
+/// A head scan, cached per transcript by the caller: `None` until the head has been scanned.
+pub type HeadIdentity = Option<HeadScan>;
+
+/// What a head scan found, and how much of the file it covered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadScan {
+    /// The identity model id of the head (e.g. `claude-opus-5-5[1m]`), if one was found.
+    pub model_id: Option<String>,
+    /// File bytes the scan covered (the file length at the time, capped at [`HEAD_MAX_BYTES`]).
+    pub scanned_len: u64,
+}
+
+impl HeadScan {
+    /// The head is complete: an identity found in the first [`HEAD_BYTES`], or all of
+    /// [`HEAD_MAX_BYTES`] scanned. Later writes cannot change the result.
+    pub fn is_final(&self) -> bool {
+        self.scanned_len >= HEAD_MAX_BYTES || (self.model_id.is_some() && self.scanned_len >= HEAD_BYTES)
+    }
+
+    /// True if the scan still describes a `len`-byte file: it is final or the file has not grown.
+    pub fn covers(&self, len: u64) -> bool {
+        self.is_final() || len <= self.scanned_len
+    }
+}
 
 /// Scans the end of one transcript. Reads the last [`TAIL_BYTES`] (retrying with
 /// [`TAIL_RETRY_BYTES`] if no qualifying line was found and the file is larger); drops the first
@@ -109,9 +132,14 @@ pub type HeadIdentity = Option<Option<String>>;
 /// multi-byte char); tolerates a partial last line (Claude Code may be mid-write) and CRLF.
 /// Walks lines from the end; a cheap substring check for `"assistant"` precedes JSON parsing.
 ///
-/// `identity`: the previous head scan for this path, reused as-is (the head is not read again).
-/// When it is `None` and a qualifying line exists, the head is scanned now and the result stored
-/// there for the next call. Either way `identity_1m` is decided against the current model.
+/// `identity`: the previous head scan for this path, reused as-is (the head is not read again)
+/// while it still covers the file ([`HeadScan::covers`]: the whole head was scanned, or the file
+/// has not grown since). Otherwise, when a qualifying line exists, the head is scanned now and the
+/// result stored there for the next call; so an identity line written after a scan (a `/model`
+/// switch early in the session), or one that was missing, is still found. Either way
+/// `identity_1m` is decided against the current model.
+///
+/// The retry reads only the bytes before the first chunk and prepends them.
 ///
 /// Returns `Ok(None)` if no qualifying line exists. `session_id` falls back to the file stem and
 /// `entrypoint` to `Unknown` when missing. A qualifying line without a usable `timestamp` falls
@@ -121,26 +149,32 @@ pub fn scan_tail(
     path: &Path,
     identity: &mut HeadIdentity,
 ) -> Result<Option<TranscriptTail>, SourceError> {
-    let mut file = reader.open(path).map_err(open_error)?;
-    let meta = file.metadata().map_err(io_error)?;
+    let mut file = reader.open(path)?;
+    let meta = file.metadata()?;
     let len = meta.len();
 
     let (mut chunk, mut chunk_start) = read_tail(&mut file, len, TAIL_BYTES)?;
     let mut scan = scan_chunk(&chunk, chunk_start > 0);
     if scan.is_none() && len > TAIL_BYTES {
-        (chunk, chunk_start) = read_tail(&mut file, len, TAIL_RETRY_BYTES)?;
+        let start = tail_start(len, TAIL_RETRY_BYTES);
+        let mut wider = read_range(&mut file, start, chunk_start - start)?;
+        wider.extend_from_slice(&chunk);
+        (chunk, chunk_start) = (wider, start);
         scan = scan_chunk(&chunk, chunk_start > 0);
     }
     let Some(TailScan { last, max_ctx_tokens, turn }) = scan else {
         return Ok(None);
     };
 
-    if identity.is_none() {
-        *identity = Some(head_identity(&mut file, len, &chunk, chunk_start)?);
+    if identity.as_ref().is_none_or(|head| !head.covers(len)) {
+        *identity = Some(HeadScan {
+            model_id: head_identity(&mut file, len, &chunk, chunk_start)?,
+            scanned_len: len.min(HEAD_MAX_BYTES),
+        });
     }
     let identity_1m = identity
         .as_ref()
-        .and_then(|found| found.as_deref())
+        .and_then(|found| found.model_id.as_deref())
         .map(|id| identity_is_1m_for(id, &last.model));
 
     let session_id = last
@@ -244,61 +278,6 @@ fn newest_first(mut found: Vec<RecentFile>, limit: usize) -> Vec<RecentFile> {
     found.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms).then_with(|| a.path.cmp(&b.path)));
     found.truncate(limit);
     found
-}
-
-/// Calls `on_file` for every regular file below `root`, descending at most `max_depth` levels
-/// (entries directly in `root` are level 1). Directories are listed only through the reader;
-/// unreadable ones are skipped. Symlinks and junctions are never followed.
-pub(crate) fn walk_files(
-    reader: &SafeReader,
-    root: &Path,
-    max_depth: usize,
-    skip_dir: &dyn Fn(&OsStr) -> bool,
-    on_file: &mut dyn FnMut(&DirEntry),
-) {
-    walk_level(reader, root, 1, max_depth, skip_dir, on_file);
-}
-
-fn walk_level(
-    reader: &SafeReader,
-    dir: &Path,
-    depth: usize,
-    max_depth: usize,
-    skip_dir: &dyn Fn(&OsStr) -> bool,
-    on_file: &mut dyn FnMut(&DirEntry),
-) {
-    if depth > max_depth {
-        return;
-    }
-    let Ok(entries) = reader.read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_file() {
-            on_file(&entry);
-        } else if kind.is_dir() && !skip_dir(&entry.file_name()) {
-            walk_level(reader, &entry.path(), depth + 1, max_depth, skip_dir, on_file);
-        }
-    }
-}
-
-/// Deserialises a field leniently: a value of the wrong type becomes `None` instead of failing
-/// the whole record.
-pub(crate) fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).ok())
-}
-
-pub(crate) fn has_extension(path: &Path, ext: &str) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
-}
-
-pub(crate) fn system_time_ms(t: SystemTime) -> Option<Ms> {
-    let d = t.duration_since(UNIX_EPOCH).ok()?;
-    Ms::try_from(d.as_millis()).ok()
 }
 
 // ---- tail scanning ----
@@ -625,15 +604,20 @@ fn scan_chunk(buf: &[u8], starts_mid_file: bool) -> Option<TailScan> {
 /// extra preceding byte, so a chunk that happens to start exactly on a line boundary keeps that
 /// line (the extra `\n` is what gets dropped). Returns the bytes and their start offset.
 fn read_tail(file: &mut File, len: u64, n: u64) -> Result<(Vec<u8>, u64), SourceError> {
-    let start = if len > n { len - n - 1 } else { 0 };
+    let start = tail_start(len, n);
     Ok((read_range(file, start, len - start)?, start))
+}
+
+/// Where [`read_tail`] starts reading the last `n` bytes of a `len`-byte file.
+fn tail_start(len: u64, n: u64) -> u64 {
+    if len > n { len - n - 1 } else { 0 }
 }
 
 /// Reads up to `n` bytes at `start`; a file that shrank meanwhile just yields fewer bytes.
 fn read_range(file: &mut File, start: u64, n: u64) -> Result<Vec<u8>, SourceError> {
-    file.seek(SeekFrom::Start(start)).map_err(io_error)?;
+    file.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
-    file.take(n).read_to_end(&mut buf).map_err(io_error)?;
+    file.take(n).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -650,17 +634,6 @@ fn project_name(cwd: &str) -> Option<String> {
     } else {
         Some(name.to_string())
     }
-}
-
-fn open_error(e: ReadError) -> SourceError {
-    match e {
-        ReadError::Io(io) if io.kind() == io::ErrorKind::NotFound => SourceError::NotFound,
-        other => SourceError::Read(other),
-    }
-}
-
-fn io_error(e: io::Error) -> SourceError {
-    SourceError::Read(ReadError::Io(e))
 }
 
 // ---- head (identity) scanning ----
@@ -825,13 +798,14 @@ fn is_model_id_like(text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     use super::*;
     use crate::paths::Paths;
+    use crate::saferead::ReadError;
 
     const SID: &str = "00000000-0000-4000-8000-000000000001";
     const FIXTURE: &str = include_str!("../../tests/fixtures/transcript/basic.jsonl");
@@ -1473,20 +1447,72 @@ mod tests {
             "p/s.jsonl",
             &lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 1, 1, 1)]),
         );
+        let len = std::fs::metadata(&path).unwrap().len();
         let scan = |cached: HeadIdentity| {
             let mut identity = cached;
             let one_m = scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap().identity_1m;
             (one_m, identity)
         };
-        let found = Some(Some("claude-opus-5-5[1m]".to_string()));
+        let head = |id: Option<&str>| {
+            Some(HeadScan {
+                model_id: id.map(str::to_string),
+                scanned_len: len,
+            })
+        };
+        let found = head(Some("claude-opus-5-5[1m]"));
         assert_eq!(scan(None), (Some(true), found.clone()), "the head scan is handed back");
-        let plain = Some(Some("claude-opus-5-5".to_string()));
+        let plain = head(Some("claude-opus-5-5"));
         assert_eq!(scan(plain.clone()), (Some(false), plain), "cached value is used as-is");
-        assert_eq!(scan(Some(None)), (None, Some(None)));
+        assert_eq!(scan(head(None)), (None, head(None)));
         assert_eq!(scan(found.clone()), (Some(true), found));
         // The cached identity is still compared with the current model.
-        let other = Some(Some("claude-sonnet-5[1m]".to_string()));
+        let other = head(Some("claude-sonnet-5[1m]"));
         assert_eq!(scan(other.clone()), (Some(false), other));
+    }
+
+    #[test]
+    fn cached_head_is_rescanned_while_the_head_grows() {
+        let e = env();
+        let first = lines(&[identity_line("claude-opus-5-5"), assistant("claude-opus-5-5", 1, 1, 1)]);
+        let path = e.write("p/s.jsonl", &first);
+        let mut identity = None;
+        let tail = scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap();
+        assert_eq!(tail.identity_1m, Some(false));
+        // `/model` early in the session: a second identity line lands in the head.
+        let mut grown = first.clone();
+        grown.extend(lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 2, 2, 2)]));
+        write_file(&path, &grown);
+        let tail = scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap();
+        assert_eq!(tail.identity_1m, Some(true), "the newer identity line is seen");
+        assert_eq!(identity.as_ref().map(|h| h.scanned_len), Some(grown.len() as u64));
+    }
+
+    #[test]
+    fn missing_identity_is_retried_once_the_file_grows() {
+        let e = env();
+        let first = lines(&[user("hi"), assistant("claude-opus-5-5", 1, 1, 1)]);
+        let path = e.write("p/s.jsonl", &first);
+        let mut identity = None;
+        assert_eq!(scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap().identity_1m, None);
+        assert_eq!(identity.as_ref().map(|h| h.model_id.clone()), Some(None));
+        let mut grown = first.clone();
+        grown.extend(lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 2, 2, 2)]));
+        write_file(&path, &grown);
+        assert_eq!(scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap().identity_1m, Some(true));
+    }
+
+    #[test]
+    fn a_complete_head_scan_is_final() {
+        let done = |model_id: Option<&str>, scanned_len: u64| HeadScan {
+            model_id: model_id.map(str::to_string),
+            scanned_len,
+        };
+        assert!(done(None, HEAD_MAX_BYTES).is_final());
+        assert!(done(Some("x"), HEAD_BYTES).is_final());
+        assert!(!done(Some("x"), HEAD_BYTES - 1).is_final());
+        assert!(!done(None, HEAD_BYTES).is_final());
+        assert!(done(None, 10).covers(10) && !done(None, 10).covers(11));
+        assert!(done(None, HEAD_MAX_BYTES).covers(u64::MAX));
     }
 
     #[test]

@@ -16,15 +16,16 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::types::{Phase, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState};
+use crate::engine::types::{Phase, RESET_DROP_PCT, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState, is_reset_drop};
 use crate::sources::desktop_usage::DesktopUsage;
 use crate::time::{DAY_MS, FIVE_HOURS_MS, HOUR_MS, MINUTE_MS, Ms};
 
 pub const RETAIN_MS: Ms = 14 * DAY_MS;
-/// A drop of at least this many points between consecutive rows of a window is a reset. Rows mix
-/// CLI values (one decimal) with Desktop integers that can lag a little, so 79.4 then 78 is still
-/// one window. The burn fit, which sees the same mix, uses it too.
-pub const MIXED_SOURCE_DROP_PCT: f32 = 2.0;
+/// A drop of at least this many points between consecutive rows of a window is a reset: the
+/// engine-wide [`RESET_DROP_PCT`]. Rows mix CLI values (one decimal) with Desktop integers that
+/// can lag a little, so 79.4 then 78 is still one window. The burn fit, which sees the same mix,
+/// uses it too.
+pub const MIXED_SOURCE_DROP_PCT: f32 = RESET_DROP_PCT;
 /// Reset marks closer than this (inclusive) are one reset in [`History::view`].
 pub const RESET_DEDUP_MS: Ms = 30 * MINUTE_MS;
 /// A sparkline bucket with no sample carries the previous value forward only if that value is
@@ -54,8 +55,9 @@ pub struct HistoryRow {
 }
 
 impl HistoryRow {
-    fn is_kind(&self, kind: &WindowKind) -> bool {
-        self.w == kind.short() || WindowKind::from_short(&self.w) == *kind
+    /// True if the row belongs to `kind` (no allocation).
+    pub fn is_kind(&self, kind: &WindowKind) -> bool {
+        kind.matches_short(&self.w)
     }
 }
 
@@ -154,11 +156,13 @@ impl History {
     }
 
     /// Adds Desktop samples with `t > watermark_ms` as rows (`s = desktop`, `r = None`), skipping
-    /// any whose (window, t) already exists, keeps rows sorted, and rewrites the file atomically if
-    /// anything was added. Returns the new watermark (max sample t seen, or the old one).
+    /// any whose (window, t) already exists, and keeps rows sorted. When every new row is newer
+    /// than the last row, they are appended to the file (like [`Self::record`]); otherwise the file
+    /// is rewritten atomically. Returns the new watermark (max sample t seen, or the old one).
     pub fn backfill_desktop(&mut self, usage: &DesktopUsage, watermark_ms: Ms) -> io::Result<Ms> {
-        let mut existing: HashSet<(WindowKind, Ms)> = self
-            .rows
+        // Only rows after the watermark can collide with a sample that is added.
+        let after = self.rows.partition_point(|r| r.t <= watermark_ms);
+        let mut existing: HashSet<(WindowKind, Ms)> = self.rows[after..]
             .iter()
             .map(|r| (WindowKind::from_short(&r.w), r.t))
             .collect();
@@ -182,7 +186,15 @@ impl History {
                 }
             }
         }
-        if !added.is_empty() {
+        if added.is_empty() {
+            return Ok(new_watermark);
+        }
+        added.sort_by_key(|r| r.t);
+        let last_t = self.rows.last().map(|r| r.t);
+        if last_t.is_none_or(|last| added[0].t > last) {
+            append_lines(&self.path, &added)?;
+            self.rows.extend(added);
+        } else {
             let mut rows = self.rows.clone();
             rows.extend(added);
             rows.sort_by_key(|r| r.t);
@@ -237,10 +249,13 @@ impl History {
         if buckets == 0 || to_ms <= from_ms {
             return Vec::new();
         }
-        let rows: Vec<&HistoryRow> = self
-            .rows
+        // Rows older than this can never be carried into the first bucket.
+        let seed_from = from_ms.saturating_sub(SPARK_MAX_CARRY_MS);
+        let first = self.rows.partition_point(|r| r.t < seed_from);
+        let rows: Vec<&HistoryRow> = self.rows[first..]
             .iter()
-            .filter(|r| r.t <= to_ms && r.is_kind(kind))
+            .take_while(|r| r.t <= to_ms)
+            .filter(|r| r.is_kind(kind))
             .collect();
         let span = i128::from(to_ms) - i128::from(from_ms);
         let count = buckets as i128;
@@ -326,7 +341,7 @@ impl History {
             let exact_reset = prev
                 .zip(known_reset)
                 .is_some_and(|(p, r)| p.t < r && r <= row.t);
-            let dropped = prev.is_some_and(|p| p.p - row.p >= MIXED_SOURCE_DROP_PCT);
+            let dropped = prev.is_some_and(|p| is_reset_drop(p.p, row.p));
             let expired = prev.filter(|p| five_hour && row.t.saturating_sub(p.t) > FIVE_HOURS_MS);
             if !exact_reset {
                 let mark = match expired {
@@ -413,18 +428,25 @@ fn ensure_parent(path: &Path) -> io::Result<()> {
 /// Appends one JSON line. If the file does not end in `\n` (torn last line), a newline is written
 /// first so the new row does not get glued onto the fragment.
 fn append_line(path: &Path, row: &HistoryRow) -> io::Result<()> {
+    append_lines(path, std::slice::from_ref(row))
+}
+
+/// [`append_line`] for several rows, in one write.
+fn append_lines(path: &Path, rows: &[HistoryRow]) -> io::Result<()> {
     ensure_parent(path)?;
     let mut file = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
         .open(path)?;
-    let mut line = Vec::with_capacity(96);
+    let mut line = Vec::with_capacity(96 * rows.len());
     if !ends_with_newline(&mut file)? {
         line.push(b'\n');
     }
-    serde_json::to_writer(&mut line, row).map_err(io::Error::other)?;
-    line.push(b'\n');
+    for row in rows {
+        serde_json::to_writer(&mut line, row).map_err(io::Error::other)?;
+        line.push(b'\n');
+    }
     file.write_all(&line)
 }
 
@@ -830,6 +852,26 @@ mod tests {
         assert_eq!(h.backfill_desktop(&u, T0 + 1_000).unwrap(), wm);
         assert!(!path.exists());
         assert_eq!(h.rows().len(), 4);
+    }
+
+    #[test]
+    fn backfill_of_newer_samples_appends() {
+        let (_dir, path) = tmp_history();
+        let mut h = History::open(path.clone()).unwrap();
+        assert!(h.record(&fh(12.0, T0)).unwrap());
+        // A torn last line must not swallow the appended rows.
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(b"{\"t\":1").unwrap();
+        let u = usage(vec![
+            (WindowKind::FiveHour, vec![(T0 + 2_000, 14.0), (T0 + 1_000, 13.0)]),
+            (WindowKind::SevenDay, vec![(T0 + 1_000, 40.0)]),
+        ]);
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(h.backfill_desktop(&u, T0).unwrap(), T0 + 2_000);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(&before), "appended, not rewritten");
+        let got: Vec<(Ms, &str)> = h.rows().iter().map(|r| (r.t, r.w.as_str())).collect();
+        assert_eq!(got, vec![(T0, "5h"), (T0 + 1_000, "5h"), (T0 + 1_000, "7d"), (T0 + 2_000, "5h")]);
+        assert_eq!(History::open(path).unwrap().rows(), h.rows());
     }
 
     #[test]

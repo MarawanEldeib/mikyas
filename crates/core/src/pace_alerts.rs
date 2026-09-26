@@ -2,7 +2,8 @@
 //! reopens. Pure state machine (the pipeline persists [`PaceAlertState`] in `state.json`).
 //!
 //! Forecast alert (per window kind, once per window instance — same instance keying as
-//! `alerts.rs`: the reset `at_ms` rounded to 5 min, aliases within the kind's alias window):
+//! `alerts.rs`: the reset `at_ms` rounded to 5 min, aliases within `alerts::alias_between` of the
+//! current reset time's uncertainty):
 //! - fires when `burn.hits_limit_before_reset` is true, `pct >= MIN_PCT` (50), the state is not
 //!   stale, not ResetAwaitingData, not limit_reached, the reset is known and in the future, and
 //!   `t100_ms - now >= MIN_LEAD_MS` (10 min) — a forecast that close is not a warning anymore;
@@ -10,7 +11,8 @@
 //!   estimate can be replaced by an exact time further off than the alias window, so the forecast
 //!   uses twice that window (consecutive windows' resets are 5 h / 7 days apart).
 //!
-//! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >= 99.5), the phase
+//! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >=
+//! [`LIMIT_REACHED_PCT`]), the phase
 //! is Active and the reset is known, still ahead and `reset - now <= lead` (five_hour: 10 min,
 //! weekly kinds: 60 min). An estimate counts only if its `plus_minus` is within the lead ("reopens
 //! in 10 min" from a ±1 day guess is no heads-up). Stale data does not stop it: a capped window
@@ -23,8 +25,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::alerts::{INSTANCE_ROUND_MS, alias_ms};
-use crate::engine::types::{Phase, ResetInfo, WindowKind, WindowState, WindowView};
+use crate::alerts::{alias_between, alias_ms, instance_key, plus_minus};
+use crate::engine::merge::LIMIT_REACHED_PCT;
+use crate::engine::types::{Phase, WindowKind, WindowState, WindowView};
 use crate::time::{MINUTE_MS, Ms};
 
 pub const MIN_PCT: f32 = 50.0;
@@ -73,9 +76,9 @@ impl PaceAlertState {
                 continue;
             };
             let entry = self.kinds.entry(w.kind.key().to_owned()).or_default();
-            let alias = alias_ms(&w.kind);
+            let alias = alias_between(&w.kind, plus_minus(&w.reset), 0);
             if settings.forecast && !w.stale {
-                let alias = alias.saturating_mul(2);
+                let alias = alias.max(alias_ms(&w.kind).saturating_mul(2));
                 if let Some(event) = forecast(view, now_ms) {
                     if !claim(&mut entry.forecast_fired_for, key, alias) {
                         events.push(event);
@@ -102,7 +105,7 @@ fn forecast(view: &WindowView, now_ms: Ms) -> Option<PaceAlertEvent> {
     let w = &view.state;
     let burn = view.burn.as_ref().filter(|b| b.hits_limit_before_reset)?;
     let reset_at_ms = w.reset.at_ms().filter(|&r| r > now_ms)?;
-    let t100_ms = burn.t100_ms.filter(|&t| t < reset_at_ms)?;
+    let t100_ms = Some(burn.t100_ms).filter(|&t| t < reset_at_ms)?;
     let ok = w.pct >= MIN_PCT
         && w.phase == Phase::Active
         && !w.limit_reached
@@ -117,7 +120,7 @@ fn forecast(view: &WindowView, now_ms: Ms) -> Option<PaceAlertEvent> {
 
 /// A heads-up for a capped window whose (future) reset is within the kind's lead.
 fn heads_up(w: &WindowState, now_ms: Ms) -> Option<PaceAlertEvent> {
-    let capped = w.limit_reached || w.pct >= 99.5;
+    let capped = w.limit_reached || w.pct >= LIMIT_REACHED_PCT;
     let lead = match w.kind {
         WindowKind::FiveHour => HEADS_UP_FIVE_HOUR_MS,
         _ => HEADS_UP_WEEKLY_MS,
@@ -149,26 +152,11 @@ fn claim_alias(fired_for: &mut Option<Ms>, key: Ms, alias: Ms) -> bool {
     same
 }
 
-/// How far off the reset time may be: 0 when exact.
-fn plus_minus(reset: &ResetInfo) -> Ms {
-    match reset {
-        ResetInfo::Estimated { plus_minus_ms, .. } => (*plus_minus_ms).max(0),
-        ResetInfo::Exact { .. } | ResetInfo::Unknown => 0,
-    }
-}
-
-/// Rounds a reset time to the nearest [`INSTANCE_ROUND_MS`] (saturating), like `alerts.rs`.
-fn instance_key(at_ms: Ms) -> Ms {
-    at_ms
-        .saturating_add(INSTANCE_ROUND_MS / 2)
-        .div_euclid(INSTANCE_ROUND_MS)
-        .saturating_mul(INSTANCE_ROUND_MS)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::types::{Burn, Confidence, Source};
+    use crate::engine::types::{Burn, Confidence, ResetInfo, Source};
     use crate::time::{DAY_MS, HOUR_MS};
     use pretty_assertions::assert_eq;
 
@@ -189,12 +177,12 @@ mod tests {
                 source: Source::Cli,
                 observed_at_ms: T0,
                 stale: false,
-                limit_reached: pct >= 99.5,
+                limit_reached: pct >= LIMIT_REACHED_PCT,
                 phase: Phase::Active,
             },
             burn: t100_ms.map(|t| Burn {
                 slope_pct_per_h: 10.0,
-                t100_ms: Some(t),
+                t100_ms: t,
                 pct_at_reset: None,
                 hits_limit_before_reset: reset_at.is_some_and(|r| t < r),
             }),
@@ -273,9 +261,9 @@ mod tests {
         let unknown = view(WindowKind::FiveHour, 80.0, ResetInfo::Unknown, Some(t100));
         assert_eq!(run(unknown, T0), vec![]);
         assert_eq!(run(fh(80.0, t100), R), vec![], "reset already passed");
-        let mut no_t100 = fh(80.0, t100);
-        no_t100.burn.as_mut().unwrap().t100_ms = None;
-        assert_eq!(run(no_t100, T0), vec![]);
+        let mut no_burn = fh(80.0, t100);
+        no_burn.burn = None;
+        assert_eq!(run(no_burn, T0), vec![]);
         // A burn that says "before the reset" while its own t100 is not: trust neither.
         let mut inconsistent = fh(80.0, R);
         inconsistent.burn.as_mut().unwrap().hits_limit_before_reset = true;
@@ -478,13 +466,5 @@ mod tests {
             }
         );
         assert_eq!(serde_json::from_str::<PaceAlertState>("{}").unwrap(), PaceAlertState::default());
-    }
-
-    #[test]
-    fn instance_key_rounds_to_nearest_five_minutes() {
-        assert_eq!(instance_key(T0 + 149_999), T0);
-        assert_eq!(instance_key(T0 + 150_000), T0 + INSTANCE_ROUND_MS);
-        let _ = instance_key(Ms::MAX);
-        let _ = instance_key(Ms::MIN);
     }
 }
