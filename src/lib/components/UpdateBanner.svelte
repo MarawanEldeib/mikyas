@@ -39,9 +39,10 @@
 {#if visible && update}
   <div class="update" class:pill role="status">
     <Icon name="update" size={pill ? 11 : 13} />
-    <!-- The card's status area leaves no room for "Update" beside the version; the icon says it. -->
+    <!-- The card's status area leaves no room for "Update" beside the version; the icon says it
+         there, and the word stays for screen readers (this is a status message). -->
     <span class="text" title="Claude Usage Widget {update.version} is available">
-      {#if pill}Update{/if} <strong>v{update.version}</strong> available
+      <span class:sr={!pill}>Update</span> <strong>v{update.version}</strong> available
     </span>
     <span class="dot" aria-hidden="true">·</span>
     <button type="button" class="view" onclick={() => view(update.url)}>View</button>
@@ -84,6 +85,14 @@
   }
   strong {
     font-weight: 600;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .dot {
     flex: none;
