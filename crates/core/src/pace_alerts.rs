@@ -6,11 +6,15 @@
 //! - fires when `burn.hits_limit_before_reset` is true, `pct >= MIN_PCT` (50), the state is not
 //!   stale, not ResetAwaitingData, not limit_reached, the reset is known and in the future, and
 //!   `t100_ms - now >= MIN_LEAD_MS` (10 min) — a forecast that close is not a warning anymore;
-//! - never re-fires in the same instance, even if the forecast recovers and worsens again.
+//! - never re-fires in the same instance, even if the forecast recovers and worsens again. An
+//!   estimate can be replaced by an exact time further off than the alias window, so the forecast
+//!   uses twice that window (consecutive windows' resets are 5 h / 7 days apart).
 //!
 //! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >= 99.5), the phase
 //! is Active and the reset is known, still ahead and `reset - now <= lead` (five_hour: 10 min,
-//! weekly kinds: 60 min). Stale data does not stop it: a capped window stays capped until then.
+//! weekly kinds: 60 min). An estimate counts only if its `plus_minus` is within the lead ("reopens
+//! in 10 min" from a ±1 day guess is no heads-up). Stale data does not stop it: a capped window
+//! stays capped until then.
 //!
 //! `first_run` suppresses nothing here (a forecast is still useful right after start), but events
 //! whose instance was already handled before a restart must not repeat (the state is persisted).
@@ -20,7 +24,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::alerts::{INSTANCE_ROUND_MS, alias_ms};
-use crate::engine::types::{Phase, WindowKind, WindowState, WindowView};
+use crate::engine::types::{Phase, ResetInfo, WindowKind, WindowState, WindowView};
 use crate::time::{MINUTE_MS, Ms};
 
 pub const MIN_PCT: f32 = 50.0;
@@ -71,6 +75,7 @@ impl PaceAlertState {
             let entry = self.kinds.entry(w.kind.key().to_owned()).or_default();
             let alias = alias_ms(&w.kind);
             if settings.forecast && !w.stale {
+                let alias = alias.saturating_mul(2);
                 if let Some(event) = forecast(view, now_ms) {
                     if !claim(&mut entry.forecast_fired_for, key, alias) {
                         events.push(event);
@@ -117,6 +122,9 @@ fn heads_up(w: &WindowState, now_ms: Ms) -> Option<PaceAlertEvent> {
         WindowKind::FiveHour => HEADS_UP_FIVE_HOUR_MS,
         _ => HEADS_UP_WEEKLY_MS,
     };
+    if plus_minus(&w.reset) > lead {
+        return None;
+    }
     let reset_at_ms = w.reset.at_ms().filter(|&r| r > now_ms && r - now_ms <= lead)?;
     (capped && w.phase == Phase::Active).then(|| PaceAlertEvent::HeadsUp {
         kind: w.kind.clone(),
@@ -141,6 +149,14 @@ fn claim_alias(fired_for: &mut Option<Ms>, key: Ms, alias: Ms) -> bool {
     same
 }
 
+/// How far off the reset time may be: 0 when exact.
+fn plus_minus(reset: &ResetInfo) -> Ms {
+    match reset {
+        ResetInfo::Estimated { plus_minus_ms, .. } => (*plus_minus_ms).max(0),
+        ResetInfo::Exact { .. } | ResetInfo::Unknown => 0,
+    }
+}
+
 /// Rounds a reset time to the nearest [`INSTANCE_ROUND_MS`] (saturating), like `alerts.rs`.
 fn instance_key(at_ms: Ms) -> Ms {
     at_ms
@@ -152,7 +168,7 @@ fn instance_key(at_ms: Ms) -> Ms {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::types::{Burn, Confidence, ResetInfo, Source};
+    use crate::engine::types::{Burn, Confidence, Source};
     use crate::time::{DAY_MS, HOUR_MS};
     use pretty_assertions::assert_eq;
 
@@ -306,12 +322,12 @@ mod tests {
     }
 
     #[test]
-    fn five_hour_alias_is_thirty_minutes() {
+    fn five_hour_forecast_alias_is_an_hour() {
         let mut s = PaceAlertState::default();
         assert_eq!(s.evaluate(&[fh(60.0, T0 + HOUR_MS)], BOTH, T0).len(), 1);
         let near = |at_ms: Ms| view(WindowKind::FiveHour, 61.0, ResetInfo::Exact { at_ms }, Some(T0 + HOUR_MS));
-        assert_eq!(s.evaluate(&[near(R + 30 * MINUTE_MS)], BOTH, T0), vec![]);
-        assert_eq!(s.evaluate(&[near(R + 65 * MINUTE_MS)], BOTH, T0).len(), 1, "a new window");
+        assert_eq!(s.evaluate(&[near(R + 60 * MINUTE_MS)], BOTH, T0), vec![]);
+        assert_eq!(s.evaluate(&[near(R + 125 * MINUTE_MS)], BOTH, T0).len(), 1, "a new window");
     }
 
     #[test]
@@ -357,6 +373,50 @@ mod tests {
         let mut stale = capped(WindowKind::FiveHour, R);
         stale.state.stale = true;
         assert_eq!(run(stale, R - MINUTE_MS).len(), 1);
+    }
+
+    #[test]
+    fn heads_up_needs_a_reset_time_precise_enough_for_its_lead() {
+        let run = |v: WindowView, now: Ms| PaceAlertState::default().evaluate(&[v], BOTH, now);
+        let est = |kind: WindowKind, plus_minus_ms: Ms, confidence: Confidence| {
+            view(
+                kind,
+                100.0,
+                ResetInfo::Estimated {
+                    at_ms: R,
+                    plus_minus_ms,
+                    confidence,
+                },
+                None,
+            )
+        };
+        // "Reopens in 8 min" from a ±2 h guess would be a promise the data cannot keep.
+        assert_eq!(run(est(WindowKind::FiveHour, 2 * HOUR_MS, Confidence::Low), R - 8 * MINUTE_MS), vec![]);
+        assert_eq!(run(est(WindowKind::FiveHour, 45 * MINUTE_MS, Confidence::Medium), R - 8 * MINUTE_MS), vec![]);
+        assert_eq!(run(est(WindowKind::SevenDay, DAY_MS, Confidence::Low), R - 30 * MINUTE_MS), vec![]);
+        // An estimate within the lead is good enough.
+        let close = est(WindowKind::FiveHour, 10 * MINUTE_MS, Confidence::High);
+        assert_eq!(run(close, R - 8 * MINUTE_MS).len(), 1);
+    }
+
+    #[test]
+    fn an_exact_reset_replacing_the_estimate_is_the_same_window() {
+        // Desktop-only first (a ±45 min estimate), then Claude Code reports the exact time 40 min
+        // later than estimated: still the window the forecast already fired for.
+        let mut s = PaceAlertState::default();
+        let estimated = ResetInfo::Estimated {
+            at_ms: R,
+            plus_minus_ms: 45 * MINUTE_MS,
+            confidence: Confidence::Medium,
+        };
+        let t100 = T0 + HOUR_MS;
+        assert_eq!(s.evaluate(&[view(WindowKind::FiveHour, 60.0, estimated, Some(t100))], BOTH, T0).len(), 1);
+        let exact = view(WindowKind::FiveHour, 61.0, ResetInfo::Exact { at_ms: R + 40 * MINUTE_MS }, Some(t100));
+        assert_eq!(s.evaluate(&[exact], BOTH, T0 + MINUTE_MS), vec![]);
+        // The next window (five hours on) is still new.
+        let next = R + 40 * MINUTE_MS + 5 * HOUR_MS;
+        let later = view(WindowKind::FiveHour, 60.0, ResetInfo::Exact { at_ms: next }, Some(next - HOUR_MS));
+        assert_eq!(s.evaluate(&[later], BOTH, next - 3 * HOUR_MS).len(), 1);
     }
 
     #[test]
