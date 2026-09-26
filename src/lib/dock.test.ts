@@ -87,6 +87,26 @@ describe("createDockController", () => {
     expect(calls).toEqual([false]);
   });
 
+  it("slides back in when the pointer brushes past the strip before the slide-out lands", () => {
+    // setExpanded(true) is only a request: the store flips once Rust's ui-state arrives.
+    const state: DockState = { docked: true, expanded: false, clickThrough: false, view: "card" };
+    const calls: boolean[] = [];
+    const ctl = createDockController({ state: () => state, setExpanded: (v) => calls.push(v) });
+    ctl.expand();
+    ctl.leave();
+    state.expanded = true;
+    vi.advanceTimersByTime(COLLAPSE_DELAY_MS);
+    expect(calls).toEqual([true, false]);
+    // Coming back in time still keeps it out.
+    state.expanded = false;
+    ctl.expand();
+    ctl.leave();
+    state.expanded = true;
+    ctl.hold();
+    vi.advanceTimersByTime(COLLAPSE_DELAY_MS);
+    expect(calls).toEqual([true, false, true]);
+  });
+
   it("rechecks when the timer fires", () => {
     const { state, calls, ctl } = setup({ expanded: true });
     ctl.leave();

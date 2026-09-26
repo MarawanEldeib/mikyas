@@ -61,12 +61,14 @@
     flex-direction: column;
     gap: 4px;
     min-width: 0;
-    /* Constant height (burn line or not) keeps both sections aligned across states. Hiding the
-       burn row takes its 14px line and 4px gap off (window.rs shrinks the card by as much). */
-    min-height: 65px;
+    /* Constant height (burn line or not) keeps both sections aligned across states: headline 26
+       + 1 + reset 14, then bar 4 and burn line 14, each after a 4px gap. Two sections fit the
+       232px card exactly. Hiding the burn row takes its 14px line and 4px gap off (window.rs
+       shrinks the card by as much). */
+    min-height: 67px;
   }
   .win.no-burn {
-    min-height: 47px;
+    min-height: 49px;
   }
   .top {
     display: flex;
@@ -80,10 +82,13 @@
     flex-direction: column;
     gap: 1px;
   }
+  /* A fixed height (the 24px figure plus 2px of air above the reset line), so baseline-aligned
+     runs of other sizes can't stretch the row and squeeze the bar and burn line below it. */
   .headline {
     display: flex;
     align-items: baseline;
     gap: 6px;
+    height: 26px;
     white-space: nowrap;
   }
   .pct {
@@ -96,8 +101,10 @@
   .pct.crit {
     color: var(--crit);
   }
+  /* Inheriting the 24px line-height, this 14px run would make the figure's line box 28px. */
   .unit {
     font-size: 14px;
+    line-height: 1;
     font-weight: 600;
     margin-left: 1px;
     color: var(--fg-2);
