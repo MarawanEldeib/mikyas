@@ -22,3 +22,7 @@ history.jsonl
 .DS_Store
 Thumbs.db
 *.log
+
+# local assistant tooling (never published)
+/.claude/
+CLAUDE.local.md
