@@ -1817,4 +1817,69 @@ mod tests {
         let path = e.write("p/crlf.jsonl", body.as_bytes());
         assert_eq!(e.scan(&path).unwrap().turn, finished(0, 200, false));
     }
+
+    mod props {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        const MODELS: [&str; 3] = ["claude-opus-5-5", "claude-sonnet-5", "<synthetic>"];
+
+        fn arb_complete_line() -> impl Strategy<Value = Vec<u8>> {
+            prop_oneof![
+                (0..MODELS.len(), 0u64..1_000_000, any::<bool>()).prop_map(|(m, read, sidechain)| {
+                    let mut line = assistant(MODELS[m], 3, 0, read);
+                    line["isSidechain"] = json!(sidechain);
+                    serde_json::to_vec(&line).unwrap()
+                }),
+                Just(br#"{"type":"user","message":{"role":"user","content":"a prompt"}}"#.to_vec()),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+            /// A tail read starts anywhere in the file, even inside a multi-byte character: the
+            /// partial first line is dropped and the rest scans exactly as the whole lines do.
+            #[test]
+            fn partial_first_line_is_dropped(
+                prefix in prop::collection::vec(any::<u8>().prop_filter("no newline", |b| *b != b'\n'), 0..64),
+                cut_line in arb_complete_line(),
+                cut in any::<prop::sample::Index>(),
+                lines in prop::collection::vec(arb_complete_line(), 0..8),
+                crlf in any::<bool>(),
+            ) {
+                let eol: &[u8] = if crlf { b"\r\n" } else { b"\n" };
+                // A cut through "é😀" lands mid-character for most offsets.
+                let mut partial = "é😀".as_bytes().to_vec();
+                partial.extend_from_slice(&cut_line);
+                let mut whole = Vec::new();
+                for line in &lines {
+                    whole.extend_from_slice(line);
+                    whole.extend_from_slice(eol);
+                }
+                let mut chunk = prefix;
+                chunk.extend_from_slice(&partial[cut.index(partial.len())..]);
+                chunk.extend_from_slice(eol);
+                chunk.extend_from_slice(&whole);
+
+                let from_chunk = scan_chunk(&chunk, true);
+                let from_lines = scan_chunk(&whole, false);
+                prop_assert_eq!(from_chunk.is_some(), from_lines.is_some());
+                if let (Some(a), Some(b)) = (from_chunk, from_lines) {
+                    prop_assert_eq!(&a.last.model, &b.last.model);
+                    prop_assert_ne!(a.last.model.as_str(), SYNTHETIC_MODEL);
+                    prop_assert_eq!(a.last.ctx_tokens, b.last.ctx_tokens);
+                    prop_assert_eq!(a.max_ctx_tokens, b.max_ctx_tokens);
+                    prop_assert!(a.max_ctx_tokens >= a.last.ctx_tokens);
+                }
+            }
+
+            #[test]
+            fn scan_chunk_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512), mid in any::<bool>()) {
+                let _ = scan_chunk(&bytes, mid);
+                let _ = scan_head(&bytes);
+            }
+        }
+    }
 }
