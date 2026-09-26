@@ -9,9 +9,12 @@
   interface Props {
     window: WindowView;
     now: number;
+    /** Optional rows (Settings → Card rows). */
+    sparkline?: boolean;
+    burn?: boolean;
   }
 
-  let { window: w, now }: Props = $props();
+  let { window: w, now, sparkline = true, burn = true }: Props = $props();
 
   const p = $derived(clampPct(w.pct));
   const label = $derived(windowLabel(w.kind));
@@ -23,7 +26,7 @@
   const tip = $derived(estimateTooltip(w.reset));
 </script>
 
-<section class="win" aria-label="{label} limit">
+<section class="win" class:no-burn={!burn} aria-label="{label} limit">
   <div class="top">
     <div class="figures">
       <div class="headline">
@@ -40,12 +43,16 @@
         {resetLine(w, now)}{#if tip}<span class="pm" aria-hidden="true">±</span>{/if}
       </div>
     </div>
-    <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" />
+    {#if sparkline}
+      <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" />
+    {/if}
   </div>
   <div class="bar" role="progressbar" aria-label="{label} usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)}>
     <div class="fill" style:width="{p}%" style:background={color}></div>
   </div>
-  <BurnLine window={w} {now} />
+  {#if burn}
+    <BurnLine window={w} {now} />
+  {/if}
 </section>
 
 <style>
@@ -54,8 +61,12 @@
     flex-direction: column;
     gap: 4px;
     min-width: 0;
-    /* Constant height (burn line or not) keeps both sections aligned across states. */
+    /* Constant height (burn line or not) keeps both sections aligned across states. Hiding the
+       burn row takes its 14px line and 4px gap off (window.rs shrinks the card by as much). */
     min-height: 65px;
+  }
+  .win.no-burn {
+    min-height: 47px;
   }
   .top {
     display: flex;

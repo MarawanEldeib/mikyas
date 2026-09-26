@@ -157,6 +157,7 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
         crate::hotkey::register(app, shared, &new.hotkey);
     }
     // [stream B] appearance hooks (ui_scale, card_rows, dock) go here.
+    crate::window::on_settings_changed(app, shared, &old, &new);
 
     // [stream C] system hooks (toggle_hotkey, auto_hide_fullscreen, check_updates) go here.
 

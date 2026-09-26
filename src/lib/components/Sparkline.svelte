@@ -20,7 +20,8 @@
   const opts = $derived({ width, height, padX: 3, padY: 3 });
   const geo = $derived(sparkGeometry(points, opts));
   const y80 = $derived(sparkY(80, opts));
-  const color = $derived(stale ? "var(--fg-3)" : fillColor(pct));
+  // A chrome accent recolours the line (--spark); the default keeps the usage band's colour.
+  const color = $derived(stale ? "var(--fg-3)" : `var(--spark, ${fillColor(pct)})`);
 </script>
 
 <svg class="spark" {width} {height} viewBox="0 0 {width} {height}" role="img" aria-label={label}>
