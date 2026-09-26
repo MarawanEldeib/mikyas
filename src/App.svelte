@@ -7,7 +7,7 @@
   import Settings from "./lib/components/Settings.svelte";
   import UpdateBanner from "./lib/components/UpdateBanner.svelte";
   import WindowControls from "./lib/components/WindowControls.svelte";
-  import { nativeMenuAllowed } from "./lib/controls";
+  import { menuAnchor, nativeMenuAllowed } from "./lib/controls";
   import { api, startDragging } from "./lib/ipc";
   import { app } from "./lib/stores.svelte";
   import { createTicker, type Ticker } from "./lib/tick";
@@ -78,7 +78,9 @@
   function oncontextmenu(e: MouseEvent) {
     if (nativeMenuAllowed(e.target, window.getSelection())) return;
     e.preventDefault();
-    if (!app.ui.click_through) api.showContextMenu().catch((err: unknown) => console.warn("show_context_menu failed", err));
+    if (app.ui.click_through) return;
+    const at = menuAnchor(e as PointerEvent, document.activeElement instanceof Element ? document.activeElement : null);
+    api.showContextMenu(at).catch((err: unknown) => console.warn("show_context_menu failed", err));
   }
 </script>
 
@@ -87,6 +89,8 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
   <UpdateBanner />
+  <!-- First in the DOM so Tab reaches the caption buttons before the view's content. -->
+  {#if app.ready}<WindowControls />{/if}
   {#if !app.ready}
     {#if app.error}
       <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>
@@ -104,7 +108,6 @@
   {:else}
     <Card />
   {/if}
-  {#if app.ready}<WindowControls />{/if}
 </div>
 
 <style>

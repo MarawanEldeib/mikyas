@@ -13,8 +13,8 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_R
 use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromWindow};
 use windows_sys::Win32::UI::Shell::{QUERY_USER_NOTIFICATION_STATE, SHQueryUserNotificationState};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowRect, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
-    ShowWindow,
+    GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindow, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetForegroundWindow, SetWindowPos, ShowWindow,
 };
 
 use crate::fullscreen::{Foreground, Quns, Rect};
@@ -57,6 +57,23 @@ pub fn set_memory_low(window: &tauri::WebviewWindow, low: bool) {
 /// The window's handle as an integer (for comparisons and the queries below).
 pub fn window_id(window: &tauri::WebviewWindow) -> Option<isize> {
     window.hwnd().ok().map(|h| h.0 as isize)
+}
+
+/// The current foreground window's handle (0 if none).
+pub fn foreground_handle() -> isize {
+    // SAFETY: no arguments; returns a handle value or null.
+    unsafe { GetForegroundWindow() as isize }
+}
+
+/// Hands the foreground back to `window` if it still exists. Only called while this process owns
+/// the foreground (right after its context menu), which is when Windows allows the switch.
+pub fn set_foreground(window: isize) {
+    // SAFETY: IsWindow validates the stale-able handle value first; neither call takes pointers.
+    unsafe {
+        if IsWindow(window as HWND) != 0 {
+            SetForegroundWindow(window as HWND);
+        }
+    }
 }
 
 /// Makes the window visible without activating it (`SW_SHOWNOACTIVATE`): the app in front keeps

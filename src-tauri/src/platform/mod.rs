@@ -72,6 +72,22 @@ pub fn foreground_window(own: Option<isize>) -> Option<crate::fullscreen::Foregr
     }
 }
 
+/// The current foreground window's handle (0 if none or unknown).
+pub fn foreground_handle() -> isize {
+    #[cfg(windows)]
+    return windows::foreground_handle();
+    #[cfg(not(windows))]
+    0
+}
+
+/// Gives the foreground (keyboard focus) back to a window that had it (no-op elsewhere).
+pub fn set_foreground(window: isize) {
+    #[cfg(windows)]
+    windows::set_foreground(window);
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 /// The shell's notification state (fullscreen / presentation).
 pub fn notification_state() -> crate::fullscreen::Quns {
     #[cfg(windows)]

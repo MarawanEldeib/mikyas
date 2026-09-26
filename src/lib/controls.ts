@@ -27,6 +27,39 @@ export function windowControls(s: ControlsState): WindowControl[] {
   }
 }
 
+/** Height (CSS px at UI scale 1) of the header strip whose hover shows the controls. */
+export const CONTROL_ZONE_PX = 48;
+
+/**
+ * Whether the pointer at `clientY` should show the controls: anywhere on the 72px pill, but only
+ * over the header strip elsewhere, so pointing at the numbers never fades the context % out.
+ */
+export function inControlZone(view: ViewMode, clientY: number, uiScale: number): boolean {
+  return view === "pill" || clientY <= CONTROL_ZONE_PX * uiScale;
+}
+
+/** Where a right-click menu opened from the keyboard (Menu key, Shift+F10) should appear. */
+export interface MenuAnchor {
+  x: number;
+  y: number;
+}
+
+/**
+ * `null` for a pointer right-click (the menu opens at the cursor). A keyboard-opened menu has no
+ * pointer (`pointerType` "" in Chromium, or no coordinates), so it opens below the focused element
+ * instead of wherever the mouse happens to be.
+ */
+export function menuAnchor(
+  e: { clientX: number; clientY: number; pointerType?: string },
+  focused: { getBoundingClientRect(): { left: number; bottom: number } } | null,
+): MenuAnchor | null {
+  const fromKeyboard = e.pointerType === "" || (e.clientX === 0 && e.clientY === 0);
+  if (!fromKeyboard) return null;
+  if (!focused) return { x: 8, y: 8 };
+  const r = focused.getBoundingClientRect();
+  return { x: Math.max(0, r.left), y: Math.max(0, r.bottom) };
+}
+
 export type ControlAction =
   | { type: "view"; view: ViewMode }
   /** Slide the docked widget back into its strip. */

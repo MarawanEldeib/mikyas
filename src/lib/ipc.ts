@@ -66,7 +66,9 @@ export const api = {
   openDataFolder: () => call<void>("open_data_folder"),
   quitApp: () => call<void>("quit_app"),
   hideWidget: () => call<void>("hide_widget"),
-  showContextMenu: () => call<void>("show_context_menu"),
+  /** `at` (logical px from the window's top-left) for keyboard-opened menus; `null` = at the cursor. */
+  showContextMenu: (at: { x: number; y: number } | null = null) =>
+    call<void>("show_context_menu", at ? { x: at.x, y: at.y } : {}),
   getHistory: (days: number) => call<HistoryData>("get_history", { days }),
   /** `force`: the user asked (the card's "–"), so Rust skips its pointer-still-inside check. */
   setDockExpanded: (expanded: boolean, force = false) => call<void>("set_dock_expanded", { expanded, force }),

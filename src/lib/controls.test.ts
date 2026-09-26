@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { controlAction, controlLabel, nativeMenuAllowed, windowControls, type ControlsState } from "./controls";
+import {
+  CONTROL_ZONE_PX,
+  controlAction,
+  controlLabel,
+  inControlZone,
+  menuAnchor,
+  nativeMenuAllowed,
+  windowControls,
+  type ControlsState,
+} from "./controls";
 import type { ViewMode } from "./types";
 
 const base: ControlsState = { view: "card", dock: "off", dockExpanded: false, clickThrough: false };
@@ -52,6 +61,41 @@ describe("controlAction", () => {
     expect(controlLabel("minimize", base, "hide")).toBe("Minimize to pill");
     expect(controlLabel("minimize", { ...base, dock: "left", dockExpanded: true }, "hide")).toBe("Minimize to the screen edge");
     expect(controlLabel("expand", { ...base, view: "pill" }, "hide")).toBe("Expand");
+  });
+});
+
+describe("inControlZone", () => {
+  it("shows the controls over the header strip only, scaled with the UI", () => {
+    expect(inControlZone("card", 10, 1)).toBe(true);
+    expect(inControlZone("card", CONTROL_ZONE_PX, 1)).toBe(true);
+    expect(inControlZone("card", CONTROL_ZONE_PX + 1, 1)).toBe(false);
+    expect(inControlZone("card", 150, 1)).toBe(false);
+    expect(inControlZone("settings", 30, 1)).toBe(true);
+    expect(inControlZone("history", 200, 1)).toBe(false);
+    expect(inControlZone("card", 60, 1.3)).toBe(true);
+    expect(inControlZone("card", 60, 0.85)).toBe(false);
+  });
+
+  it("covers the whole pill", () => {
+    expect(inControlZone("pill", 70, 1)).toBe(true);
+    expect(inControlZone("pill", 90, 1.3)).toBe(true);
+  });
+});
+
+describe("menuAnchor", () => {
+  const focused = { getBoundingClientRect: () => ({ left: 12.5, bottom: 40 }) };
+
+  it("leaves pointer right-clicks at the cursor", () => {
+    expect(menuAnchor({ clientX: 100, clientY: 50, pointerType: "mouse" }, focused)).toBeNull();
+    expect(menuAnchor({ clientX: 100, clientY: 50 }, focused)).toBeNull();
+  });
+
+  it("anchors keyboard-opened menus below the focused element", () => {
+    expect(menuAnchor({ clientX: 0, clientY: 0, pointerType: "" }, focused)).toEqual({ x: 12.5, y: 40 });
+    expect(menuAnchor({ clientX: 0, clientY: 0 }, focused)).toEqual({ x: 12.5, y: 40 });
+    expect(menuAnchor({ clientX: 0, clientY: 0, pointerType: "" }, null)).toEqual({ x: 8, y: 8 });
+    const offLeft = { getBoundingClientRect: () => ({ left: -4, bottom: -2 }) };
+    expect(menuAnchor({ clientX: 0, clientY: 0, pointerType: "" }, offLeft)).toEqual({ x: 0, y: 0 });
   });
 });
 

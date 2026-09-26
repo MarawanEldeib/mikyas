@@ -240,7 +240,8 @@ export interface ConnectPreview {
  *  open_data_folder() -> void
  *  quit_app() -> void
  *  hide_widget() -> void                                 (the ×: hides like the tray, hint once)
- *  show_context_menu() -> void                           (native right-click menu at the cursor)
+ *  show_context_menu({ x?, y? }) -> void                 (native right-click menu at the cursor, or at x/y
+ *                                                          logical px when opened from the keyboard)
  *  get_history({ days: number }) -> HistoryData          (days 1..14)
  *  set_dock_expanded({ expanded: boolean, force?: boolean }) -> void
  *                                   (pointer enter/leave while docked; force: the card's "–")
