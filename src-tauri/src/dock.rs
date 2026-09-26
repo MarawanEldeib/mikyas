@@ -56,6 +56,14 @@ impl Side {
             Self::Top => (r.0, r.2),
         }
     }
+
+    /// The component of a point or a size that runs along the edge.
+    fn along(self, (x, y): (i32, i32)) -> i32 {
+        match self {
+            Self::Left | Self::Right => y,
+            Self::Top => x,
+        }
+    }
 }
 
 /// Only these views slide back into the strip.
@@ -100,24 +108,20 @@ pub fn strip_rect(side: Side, area: Rect, size: (i32, i32), from: Rect) -> Rect 
     flush_rect(side, area, size, center_along(side, from))
 }
 
-/// The slid-out view of `size` for `strip`: centred on the strip, or, when the view is
-/// shorter than the strip along the edge, on the cursor (kept within the strip).
-pub fn expanded_rect(side: Side, area: Rect, size: (i32, i32), strip: Rect, cursor: Option<(i32, i32)>) -> Rect {
+fn contains((x, y, w, h): Rect, (px, py): (i32, i32)) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
+}
+
+/// The slid-out view of `size` for `strip`, the window currently being `current`: centred on
+/// the strip; a view shorter than the strip along the edge is centred on the cursor instead
+/// while the cursor is over the widget (hovering the strip, or clicking "Collapse to pill" at
+/// the bottom of the card), so it opens under the pointer and isn't left straight away.
+pub fn expanded_rect(side: Side, area: Rect, size: (i32, i32), strip: Rect, current: Rect, cursor: Option<(i32, i32)>) -> Rect {
     let (start, len) = side.span(strip);
-    let view_len = match side {
-        Side::Left | Side::Right => size.1,
-        Side::Top => size.0,
-    };
-    let center = match cursor {
-        Some((cx, cy)) if view_len < len => {
-            let c = match side {
-                Side::Left | Side::Right => cy,
-                Side::Top => cx,
-            };
-            c.min(start + len - view_len / 2).max(start + view_len / 2)
-        }
-        _ => start + len / 2,
-    };
+    let view_len = side.along(size);
+    let center = cursor
+        .filter(|&p| view_len < len && (contains(current, p) || contains(strip, p)))
+        .map_or(start + len / 2, |p| side.along(p));
     flush_rect(side, area, size, center)
 }
 
@@ -159,7 +163,7 @@ pub fn place(window: &WebviewWindow, side: Side, settings: &Settings, view: View
             .cursor_position()
             .ok()
             .map(|p| (p.x.round() as i32, p.y.round() as i32));
-        expanded_rect(side, area, physical(view_size(view, settings), dpi), strip, cursor)
+        expanded_rect(side, area, physical(view_size(view, settings), dpi), strip, visible, cursor)
     } else {
         strip
     };
@@ -179,10 +183,10 @@ pub fn should_change(current: bool, expanded: bool, click_through: bool, view: V
 }
 
 fn cursor_inside(window: &WebviewWindow) -> bool {
-    let (Some(((x, y, w, h), _)), Ok(p)) = (visible_rect(window), window.cursor_position()) else {
+    let (Some((rect, _)), Ok(p)) = (visible_rect(window), window.cursor_position()) else {
         return false;
     };
-    p.x >= f64::from(x) && p.x < f64::from(x + w) && p.y >= f64::from(y) && p.y < f64::from(y + h)
+    contains(rect, (p.x.floor() as i32, p.y.floor() as i32))
 }
 
 /// Slides the docked widget out or back in; updates `UiState.dock_expanded` and emits it.
@@ -249,35 +253,46 @@ mod tests {
     fn expanded_views_cover_the_strip() {
         let strip = (1920, 438, 36, 156);
         // The card (taller than the strip) is centred on it and flush with the edge.
-        let card = expanded_rect(Side::Left, AREA, (320, 232), strip, Some((1930, 450)));
+        let card = expanded_rect(Side::Left, AREA, (320, 232), strip, strip, Some((1930, 450)));
         assert_eq!(card, (1920, 400, 320, 232));
         assert!(card.1 <= strip.1 && card.1 + card.3 >= strip.1 + strip.3);
-        let right = expanded_rect(Side::Right, AREA, (320, 232), (3164, 438, 36, 156), None);
+        let right_strip = (3164, 438, 36, 156);
+        let right = expanded_rect(Side::Right, AREA, (320, 232), right_strip, right_strip, None);
         assert_eq!(right, (2880, 400, 320, 232));
-        let top = expanded_rect(Side::Top, AREA, (240, 72), (2444, 0, 232, 34), Some((2450, 5)));
+        let top_strip = (2444, 0, 232, 34);
+        let top = expanded_rect(Side::Top, AREA, (240, 72), top_strip, top_strip, Some((2450, 5)));
         assert_eq!(top, (2440, 0, 240, 72));
         // Clamped at the area's end, it still covers the strip.
-        let low = expanded_rect(Side::Left, AREA, (320, 232), (1920, 844, 36, 156), None);
+        let low_strip = (1920, 844, 36, 156);
+        let low = expanded_rect(Side::Left, AREA, (320, 232), low_strip, low_strip, None);
         assert_eq!(low, (1920, 768, 320, 232));
     }
 
     #[test]
-    fn a_view_shorter_than_the_strip_follows_the_cursor() {
+    fn a_view_shorter_than_the_strip_opens_under_the_cursor() {
         let strip = (1920, 438, 36, 156);
-        // Pointer near the strip's top: the pill is centred on it.
-        assert_eq!(expanded_rect(Side::Left, AREA, (240, 72), strip, Some((1925, 450))), (1920, 438, 240, 72));
-        assert_eq!(expanded_rect(Side::Left, AREA, (240, 72), strip, Some((1925, 520))), (1920, 484, 240, 72));
-        // Outside the strip (e.g. opened from the tray): kept within the strip.
-        assert_eq!(expanded_rect(Side::Left, AREA, (240, 72), strip, Some((10, 5))), (1920, 438, 240, 72));
-        // No cursor: centred.
-        assert_eq!(expanded_rect(Side::Left, AREA, (240, 72), strip, None), (1920, 480, 240, 72));
+        let pill = |current: Rect, cursor| expanded_rect(Side::Left, AREA, (240, 72), strip, current, cursor);
+        // Pointing at the strip: the pill is centred on the pointer.
+        assert_eq!(pill(strip, Some((1925, 450))), (1920, 414, 240, 72));
+        assert_eq!(pill(strip, Some((1925, 520))), (1920, 484, 240, 72));
+        // A click in the card's footer, below the strip, switches to a pill under the pointer.
+        let card = (1920, 400, 320, 232);
+        let from_card = pill(card, Some((2100, 612)));
+        assert_eq!(from_card, (1920, 576, 240, 72));
+        assert!(contains(from_card, (2100, 612)));
+        // Pointer elsewhere (switched from the tray) or unknown: centred on the strip.
+        assert_eq!(pill(card, Some((3000, 990))), (1920, 480, 240, 72));
+        assert_eq!(pill(strip, None), (1920, 480, 240, 72));
+        // Near the area's top the pill stays inside it.
+        let high = (1920, 0, 36, 156);
+        assert_eq!(expanded_rect(Side::Left, AREA, (240, 72), high, high, Some((1925, 5))), (1920, 0, 240, 72));
     }
 
     #[test]
     fn expand_then_collapse_round_trips_unless_moved() {
         let strip = (1920, 0, 36, 156);
         // At the top of the area the card can't be centred on the strip…
-        let card = expanded_rect(Side::Left, AREA, (320, 232), strip, None);
+        let card = expanded_rect(Side::Left, AREA, (320, 232), strip, strip, None);
         assert_eq!(card, (1920, 0, 320, 232));
         let last = Some(Placement {
             side: Side::Left,
