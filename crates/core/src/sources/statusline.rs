@@ -227,12 +227,10 @@ mod tests {
             written_at_ms: changed_at_ms,
             changed_at_ms,
             fingerprint: 0,
-            transcript_path: None,
             model: None,
             context: None,
             rate_limits,
             api_ms: None,
-            cc_version: None,
         };
         rec.fingerprint = crate::capture::fingerprint(&rec);
         rec

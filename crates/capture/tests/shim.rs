@@ -130,19 +130,17 @@ fn assert_whitelisted_capture(data: &Path) {
         keys,
         [
             "api_ms",
-            "cc_version",
             "changed_at_ms",
             "context",
             "fingerprint",
             "model",
             "rate_limits",
             "session_id",
-            "transcript_path",
             "v",
             "written_at_ms",
         ]
     );
-    for banned in ["sentinel", "cwd", "workspace", "total_cost_usd", "spend_limit", "output_style"] {
+    for banned in ["sentinel", "cwd", "workspace", "total_cost_usd", "spend_limit", "output_style", "tester", "2.3.4"] {
         assert!(!text.contains(banned), "capture leaked {banned:?}: {text}");
     }
     assert_eq!(json["api_ms"], 123_456);

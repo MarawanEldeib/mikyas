@@ -885,7 +885,6 @@ mod tests {
             written_at_ms: NOW_S * 1000,
             changed_at_ms: NOW_S * 1000,
             fingerprint: 0,
-            transcript_path: None,
             model: Some(ModelInfo {
                 id: Some("claude-opus-5-5".to_owned()),
                 display_name: Some("Opus 5.5".to_owned()),
@@ -897,7 +896,6 @@ mod tests {
             }),
             rate_limits,
             api_ms: None,
-            cc_version: None,
         }
     }
 
