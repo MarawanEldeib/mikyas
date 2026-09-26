@@ -6,6 +6,12 @@
   import HotkeyField from "./HotkeyField.svelte";
   import Icon from "./Icon.svelte";
   import Toggle from "./Toggle.svelte";
+  import UpdateList from "./UpdateList.svelte";
+
+  const UPDATE_MODES: { value: boolean; label: string }[] = [
+    { value: false, label: "Off" },
+    { value: true, label: "Notify me" },
+  ];
 
   const CLOSE_ACTIONS: { value: CloseAction; label: string }[] = [
     { value: "hide", label: "Hide to tray" },
@@ -29,10 +35,6 @@
     } catch (e) {
       check = { state: "error", message: errorText(e) };
     }
-  }
-
-  function view(url: string) {
-    api.openUrl(url).catch((e: unknown) => (check = { state: "error", message: errorText(e) }));
   }
 </script>
 
@@ -74,11 +76,18 @@
       />
     </div>
     <div class="row">
-      <span class="label">
-        Check for updates daily
-        <span class="sub">Only network use: api.github.com</span>
+      <span class="label" id="{uid}-updates">
+        Updates
+        <span class="sub">Daily check of api.github.com, the only network use. Never downloads or installs.</span>
       </span>
-      <Toggle label="Check for updates daily" checked={s.check_updates} onchange={(v) => update({ check_updates: v })} />
+      <div class="seg" role="radiogroup" aria-labelledby="{uid}-updates">
+        {#each UPDATE_MODES as m (m.label)}
+          <label>
+            <input type="radio" name="{uid}-updates" checked={s.check_updates === m.value} onchange={() => update({ check_updates: m.value })} />
+            <span>{m.label}</span>
+          </label>
+        {/each}
+      </div>
     </div>
     <div class="row">
       <span class="label">
@@ -87,10 +96,6 @@
           {#if status}
             {#if status.tone === "ok"}<Icon name="check" size={12} />{:else if status.tone === "warn"}<Icon name="warning" size={12} />{:else if status.tone === "info"}<Icon name="update" size={12} />{/if}
             <span class="status-text">{status.text}</span>
-            {#if status.url}
-              {@const url = status.url}
-              <button type="button" class="link" onclick={() => view(url)}>View<Icon name="external" size={11} /></button>
-            {/if}
           {/if}
         </span>
       </span>
@@ -98,6 +103,11 @@
         {check.state === "checking" ? "Checking…" : "Check now"}
       </button>
     </div>
+    {#if app.ui.update && app.ui.update.count > 0}
+      <div class="row list">
+        <UpdateList update={app.ui.update} />
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -125,6 +135,10 @@
   }
   .row + .row {
     border-top: 1px solid var(--divider);
+  }
+  .row.list {
+    display: block;
+    padding: 8px 12px 10px;
   }
   .row > :global(.hotkey) {
     flex: 1;
@@ -166,21 +180,6 @@
   }
   .status.warn {
     color: var(--warn);
-  }
-  .link {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    flex: none;
-    padding: 0 2px;
-    border: 0;
-    border-radius: var(--radius-s);
-    background: transparent;
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .link:hover {
-    text-decoration: underline;
   }
   .btn {
     display: inline-flex;

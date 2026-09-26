@@ -171,7 +171,8 @@ export interface Settings {
   toggle_hotkey: string;
   /** Hide while a fullscreen video or app is in front (default true). */
   auto_hide_fullscreen: boolean;
-  /** Opt-in daily GitHub Releases check — the app's only network call (default false). */
+  /** "Updates: Off / Notify me": opt-in daily GitHub Releases check — the app's only network
+   *  call; it never downloads or installs anything (default false). */
   check_updates: boolean;
   accent: Accent;
   gauge_style: GaugeStyle;
@@ -203,10 +204,25 @@ export interface Settings {
 
 export type HiddenReason = "none" | "user" | "fullscreen";
 
-export interface UpdateInfo {
+/** One release newer than this build. */
+export interface ReleaseInfo {
   version: string;
-  /** Always a https://github.com/… release page. */
+  /** Always one of this repository's https://github.com/…/releases/ pages. */
   url: string;
+  /** Up to 5 short plain-text bullets (≤ 80 chars) from the release notes. Shown as text only. */
+  notes: string[];
+}
+
+/** Every published release newer than this build (notify-only: nothing is ever downloaded). */
+export interface UpdateInfo {
+  /** Newest version (releases[0].version). */
+  latest: string;
+  /** Number of newer versions (releases.length). */
+  count: number;
+  /** Newest first. */
+  releases: ReleaseInfo[];
+  /** "Later" was chosen for `latest`: no banner until a newer version appears. */
+  dismissed: boolean;
 }
 
 /** Emitted by Rust as the `ui-state` event and returned by `get_ui_state`. */
@@ -221,7 +237,7 @@ export interface UiState {
   /** Docked widget is slid out (only meaningful when settings.dock != "off"). */
   dock_expanded: boolean;
   hidden_reason: HiddenReason;
-  /** A newer release, when the update checker found one. */
+  /** Newer releases, when the update checker found some. */
   update: UpdateInfo | null;
   /** Connect had wrapped the status line and it no longer does (Reconnect / Dismiss banner). */
   connection_lost: boolean;
@@ -269,6 +285,7 @@ export interface ConnectPreview {
  *                                   (pointer enter/leave while docked; force: the card's "–")
  *  check_updates_now() -> UpdateInfo | null              (explicit click; network)
  *  open_url({ url: string }) -> void                     (GitHub release pages only)
+ *  dismiss_update({ version: string }) -> void           ("Later": hide until a newer version)
  *  dismiss_connection_warning() -> void                  (the connection-lost banner's Dismiss)
  * Events: "snapshot" (Snapshot), "ui-state" (UiState).
  */
@@ -291,4 +308,5 @@ export type CommandName =
   | "set_dock_expanded"
   | "check_updates_now"
   | "open_url"
+  | "dismiss_update"
   | "dismiss_connection_warning";

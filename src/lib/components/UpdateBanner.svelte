@@ -1,55 +1,100 @@
 <script lang="ts" module>
-  import { loadDismissed } from "../update";
-
-  // Module state, so a view switch (card ↔ pill) does not bring a dismissed banner back.
-  let dismissed = $state<string | null>(loadDismissed());
+  // Module state, so the list stays open across the pill → card switch that opens it.
+  let listOpen = $state(false);
 </script>
 
 <script lang="ts">
   import { tick } from "svelte";
-  import { api } from "../ipc";
+  import { backend } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
-  import { bannerVisible, saveDismissed } from "../update";
+  import { bannerText, bannerVisible } from "../update";
   import Icon from "./Icon.svelte";
+  import UpdateList from "./UpdateList.svelte";
 
   const update = $derived(app.ui.update);
   // The status-line banner takes the same footer slot on the card.
   const warnings = $derived(notices(app.snapshot).length > 0 || app.ui.connection_lost);
-  const visible = $derived(bannerVisible(app.ui, app.settings?.dock ?? "off", dismissed, warnings));
+  const visible = $derived(bannerVisible(app.ui, app.settings?.dock ?? "off", warnings));
   const pill = $derived(app.ui.view === "pill");
+  // The list floats over the card (the pill is too small): it closes with the card, in ghost
+  // mode and once the updates are gone or put off.
+  const listShown = $derived(
+    listOpen && update !== null && !update.dismissed && app.ui.view === "card" && !app.ui.click_through,
+  );
 
-  function view(url: string) {
-    api.openUrl(url).catch((e: unknown) => console.warn("open_url failed", e));
+  async function openList() {
+    listOpen = !listOpen || pill;
+    if (pill) await app.setView("card");
+    if (!listOpen) return;
+    await tick();
+    document.querySelector<HTMLElement>(".update-list button")?.focus();
   }
 
-  async function dismiss(e: MouseEvent, version: string) {
-    const keyboard = (e.currentTarget as HTMLElement).matches(":focus-visible");
-    dismissed = version;
-    saveDismissed(version);
-    if (!keyboard) return;
-    // The button is gone with the banner; keep keyboard focus in the widget (the card's first
-    // toolbar button, the pill's "Show details") rather than dropping it on <body>.
+  async function focusHome() {
+    // The banner is gone; keep keyboard focus in the widget (the card's first toolbar button,
+    // the pill's "Show details") rather than dropping it on <body>.
     await tick();
     const home = document.querySelector<HTMLElement>("[data-focus-home]");
     (home?.matches("button") ? home : home?.querySelector<HTMLElement>("button"))?.focus();
   }
+
+  // The × is "Later": hidden until a newer version appears (Rust remembers it).
+  async function later(e: MouseEvent, version: string) {
+    const keyboard = (e.currentTarget as HTMLElement).matches(":focus-visible");
+    listOpen = false;
+    try {
+      await (await backend()).invoke<void>("dismiss_update", { version });
+    } catch (err) {
+      console.warn("dismiss_update failed", err);
+    }
+    if (keyboard) await focusHome();
+  }
+
+  function closeList() {
+    listOpen = false;
+    void focusHome();
+  }
+
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && listShown) {
+      e.stopPropagation();
+      closeList();
+    }
+  }
 </script>
 
-<!-- Floats over the card footer's status area (its buttons stay usable) or the pill's lower edge. -->
+<svelte:window {onkeydown} />
+
+<!-- Floats over the card footer's status area (its buttons stay usable) or the pill's lower edge.
+     Clicking it opens the list of missed versions over the card. -->
 {#if visible && update}
   <div class="update" class:pill role="status">
     <Icon name="update" size={pill ? 11 : 13} />
-    <!-- The card's status area leaves no room for "Update" beside the version; the icon says it
-         there, and the word stays for screen readers (this is a status message). -->
-    <span class="text" title="Claude Usage Widget {update.version} is available">
-      <span class:sr={!pill}>Update</span> <strong>v{update.version}</strong> available
-    </span>
-    <span class="dot" aria-hidden="true">·</span>
-    <button type="button" class="view" onclick={() => view(update.url)}>View</button>
-    <button type="button" class="close" aria-label="Dismiss the update notice" title="Dismiss" onclick={(e) => dismiss(e, update.version)}>
+    <button
+      type="button"
+      class="text"
+      aria-expanded={pill ? undefined : listShown}
+      title="Show what's new (nothing installs by itself)"
+      onclick={openList}
+    >
+      {bannerText(update, pill)}
+    </button>
+    <button type="button" class="close" aria-label="Later: hide until a newer version" title="Later" onclick={(e) => later(e, update.latest)}>
       <Icon name="close" size={pill ? 9 : 10} />
     </button>
+  </div>
+{/if}
+
+{#if listShown && update}
+  <div class="update-list" role="dialog" aria-label="Updates available" data-no-drag>
+    <div class="list-head">
+      <strong>{update.count > 1 ? `${update.count} updates available` : "Update available"}</strong>
+      <button type="button" class="close" aria-label="Close the update list" title="Close" onclick={closeList}>
+        <Icon name="close" size={10} />
+      </button>
+    </div>
+    <UpdateList {update} compact ondone={closeList} />
   </div>
 {/if}
 
@@ -82,34 +127,50 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: var(--fg);
-  }
-  strong {
-    font-weight: 600;
-  }
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .dot {
-    flex: none;
-    color: var(--fg-2);
-  }
-  .view {
-    flex: none;
     padding: 0 2px;
     border: 0;
     border-radius: var(--radius-s);
     background: transparent;
-    color: var(--accent);
+    color: var(--fg);
+    font: inherit;
     font-weight: 600;
+    white-space: nowrap;
   }
-  .view:hover {
+  .text:hover {
+    color: var(--accent);
     text-decoration: underline;
+  }
+  /* The list of missed versions: over the card's body, above the footer. */
+  .update-list {
+    position: absolute;
+    z-index: 3;
+    left: 8px;
+    right: 8px;
+    top: 8px;
+    bottom: 38px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px 10px;
+    overflow: hidden;
+    border-radius: 8px;
+    background: rgb(var(--surface-rgb));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+      0 4px 16px rgb(0 0 0 / 0.28);
+    color: var(--fg);
+    font-size: 11px;
+  }
+  .list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .list-head strong {
+    font-weight: 600;
   }
   .close {
     position: relative;

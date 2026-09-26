@@ -100,6 +100,7 @@ pub fn run() {
             dock::set_dock_expanded,
             updates::check_updates_now,
             updates::open_url,
+            updates::dismiss_update,
             watchdog::dismiss_connection_warning,
         ])
         .setup(move |app| {

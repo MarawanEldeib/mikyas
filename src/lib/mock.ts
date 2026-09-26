@@ -43,12 +43,26 @@ export type Scenario = (typeof SCENARIOS)[number];
 
 const VIEWS: readonly ViewMode[] = ["pill", "card", "settings", "sessions", "history"];
 const HIDDEN: readonly HiddenReason[] = ["none", "user", "fullscreen"];
-/** ?update=1: already known at start; none: "Check now" finds nothing; error: it fails (like
- *  Tauri, with a string). By default "Check now" finds MOCK_UPDATE. */
-const UPDATE_MODES = ["default", "1", "none", "error"] as const;
+/** ?update=1: three missed versions known at start; one: a single one; none: "Check now" finds
+ *  nothing; error: it fails (like Tauri, with a string). By default "Check now" finds
+ *  MOCK_UPDATE. "Later" (dismiss_update) hides the banner. */
+const UPDATE_MODES = ["default", "1", "one", "none", "error"] as const;
+const releasePage = (version: string) => `https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v${version}`;
 export const MOCK_UPDATE: UpdateInfo = {
-  version: "0.2.0",
-  url: "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.2.0",
+  latest: "0.4.0",
+  count: 3,
+  releases: [
+    { version: "0.4.0", url: releasePage("0.4.0"), notes: ["list every missed update", "smaller pill", "fix tray tooltip"] },
+    { version: "0.3.1", url: releasePage("0.3.1"), notes: ["fix weekly reset detection"] },
+    { version: "0.3.0", url: releasePage("0.3.0"), notes: ["history view", "edge dock", "accent colours", "ui scale", "per-display position"] },
+  ],
+  dismissed: false,
+};
+export const MOCK_UPDATE_ONE: UpdateInfo = {
+  latest: "0.2.0",
+  count: 1,
+  releases: [{ version: "0.2.0", url: releasePage("0.2.0"), notes: ["faster start", "fix tray icon"] }],
+  dismissed: false,
 };
 const EFFECTS: readonly EffectName[] = ["auto", "mica", "acrylic", "blur", "none"];
 
@@ -388,6 +402,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
   const t0 = Date.now();
   const view = pick(params.get("view"), VIEWS, "card");
   const updateMode = pick(params.get("update"), UPDATE_MODES, "default");
+  let dismissedVersion: string | null = null;
   const listeners = new Map<EventName, Set<(p: unknown) => void>>();
 
   let snapshot = buildSnapshot(scenario, t0, t0);
@@ -439,7 +454,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
     // ?expanded=1 starts a docked pill or card slid out too.
     dock_expanded: settings.dock !== "off" && (params.get("expanded") === "1" || (view !== "pill" && view !== "card")),
     hidden_reason: pick(params.get("hidden"), HIDDEN, "none"),
-    update: updateMode === "1" ? MOCK_UPDATE : null,
+    update: updateMode === "1" ? MOCK_UPDATE : updateMode === "one" ? MOCK_UPDATE_ONE : null,
     // ?lost=1: the status line was rewritten after Connect (the card's reconnect banner).
     connection_lost: params.get("lost") === "1",
   };
@@ -560,9 +575,16 @@ export function createMockBackend(params: URLSearchParams): Backend {
     check_updates_now: async () => {
       await sleep(400);
       if (updateMode === "error") throw "Couldn't reach GitHub; check your connection";
-      ui = { ...ui, update: updateMode === "none" ? null : MOCK_UPDATE };
+      const found = updateMode === "none" ? null : updateMode === "one" ? MOCK_UPDATE_ONE : MOCK_UPDATE;
+      // A version put off with "Later" stays put off (as update-check.json keeps it in Rust).
+      ui = { ...ui, update: found && { ...found, dismissed: dismissedVersion === found.latest } };
       emit("ui-state", ui);
       return ui.update;
+    },
+    dismiss_update: (args) => {
+      dismissedVersion = String(args.version);
+      if (ui.update) ui = { ...ui, update: { ...ui.update, dismissed: ui.update.latest === dismissedVersion } };
+      emit("ui-state", ui);
     },
     open_url: (args) => console.info("[mock] open_url", args.url),
     dismiss_connection_warning: () => {

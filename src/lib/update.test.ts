@@ -1,9 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MOCK_UPDATE, createMockBackend } from "./mock";
+import { MOCK_UPDATE, MOCK_UPDATE_ONE, createMockBackend } from "./mock";
 import type { UiState, UpdateInfo } from "./types";
-import { APP_VERSION, bannerVisible, loadDismissed, saveDismissed, updateStatus } from "./update";
+import {
+  APP_VERSION,
+  MAX_NOTE_CHARS,
+  bannerText,
+  bannerVisible,
+  latestUrl,
+  updateRows,
+  updateStatus,
+} from "./update";
 
-const UPDATE: UpdateInfo = { version: "0.2.0", url: "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.2.0" };
+const page = (v: string) => `https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v${v}`;
+const ONE: UpdateInfo = { latest: "0.2.0", count: 1, releases: [{ version: "0.2.0", url: page("0.2.0"), notes: ["a"] }], dismissed: false };
+const THREE: UpdateInfo = {
+  latest: "0.4.0",
+  count: 3,
+  releases: [
+    { version: "0.4.0", url: page("0.4.0"), notes: ["x"] },
+    { version: "0.3.1", url: page("0.3.1"), notes: [] },
+    { version: "0.3.0", url: page("0.3.0"), notes: ["y", "z"] },
+  ],
+  dismissed: false,
+};
 
 const ui = (over: Partial<UiState> = {}): UiState => ({
   view: "card",
@@ -13,76 +32,86 @@ const ui = (over: Partial<UiState> = {}): UiState => ({
   toggle_hotkey_error: null,
   dock_expanded: false,
   hidden_reason: "none",
-  update: UPDATE,
+  update: ONE,
   connection_lost: false,
   ...over,
 });
 
 describe("bannerVisible", () => {
-  it("shows a known update on the card and the pill", () => {
-    expect(bannerVisible(ui(), "off", null)).toBe(true);
-    expect(bannerVisible(ui({ view: "pill" }), "off", null)).toBe(true);
-    expect(bannerVisible(ui({ update: null }), "off", null)).toBe(false);
+  it("shows known updates on the card and the pill", () => {
+    expect(bannerVisible(ui(), "off")).toBe(true);
+    expect(bannerVisible(ui({ view: "pill" }), "off")).toBe(true);
+    expect(bannerVisible(ui({ update: THREE }), "off")).toBe(true);
+    expect(bannerVisible(ui({ update: null }), "off")).toBe(false);
   });
 
   it("stays out of the other views, ghost mode and the docked strip", () => {
     for (const view of ["settings", "sessions", "history"] as const) {
-      expect(bannerVisible(ui({ view }), "off", null)).toBe(false);
+      expect(bannerVisible(ui({ view }), "off")).toBe(false);
     }
-    expect(bannerVisible(ui({ click_through: true }), "off", null)).toBe(false);
-    expect(bannerVisible(ui(), "right", null)).toBe(false);
-    expect(bannerVisible(ui({ dock_expanded: true }), "right", null)).toBe(true);
+    expect(bannerVisible(ui({ click_through: true }), "off")).toBe(false);
+    expect(bannerVisible(ui(), "right")).toBe(false);
+    expect(bannerVisible(ui({ dock_expanded: true }), "right")).toBe(true);
   });
 
   it("never covers the card footer's health warnings (the pill's warning dot sits elsewhere)", () => {
-    expect(bannerVisible(ui(), "off", null, true)).toBe(false);
-    expect(bannerVisible(ui({ view: "pill" }), "off", null, true)).toBe(true);
-    expect(bannerVisible(ui(), "off", null, false)).toBe(true);
+    expect(bannerVisible(ui(), "off", true)).toBe(false);
+    expect(bannerVisible(ui({ view: "pill" }), "off", true)).toBe(true);
+    expect(bannerVisible(ui(), "off", false)).toBe(true);
   });
 
-  it("respects a dismissal of that version only", () => {
-    expect(bannerVisible(ui(), "off", "0.2.0")).toBe(false);
-    expect(bannerVisible(ui({ update: { ...UPDATE, version: "0.3.0" } }), "off", "0.2.0")).toBe(true);
+  it("hides after Later until Rust reports a newer version (dismissed is cleared then)", () => {
+    expect(bannerVisible(ui({ update: { ...THREE, dismissed: true } }), "off")).toBe(false);
+    expect(bannerVisible(ui({ view: "pill", update: { ...ONE, dismissed: true } }), "off")).toBe(false);
   });
 });
 
-describe("dismissal storage", () => {
-  it("round-trips through storage", () => {
-    const map = new Map<string, string>();
-    const store = { getItem: (k: string) => map.get(k) ?? null, setItem: (k: string, v: string) => void map.set(k, v) };
-    expect(loadDismissed(store)).toBeNull();
-    saveDismissed("0.2.0", store);
-    expect(loadDismissed(store)).toBe("0.2.0");
+describe("banner and list", () => {
+  it("names one update or counts several", () => {
+    expect(bannerText(ONE)).toBe("Update available: v0.2.0");
+    expect(bannerText(THREE)).toBe("3 updates available");
+    expect(bannerText(ONE, true)).toBe("v0.2.0 available");
+    expect(bannerText(THREE, true)).toBe("3 updates");
   });
 
-  it("never throws when storage is missing or blocked", () => {
-    const blocked = {
-      getItem: () => {
-        throw new Error("SecurityError");
-      },
-      setItem: () => {
-        throw new Error("QuotaExceededError");
-      },
-    };
-    expect(loadDismissed(blocked)).toBeNull();
-    expect(() => saveDismissed("0.2.0", blocked)).not.toThrow();
-    expect(loadDismissed(null)).toBeNull();
-    expect(() => saveDismissed("0.2.0", null)).not.toThrow();
+  it("Update opens the latest release page only", () => {
+    expect(latestUrl(THREE)).toBe(page("0.4.0"));
+    expect(latestUrl(null)).toBeNull();
+    expect(latestUrl({ ...ONE, releases: [] })).toBeNull();
+    expect(latestUrl({ ...ONE, releases: [{ version: "9.9.9", url: "https://example.com/x", notes: [] }] })).toBeNull();
+  });
+
+  it("lists every missed version newest first with its notes", () => {
+    const rows = updateRows(THREE);
+    expect(rows.map((r) => r.version)).toEqual(["0.4.0", "0.3.1", "0.3.0"]);
+    expect(rows.map((r) => r.latest)).toEqual([true, false, false]);
+    expect(rows[1].notes).toEqual([]);
+    expect(rows[2].notes).toEqual(["y", "z"]);
+    expect(updateRows(null)).toEqual([]);
+  });
+
+  it("keeps notes tiny: at most five, trimmed, clipped, blanks dropped", () => {
+    const notes = ["  one ", "", "two", "three", "four", "five", "six", "ä".repeat(120)];
+    const [row] = updateRows({ ...ONE, releases: [{ version: "0.2.0", url: page("0.2.0"), notes }] });
+    expect(row.notes).toEqual(["one", "two", "three", "four", "five"]);
+    const [long] = updateRows({ ...ONE, releases: [{ version: "0.2.0", url: page("0.2.0"), notes: ["ä".repeat(120)] }] });
+    expect([...long.notes[0]].length).toBe(MAX_NOTE_CHARS);
+    expect(long.notes[0].endsWith("…")).toBe(true);
   });
 });
 
 describe("updateStatus", () => {
-  it("orders checking, failure, a known update, then up to date", () => {
+  it("orders checking, failure, known updates, then up to date", () => {
     expect(updateStatus({ state: "idle" }, null)).toBeNull();
-    expect(updateStatus({ state: "checking" }, UPDATE)).toBeNull();
-    expect(updateStatus({ state: "error", message: "No releases published yet" }, UPDATE)).toEqual({
+    expect(updateStatus({ state: "checking" }, ONE)).toBeNull();
+    expect(updateStatus({ state: "error", message: "No releases published yet" }, ONE)).toEqual({
       tone: "warn",
       text: "No releases published yet",
-      url: null,
     });
-    expect(updateStatus({ state: "idle" }, UPDATE)).toEqual({ tone: "info", text: "Version 0.2.0 available", url: UPDATE.url });
-    expect(updateStatus({ state: "done" }, UPDATE)?.tone).toBe("info");
-    expect(updateStatus({ state: "done" }, null)).toEqual({ tone: "ok", text: "Up to date", url: null });
+    expect(updateStatus({ state: "idle" }, ONE)).toEqual({ tone: "info", text: "Version 0.2.0 available" });
+    expect(updateStatus({ state: "idle" }, THREE)).toEqual({ tone: "info", text: "3 updates available (newest 0.4.0)" });
+    expect(updateStatus({ state: "done" }, { ...ONE, dismissed: true })?.tone).toBe("info");
+    expect(updateStatus({ state: "done" }, null)).toEqual({ tone: "ok", text: "Up to date" });
   });
 
   it("knows this build's version", () => {
@@ -95,15 +124,25 @@ describe("mock update and hidden params", () => {
     vi.useRealTimers();
   });
 
-  it("starts with a known update and a hidden reason when asked", async () => {
+  it("starts with known updates and a hidden reason when asked", async () => {
     vi.useFakeTimers();
     const b = createMockBackend(new URLSearchParams("update=1&hidden=fullscreen"));
     const state = await b.invoke<UiState>("get_ui_state");
     expect(state.update).toEqual(MOCK_UPDATE);
     expect(state.hidden_reason).toBe("fullscreen");
+    expect((await createMockBackend(new URLSearchParams("update=one")).invoke<UiState>("get_ui_state")).update).toEqual(MOCK_UPDATE_ONE);
     const plain = await createMockBackend(new URLSearchParams("hidden=bogus")).invoke<UiState>("get_ui_state");
     expect(plain.update).toBeNull();
     expect(plain.hidden_reason).toBe("none");
+  });
+
+  it("mock data looks like what Rust sends", () => {
+    for (const u of [MOCK_UPDATE, MOCK_UPDATE_ONE]) {
+      expect(u.count).toBe(u.releases.length);
+      expect(u.latest).toBe(u.releases[0].version);
+      expect(latestUrl(u)).not.toBeNull();
+      expect(u.releases.every((r) => r.notes.length <= 5 && r.notes.every((n) => n.length <= MAX_NOTE_CHARS))).toBe(true);
+    }
   });
 
   it("answers Check now per mode", async () => {
@@ -126,5 +165,17 @@ describe("mock update and hidden params", () => {
     const caught = failing.catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(500);
     expect(await caught).toMatch(/Couldn't reach GitHub/);
+  });
+
+  it("Later hides the banner and survives another check", async () => {
+    vi.useFakeTimers();
+    const b = createMockBackend(new URLSearchParams("update=1"));
+    await b.invoke("dismiss_update", { version: MOCK_UPDATE.latest });
+    const state = await b.invoke<UiState>("get_ui_state");
+    expect(state.update?.dismissed).toBe(true);
+    expect(bannerVisible(state, "off")).toBe(false);
+    const again = b.invoke<UpdateInfo | null>("check_updates_now");
+    await vi.advanceTimersByTimeAsync(500);
+    expect((await again)?.dismissed).toBe(true);
   });
 });
