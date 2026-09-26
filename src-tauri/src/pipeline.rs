@@ -699,6 +699,19 @@ mod tests {
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert!(out.snapshot.sessions[0].ctx_pct.is_some_and(|p| p >= 89.9));
         assert!(context_alerts(&out).is_empty(), "{:?}", out.alerts);
+        // Once a statusline capture confirms the 200K size, the same estimate alerts.
+        std::fs::create_dir_all(paths.capture_dir()).unwrap();
+        let capture = format!(
+            r#"{{"v":1,"session_id":"s1","written_at_ms":{now},"changed_at_ms":{now},"fingerprint":1,
+            "context":{{"context_window_size":200000}}}}"#
+        );
+        std::fs::write(paths.capture_dir().join("s1.json"), capture).unwrap();
+        let dirty = Dirty {
+            captures: true,
+            ..Dirty::default()
+        };
+        let out = engine.tick(now + 1, &Settings::default(), &dirty);
+        assert_eq!(context_alerts(&out).iter().map(|e| e.threshold).collect::<Vec<_>>(), vec![90]);
     }
 
     #[test]
