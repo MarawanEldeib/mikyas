@@ -59,7 +59,8 @@ export interface DockController {
 
 export function createDockController(deps: DockDeps): DockController {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // A slide-out was requested; the store only reports it once Rust's ui-state arrives.
+  // A slide-out was requested; the store only reports it once Rust's ui-state arrives, and the
+  // flag is dropped when it does.
   let requested = false;
   const cancel = () => {
     if (timer !== null) clearTimeout(timer);
@@ -76,6 +77,7 @@ export function createDockController(deps: DockDeps): DockController {
     leave() {
       cancel();
       const s = deps.state();
+      if (s.expanded) requested = false;
       // A pointer that brushed past the strip leaves before the slide-out lands; the widget
       // must still slide back in, so the timer is armed and re-checks when it fires.
       if (!canCollapse(s) && !(requested && s.docked)) return;

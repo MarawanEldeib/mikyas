@@ -141,6 +141,30 @@ describe("clock", () => {
   it("adds the date beyond a week", () => {
     expect(formatClock(Date.UTC(2026, 9, 12, 9, 5), NOW, GB)).toBe("12 Oct 09:05");
   });
+  it("keeps a 12-hour clock in another script than Latin short enough for the card", () => {
+    // Saturday 21:36 UTC: "오후 9:36" and "السبت ٩:٣٦ م" overflowed the reset and burn lines.
+    const sat = Date.UTC(2026, 8, 26, 21, 36);
+    const ko = { locale: "ko-KR", timeZone: "UTC" };
+    expect(formatClock(sat, NOW, ko)).toBe("토 21:36");
+    expect(formatClock(Date.UTC(2026, 8, 24, 9, 5), NOW, ko)).toBe("09:05");
+    expect(formatClock(sat, NOW, { locale: "ar-EG", timeZone: "UTC" })).toMatch(/^س \S*٢١:٣٦\S*$/u);
+    expect(formatClock(sat, NOW, { locale: "hi-IN", timeZone: "UTC" })).toBe("श 21:36");
+    // One-letter weekdays only where the seven stay distinct (Greek has two Τ and two Π).
+    expect(formatClock(sat, NOW, { locale: "el-GR", timeZone: "UTC" })).toMatch(/^Σάβ 21:36$/u);
+    expect(burnText({ slope_pct_per_h: 5, t100_ms: sat, pct_at_reset: null, hits_limit_before_reset: true }, { type: "unknown" }, NOW, ko)?.text).toBe(
+      "At this pace 100% at 토 21:36",
+    );
+    // The Sessions view's plain time keeps the locale's convention.
+    expect(formatTime(sat, ko)).toMatch(/오후/u);
+  });
+  it("keeps the full clock for Latin 12-hour and 24-hour locales", () => {
+    const sat = Date.UTC(2026, 8, 26, 21, 36);
+    for (const locale of ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "ja-JP", "zh-CN", "ru-RU", "pt-BR"]) {
+      const o = { locale, timeZone: "UTC" };
+      const weekday = new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" }).format(sat);
+      expect(formatClock(sat, NOW, o)).toBe(`${weekday} ${formatTime(sat, o)}`);
+    }
+  });
   it("respects the time zone for day boundaries", () => {
     const tokyo = { locale: "en-GB", timeZone: "Asia/Tokyo" };
     // 12:00 UTC is 21:00 in Tokyo; 16:00 UTC is already the next day there.
@@ -195,6 +219,11 @@ describe("reset lines", () => {
     expect(pillCountdown({ phase: "active", reset: est }, NOW)).toBe("~3h 40m");
     expect(estimateTooltip(est)).toBe("Estimated from Claude Desktop history, ±25m (medium confidence)");
     expect(estimateTooltip(exact)).toBeUndefined();
+  });
+  it("leaves the clock to the limit line when asked", () => {
+    expect(resetLine({ phase: "active", reset: exact }, NOW, GB, false)).toBe("resets in 3h 40m");
+    expect(resetLine({ phase: "active", reset: est }, NOW, GB, false)).toBe("resets in ~3h 40m");
+    expect(resetLine({ phase: "reset_awaiting_data", reset: exact }, NOW, GB, false)).toBe("reset — waiting for data");
   });
   it("handles unknown and passed resets", () => {
     expect(resetLine({ phase: "active", reset: { type: "unknown" } }, NOW)).toBe("reset time unknown");

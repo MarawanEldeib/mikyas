@@ -83,6 +83,15 @@ describe("createMockBackend", () => {
     expect(snaps).toHaveLength(1);
   });
 
+  it("starts a docked panel slid out, like the app", async () => {
+    vi.useFakeTimers();
+    const expanded = async (query: string) => (await createMockBackend(new URLSearchParams(query)).invoke<UiState>("get_ui_state")).dock_expanded;
+    for (const view of ["settings", "sessions", "history"]) expect(await expanded(`dock=left&view=${view}`)).toBe(true);
+    expect(await expanded("dock=top&view=card")).toBe(false);
+    expect(await expanded("dock=right&view=pill")).toBe(false);
+    expect(await expanded("dock=off&view=settings")).toBe(false);
+  });
+
   it("previews, connects and disconnects", async () => {
     vi.useFakeTimers();
     const b = createMockBackend(new URLSearchParams("conn=foreign"));

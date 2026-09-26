@@ -94,16 +94,45 @@ function dayKey(ms: number, opts: ClockOptions): string {
   return dtf({ timeZone: opts.timeZone, locale: "en-CA" }, { year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
 }
 
+/** A letter of any script but Latin ("오후", "م", "शनि"). */
+const NON_LATIN = /[^\P{L}\p{Script=Latin}]/u;
+
+/** A week of UTC noons, Sunday first. */
+const WEEK = Array.from({ length: 7 }, (_, i) => Date.UTC(2026, 0, 4 + i, 12));
+
+/** Weekday style of the compact clock per locale; null keeps the full clock. */
+const compactCache = new Map<string, "short" | "narrow" | null>();
+
+/**
+ * A 12-hour clock written in another script than Latin ("토 오후 9:36", "السبت ٩:٣٦ م",
+ * "शनि 9:36 pm") runs past the card's reset and burn lines, so formatClock switches it to a
+ * 24-hour time and, where the seven stay distinct, one-letter weekdays. Latin AM/PM and
+ * 24-hour locales keep the full clock.
+ */
+function compactWeekday(opts: ClockOptions): "short" | "narrow" | null {
+  const key = opts.locale ?? "";
+  let style = compactCache.get(key);
+  if (style === undefined) {
+    const loc = { locale: opts.locale, timeZone: "UTC" };
+    const sample = dtf(loc, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(WEEK[6]);
+    const narrow = new Set(WEEK.map((d) => dtf(loc, { weekday: "narrow" }).format(d)));
+    style = uses12h(loc) && NON_LATIN.test(sample) ? (narrow.size === 7 ? "narrow" : "short") : null;
+    compactCache.set(key, style);
+  }
+  return style;
+}
+
 /**
  * Reset clock: time only when it falls on the same calendar day as `now`, otherwise
- * "Sat 15:40" within the coming week and "12 Oct 15:40" beyond that.
+ * "Sat 15:40" within the coming week and "12 Oct 15:40" beyond that (compacted as above).
  */
 export function formatClock(atMs: number, now: number, opts: ClockOptions = {}): string {
   if (!Number.isFinite(atMs)) return "—";
-  const time = formatTime(atMs, opts);
+  const compact = compactWeekday(opts);
+  const time = compact ? dtf(opts, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(atMs) : formatTime(atMs, opts);
   if (dayKey(atMs, opts) === dayKey(now, opts)) return time;
   if (Math.abs(atMs - now) < 6.5 * DAY) {
-    return `${dtf(opts, { weekday: "short" }).format(atMs)} ${time}`;
+    return `${dtf(opts, { weekday: compact ?? "short" }).format(atMs)} ${time}`;
   }
   return `${dtf(opts, { day: "numeric", month: "short" }).format(atMs)} ${time}`;
 }
@@ -221,13 +250,15 @@ export function splitUnits(s: string): TextRun[] {
 
 /**
  * Card reset line: "resets 15:40 · in 3h 12m"; an estimate is marked once, on the clock
- * ("resets ~15:40 · in 3h 12m"), so 12-hour locales still fit beside the sparkline.
+ * ("resets ~15:40 · in 3h 12m"), so 12-hour locales still fit beside the sparkline. Without
+ * `clock` (a reached limit's line already names it): "resets in 3h 12m", "resets in ~3h 12m".
  */
-export function resetLine(w: Pick<WindowView, "phase" | "reset">, now: number, opts: ClockOptions = {}): string {
+export function resetLine(w: Pick<WindowView, "phase" | "reset">, now: number, opts: ClockOptions = {}, clock = true): string {
   if (awaitingReset(w, now)) return "reset — waiting for data";
   const at = resetAt(w.reset);
   if (at === null) return "reset time unknown";
   const t = isEstimated(w.reset) ? "~" : "";
+  if (!clock) return `resets in ${t}${formatCountdown(at - now)}`;
   return `resets ${t}${formatClock(at, now, opts)} · in ${formatCountdown(at - now)}`;
 }
 
