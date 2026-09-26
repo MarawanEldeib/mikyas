@@ -1,6 +1,6 @@
 # Privacy
 
-Claude Usage Widget is **token-free** and **offline by default**:
+SovaWatch is **token-free** and **offline by default**:
 
 - It never reads `~/.claude/.credentials.json`, `~/.claude.json`, Claude Desktop's `config.json`
   or `claude_desktop_config.json`, cookies, `Local Storage`, `IndexedDB`, `Session Storage`,
@@ -8,7 +8,7 @@ Claude Usage Widget is **token-free** and **offline by default**:
   (`crates/core/src/saferead.rs`) even inside otherwise allowed folders.
 - It makes **no network calls unless you enable the update check** (no Anthropic API, no
   claude.ai, no telemetry). With **Settings → System → Check for updates daily** on (off by
-  default), it asks `https://api.github.com/repos/MarawanEldeib/claude-usage-widget/releases/latest`
+  default), it asks `https://api.github.com/repos/MarawanEldeib/sovawatch/releases/latest`
   at most once a day, plus whenever you click **Check now** (which works even with the daily
   check off). The request is made by Windows' own `%SystemRoot%\System32\curl.exe`; the app links
   no HTTP client. It sends only the app version (in the User-Agent header) — no account, token,
@@ -34,15 +34,16 @@ listed here cannot be opened.
 | `~/.claude/projects/**/*.jsonl` (Claude Code transcripts; `CLAUDE_CONFIG_DIR` is honoured) | the last 256 KiB (1 MiB if needed) and the first 64 KiB (512 KiB if needed) of recent files. Only these fields of assistant lines: `type`, `isSidechain`, `sessionId`, `entrypoint`, `timestamp`, `cwd` (folder name only, shown only if you enable "Show project name"), `message.model` and `message.usage` token counts; plus the 1M-context marker of the model identity line. **Message content is never parsed or kept.** Files under `subagents` folders are ignored. |
 | `%APPDATA%\Claude\local-agent-mode-sessions\**\.claude\projects\**\*.jsonl` (Cowork transcripts) | same as above. Other files in that tree — e.g. a session's `.claude\history.jsonl` prompt history — are not readable. |
 | `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`). |
-| `%LOCALAPPDATA%\ClaudeUsageWidget\**` | the widget's own data (below). |
+| `%LOCALAPPDATA%\SovaWatch\**` | the widget's own data (below). |
+| `%LOCALAPPDATA%\ClaudeUsageWidget\` | only once, on the first start after moving from Claude Usage Widget (the app's former name): its settings, state, history, alerts, window positions, update-check record, connection record (`wrap.json`) and captures are copied into `%LOCALAPPDATA%\SovaWatch\`. The old folder is not deleted; its `wrap.json` is renamed `wrap.json.migrated` once the status line points at the new helper. |
 
 ## Files written
 
-`%LOCALAPPDATA%\ClaudeUsageWidget\` (or `CUW_DATA_DIR`):
+`%LOCALAPPDATA%\SovaWatch\` (or `SOVA_DATA_DIR`):
 
 | File | Contents |
 |---|---|
-| `capture\<session_id>.json` | written by the capture helper after you Connect, one per Claude Code session, deleted after 7 days: session id, write/change times, a change fingerprint, `transcript_path`, model id and display name, context-window used % / size / "exceeds 200k" flag, each rate-limit window's used % and reset time (except `spend_limit`, which is dropped), total API duration, Claude Code version. Everything else in the status-line JSON (working directory, workspace, cost, output style, …) is dropped. Note: `transcript_path` contains your Windows user name as part of the path; it stays on your machine. |
+| `capture\<session_id>.json` | written by the capture helper after you Connect, one per Claude Code session, deleted after 7 days: session id, write/change times, a change fingerprint, model id and display name, context-window used % / size / "exceeds 200k" flag, each rate-limit window's used % and reset time (except `spend_limit`, which is dropped), total API duration. Everything else in the status-line JSON (`transcript_path`, Claude Code version, working directory, workspace, cost, output style, …) is dropped. |
 | `capture\_errors.log`, `capture\_diag.log` | at most one short line per helper failure / diagnostic run (names only, never values), size-capped. |
 | `history.jsonl` | usage history for sparklines, burn rate, reset estimation, the History view and the weekly recap, kept 14 days: time, window (`5h`, `7d`, …), %, reset time, source (`cli`/`desktop`), "estimated" flag. |
 | `state.json` | newest exact reset time per window, the newest Desktop sample already copied into the history, learned model display names (e.g. `claude-opus-5-5 → Opus 5.5`), last maintenance time, and which notifications were already shown so a restart does not repeat them: context-% thresholds per session (keyed by an opaque hash of the session id), pace / heads-up alerts per limit window, and the last weekly window recapped. |
@@ -53,18 +54,21 @@ listed here cannot be opened.
 | `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, and the newer release that check found (version and release page, so the notice survives a restart). |
 | `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
-| `bin\cuw-capture.exe` | the capture helper your status-line command points to. |
+| `bin\sovawatch-capture.exe` | the capture helper your status-line command points to. |
+| `migrated.json` | after moving from Claude Usage Widget: when the move happened and whether the status line was switched to the new helper, so the move runs and is announced only once. |
+
+The installer puts the app itself (`sovawatch.exe`, `sovawatch-capture.exe`, `THIRD_PARTY_NOTICES.md`, `uninstall.exe`) in the same `%LOCALAPPDATA%\SovaWatch\` folder.
 
 Files are written atomically through a short-lived `.tmp` file next to them. If `history.jsonl`
 cannot be read, a fresh history is started in `history.jsonl.unreadable` (or, if that fails too,
-`%TEMP%\cuw-history-fallback.jsonl`). Connect's self-test writes its test capture to a temporary
+`%TEMP%\sova-history-fallback.jsonl`). Connect's self-test writes its test capture to a temporary
 folder.
 
 Other locations:
 
-- `%APPDATA%\io.github.marawaneldeib.claude-usage-widget\.window-state.json` — the widget's screen
+- `%APPDATA%\io.github.marawaneldeib.sovawatch\.window-state.json` — the widget's screen
   position.
-- `%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget\EBWebView\` — the WebView2 profile
+- `%LOCALAPPDATA%\io.github.marawaneldeib.sovawatch\EBWebView\` — the WebView2 profile
   used to render the widget UI (contains no Claude data; its local storage only remembers which
   update notice you dismissed).
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — only if you enable "Start with Windows".
@@ -72,9 +76,9 @@ Other locations:
 ## Uninstalling
 
 The uninstaller (Windows Settings → Apps) restores your status line first — it runs
-`claude-usage-widget.exe --disconnect --quiet` — and removes the "Start with Windows" entry. Ticking
-**"Delete the application data"** also removes `%APPDATA%\io.github.marawaneldeib.claude-usage-widget`,
-`%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget` and, once the status line no longer
-points at the helper inside it, `%LOCALAPPDATA%\ClaudeUsageWidget`. Updating to a newer version
+`sovawatch.exe --disconnect --quiet` — and removes the "Start with Windows" entry. Ticking
+**"Delete the application data"** also removes `%APPDATA%\io.github.marawaneldeib.sovawatch`,
+`%LOCALAPPDATA%\io.github.marawaneldeib.sovawatch` and, once the status line no longer
+points at the helper inside it, `%LOCALAPPDATA%\SovaWatch`. Updating to a newer version
 keeps all of this. If you remove the app by hand instead, Disconnect first (tray → Disconnect
-Claude Code, or `claude-usage-widget.exe --disconnect --quiet`), then delete the folders above.
+Claude Code, or `sovawatch.exe --disconnect --quiet`), then delete the folders above.

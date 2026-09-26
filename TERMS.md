@@ -1,18 +1,18 @@
-# Terms of Use — Claude Usage Widget
+# Terms of Use — SovaWatch
 
 _Last updated: 26 September 2026_
 
-By installing or using Claude Usage Widget ("the app") you agree to these terms. If you do not
+By installing or using SovaWatch ("the app") you agree to these terms. If you do not
 agree, do not install or use it.
 
 ## 1. What the app is
-A free desktop widget that shows your own Claude usage (5-hour and weekly limits, reset times,
+SovaWatch is a free desktop usage widget for Claude Code and Claude Desktop. It shows your own Claude usage (5-hour and weekly limits, reset times,
 model and context size) using files that Claude Code and Claude Desktop already keep on your
 computer. It is provided by Eng. Marawan Eldeib ("the author").
 
 ## 2. Not affiliated with Anthropic
 The app is an independent project. It is **not** made, endorsed or supported by Anthropic.
-"Claude" is a trademark of Anthropic. The numbers the app shows are read or estimated from local
+Claude and Claude Code are trademarks of Anthropic, PBC. The numbers the app shows are read or estimated from local
 files and may differ from Anthropic's own figures; Anthropic's usage page is always the
 authoritative source.
 
@@ -21,7 +21,8 @@ You remain responsible for your Claude account and for following Anthropic's ter
 policies. The app never asks for, reads or stores your Claude login, tokens or cookies, and never
 sends your data anywhere (see [PRIVACY.md](PRIVACY.md)). If you choose **Connect**, the app edits
 the status-line entry in your Claude Code settings on your behalf; you can undo this at any time
-with **Disconnect** or by uninstalling.
+with **Disconnect** or by uninstalling. The app does not change, bypass or extend any Claude usage
+limit; it only displays them.
 
 ## 4. License
 Your right to use the app is set out in the [LICENSE](LICENSE): you may install and use official
@@ -31,13 +32,14 @@ app or its source code except as the LICENSE allows or as applicable law permits
 ## 5. Updates
 The app never updates itself. If you turn on update checks, it only tells you that a newer
 version exists; downloading and installing it is your choice. Only download releases from
-[the official GitHub page](https://github.com/MarawanEldeib/claude-usage-widget/releases).
+[the official GitHub page](https://github.com/MarawanEldeib/sovawatch/releases).
 
 ## 6. No warranty
 The app is provided **"as is"**, without warranty of any kind, express or implied, including
 fitness for a particular purpose, accuracy of the numbers shown, or uninterrupted operation.
 Usage figures, reset times and forecasts may be wrong or out of date; do not rely on them for
-decisions where a mistake would cause you harm.
+decisions where a mistake would cause you harm. Anthropic may change Claude Code or Claude Desktop
+at any time in ways that stop the app working.
 
 ## 7. Limitation of liability
 To the maximum extent permitted by law, the author is not liable for any indirect, incidental,

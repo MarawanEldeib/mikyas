@@ -1,4 +1,4 @@
-Claude Usage Widget
+SovaWatch — usage widget for Claude Code & Claude Desktop
 Copyright (c) 2026 Marawan Eldeib. All rights reserved.
 
 This repository is published so its source can be read and audited. Publishing it does not grant
@@ -11,7 +11,9 @@ any license to the source code, except as stated below.
 2. Everything else is reserved. Without prior written permission from the copyright holder you
    may not copy, modify, merge, publish, distribute, sublicense, sell, rent, or create derivative
    works of this software or its source code, in whole or in part, and you may not redistribute
-   the installer or the application, modified or not, including under a different name.
+   the installer or the application, modified or not, including under a different name. You may
+   not reverse-engineer, decompile or disassemble the official binaries except as applicable law
+   permits; the source code stays public for review (section 3).
 
 3. Viewing. You may view the source code on GitHub, and GitHub's Terms of Service allow creating
    a fork on GitHub for viewing. A fork does not grant any of the rights reserved in section 2.
@@ -21,7 +23,10 @@ any license to the source code, except as stated below.
    PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM,
    DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
 
-5. Trademarks. "Claude" is a trademark of Anthropic. This project is independent and is not
-   affiliated with, endorsed by, or sponsored by Anthropic.
+5. Trademarks. Claude and Claude Code are trademarks of Anthropic, PBC. This project is
+   independent and is not affiliated with, endorsed by, or sponsored by Anthropic.
+
+6. Third-party components. The app includes open-source components under their own licenses;
+   see THIRD_PARTY_NOTICES.md. This license does not change their terms.
 
 For any other use, contact the author through GitHub (https://github.com/MarawanEldeib).

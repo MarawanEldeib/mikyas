@@ -1,13 +1,13 @@
 <div align="center">
 
-# Claude Usage Widget
+# SovaWatch
 
-**Your Claude limits, always in sight.**
+**SovaWatch — usage widget for Claude Code & Claude Desktop.**
 A small floating Windows widget that shows your Claude 5-hour and weekly usage, when each limit
 resets, and the model and context of your current Claude Code session — without ever touching
 your Claude login.
 
-[**Download for Windows**](https://github.com/MarawanEldeib/claude-usage-widget/releases/latest) ·
+[**Download for Windows**](https://github.com/MarawanEldeib/sovawatch/releases/latest) ·
 [Install guide](INSTALL.md) · [Privacy](PRIVACY.md)
 
 <img src="docs/images/card.png" alt="The widget's card view: 5-hour and weekly usage with reset countdowns, burn forecast, sparklines, model and context" width="380">
@@ -67,8 +67,8 @@ Automations).
 
 ## Install
 
-1. Download `Claude.Usage.Widget_x.y.z_x64-setup.exe` from the
-   [latest release](https://github.com/MarawanEldeib/claude-usage-widget/releases/latest).
+1. Download `SovaWatch_x.y.z_x64-setup.exe` from the
+   [latest release](https://github.com/MarawanEldeib/sovawatch/releases/latest).
 2. Run it. No admin rights needed — it installs for your user only.
    The installer is not code-signed yet, so Windows may say *"Windows protected your PC"*:
    click **More info → Run anyway**.
@@ -78,6 +78,8 @@ Automations).
    (see [Connect Claude Code](#connect-claude-code)).
 
 Checksum verification, updating, uninstalling and troubleshooting: [INSTALL.md](INSTALL.md).
+SovaWatch was called Claude Usage Widget before; to move over, see
+[Moving from Claude Usage Widget](INSTALL.md#moving-from-claude-usage-widget).
 
 ## Privacy — token-free by design
 
@@ -107,7 +109,7 @@ Connecting makes the numbers exact and live. It is optional and fully reversible
 <img src="docs/images/connect-preview-light.png" alt="Connect preview showing the status line before and after" width="300" align="right">
 
 1. The widget shows you the exact change first.
-2. It copies a tiny helper, `cuw-capture.exe`, into `%LOCALAPPDATA%\ClaudeUsageWidget\bin\`.
+2. It copies a tiny helper, `sovawatch-capture.exe`, into `%LOCALAPPDATA%\SovaWatch\bin\`.
 3. It changes **only** `statusLine.command` in `~/.claude/settings.json` (or adds a `statusLine`
    entry if you have none) so Claude Code's status-line data passes through the helper first.
    Your own status line keeps working and looks exactly the same; a backup of the file is kept.
@@ -145,7 +147,7 @@ Requirements: Windows 10/11, Rust (see `rust-toolchain.toml`), Node 20+, Visual 
 
 ```powershell
 npm install
-.\scripts\build-sidecar.ps1     # builds cuw-capture.exe into src-tauri\binaries\
+.\scripts\build-sidecar.ps1     # builds sovawatch-capture.exe into src-tauri\binaries\
 npx tauri build                 # app + per-user NSIS installer (target\release\bundle\nsis\)
 ```
 
@@ -159,13 +161,13 @@ The UI runs in a plain browser with a mock backend: `npm run dev`, then open
 Layout:
 - `crates/core` — token-free parsers and the engine (merge, reset estimation, burn rate, context,
   history, alerts, recap, safe settings edits)
-- `crates/capture` — `cuw-capture.exe`, the status-line helper
+- `crates/capture` — `sovawatch-capture.exe`, the status-line helper
 - `src-tauri` — the app: data pipeline, file watchers, window, tray, hotkeys, notifications,
   installer hooks
 - `src` — Svelte 5 UI
 
-Development overrides: `CUW_DATA_DIR`, `CLAUDE_CONFIG_DIR`, `CUW_X` / `CUW_Y`,
-`CUW_MEMORY_NORMAL`, `CUW_BROWSER_ARGS`.
+Development overrides: `SOVA_DATA_DIR`, `CLAUDE_CONFIG_DIR`, `SOVA_X` / `SOVA_Y`,
+`SOVA_MEMORY_NORMAL`, `SOVA_BROWSER_ARGS`.
 
 </details>
 
@@ -185,4 +187,6 @@ Copyright © 2026 Marawan Eldeib. **All rights reserved** — see [LICENSE](LICE
 You may install and use the official releases for personal use. Copying, modifying or
 redistributing the code or the app is not permitted without written permission.
 
-Not affiliated with or endorsed by Anthropic. "Claude" is a trademark of Anthropic.
+Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are
+trademarks of Anthropic, PBC. Open-source components and their licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
