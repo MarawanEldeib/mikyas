@@ -10,6 +10,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use cuw_core::ctx_alerts::CtxAlertState;
 use cuw_core::engine::types::{Snapshot, WindowKind};
 use cuw_core::paths::Paths;
 use cuw_core::time::Ms;
@@ -30,6 +31,8 @@ pub struct PersistedState {
     pub learned_models: BTreeMap<String, String>,
     /// Last time captures were pruned and the history compacted.
     pub last_maintenance_ms: Ms,
+    /// Context-alert thresholds already announced, by session key (so restarts do not re-fire).
+    pub ctx_alerts: CtxAlertState,
 }
 
 impl PersistedState {
@@ -200,12 +203,29 @@ mod tests {
         s.set_exact_resets(&resets);
         s.desktop_watermark_ms = 9;
         s.learned_models.insert("claude-opus-5-5".into(), "Opus 5.5".into());
+        s.ctx_alerts.sessions.insert(
+            "af63dc4c8601ec8c".into(),
+            cuw_core::ctx_alerts::SessionCtxState {
+                fired: [80, 90].into(),
+                last_seen_ms: 11,
+            },
+        );
         save_json(&p, &s).unwrap();
         let back: PersistedState = load_json(&p);
         assert_eq!(back, s);
         assert_eq!(back.exact_resets(), resets);
         std::fs::write(&p, b"garbage").unwrap();
         assert_eq!(load_json::<PersistedState>(&p), PersistedState::default());
+    }
+
+    #[test]
+    fn older_state_files_load_without_ctx_alerts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("state.json");
+        std::fs::write(&p, br#"{"desktop_watermark_ms":5,"learned_models":{}}"#).unwrap();
+        let s: PersistedState = load_json(&p);
+        assert_eq!(s.desktop_watermark_ms, 5);
+        assert_eq!(s.ctx_alerts, CtxAlertState::default());
     }
 
     #[test]

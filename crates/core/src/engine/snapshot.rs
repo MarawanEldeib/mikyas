@@ -15,14 +15,21 @@
 //! `session_id` and the Desktop Code-tab session whose `cli_session_id` matches feed
 //! `context::resolve`. Without any tail, the newest capture that names a model is shown instead.
 //! The display name uses a learned map (persisted names ∪ `model.display_name` of the captures).
-//! `project` only when `show_project`.
+//! `project` only when `show_project`. `key` is [`session_key`] of the session id (an opaque FNV-1a
+//! hash, never the id itself).
+//!
+//! Sessions: every tail with `last_assistant_ms >= now - SESSIONS_WINDOW_MS`, built the same way,
+//! newest first (ties keep slice order), one entry per key, at most [`MAX_SESSIONS`]. The header
+//! session is always listed as the identical value: it may be older than the window (`pick` has no
+//! age cutoff) or tied out of the top entries by the focus tie-break, and then replaces the last
+//! entry at its sorted position. The capture-only fallback session is the only entry.
 //!
 //! Warnings:
 //! - `NoPlanLimits`: captures written within the last hour exist, but none carries rate limits.
 //! - `AccountMismatch`: the pipeline tracks since when [`account_mismatch_now`] has held
 //!   (`account_mismatch_since_ms`); after [`ACCOUNT_MISMATCH_AFTER_MS`] the warning is shown.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::capture::CaptureRecord;
 use crate::engine::active_session;
@@ -34,6 +41,7 @@ use crate::engine::types::{
     DesktopHealth, Entrypoint, Observation, Sample, SessionView, Snapshot, Source, SourceHealth,
     Warning, WindowKind, WindowView,
 };
+use crate::fingerprint::Fnv64;
 use crate::history::History;
 use crate::model_names::{display_name, split_1m};
 use crate::sources::desktop_sessions::DesktopSession;
@@ -133,7 +141,7 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         windows.push(WindowView { state, burn, spark });
     }
 
-    let session = session_view(inputs, now_ms);
+    let (session, sessions) = session_views(inputs, now_ms);
     let health = SourceHealth {
         desktop: inputs.desktop_health.clone(),
         cli_last_capture_ms: statusline::last_capture_ms(inputs.captures),
@@ -151,8 +159,6 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         warnings.push(Warning::NoPlanLimits);
     }
 
-    // TODO(stream A): fill with every recent session (see SESSIONS_WINDOW_MS / MAX_SESSIONS).
-    let sessions = session.iter().cloned().collect();
     Snapshot {
         generated_ms: now_ms,
         windows,
@@ -302,15 +308,76 @@ fn combine(
     out
 }
 
-fn session_view(inputs: &EngineInputs<'_>, now_ms: Ms) -> Option<SessionView> {
+/// Opaque, stable list key for a session: the FNV-1a 64-bit hash of its id as 16 hex digits.
+pub fn session_key(session_id: &str) -> String {
+    format!("{:016x}", Fnv64::new().write(session_id.as_bytes()).finish())
+}
+
+/// A tail's key; a tail without a session id is keyed by its file path instead.
+fn tail_key(tail: &TranscriptTail) -> String {
+    if tail.session_id.is_empty() {
+        session_key(&tail.path.to_string_lossy())
+    } else {
+        session_key(&tail.session_id)
+    }
+}
+
+/// The header session and the recent-sessions list (see the module docs).
+fn session_views(inputs: &EngineInputs<'_>, now_ms: Ms) -> (Option<SessionView>, Vec<SessionView>) {
     let mut learned = inputs.learned_names.clone();
     learn_model_names(&mut learned, inputs.captures);
-    let name_of = |id: &str| Some(display_name(id, &learned)).filter(|n| !n.is_empty());
 
     let Some(pick) = active_session::pick(inputs.tails, inputs.desktop_sessions, now_ms) else {
-        return capture_only_session(inputs, &learned);
+        let session = capture_only_session(inputs, &learned);
+        let sessions = session.iter().cloned().collect();
+        return (session, sessions);
     };
-    let tail = &inputs.tails[pick.index];
+    let active = tail_view(inputs, &inputs.tails[pick.index], &learned, pick.concurrent);
+
+    let floor = now_ms.saturating_sub(SESSIONS_WINDOW_MS);
+    let mut recent: Vec<&TranscriptTail> = inputs
+        .tails
+        .iter()
+        .filter(|t| t.last_assistant_ms >= floor)
+        .collect();
+    // Stable, so equal timestamps keep slice order (as `active_session::pick` does).
+    recent.sort_by_key(|t| std::cmp::Reverse(t.last_assistant_ms));
+
+    let mut seen = HashSet::new();
+    let mut sessions: Vec<SessionView> = Vec::with_capacity(MAX_SESSIONS);
+    for tail in recent {
+        if sessions.len() == MAX_SESSIONS {
+            break;
+        }
+        let key = tail_key(tail);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        sessions.push(if key == active.key {
+            active.clone()
+        } else {
+            tail_view(inputs, tail, &learned, pick.concurrent)
+        });
+    }
+    if !seen.contains(&active.key) {
+        if sessions.len() == MAX_SESSIONS {
+            sessions.pop();
+        }
+        let at = sessions.partition_point(|s| s.last_active_ms >= active.last_active_ms);
+        sessions.insert(at, active.clone());
+    }
+    (Some(active), sessions)
+}
+
+/// A session built from its transcript tail, the capture with the same `session_id` and the
+/// Desktop Code-tab session whose `cli_session_id` matches.
+fn tail_view(
+    inputs: &EngineInputs<'_>,
+    tail: &TranscriptTail,
+    learned: &BTreeMap<String, String>,
+    concurrent: u8,
+) -> SessionView {
+    let name_of = |id: &str| Some(display_name(id, learned)).filter(|n| !n.is_empty());
     let capture = inputs
         .captures
         .iter()
@@ -331,8 +398,8 @@ fn session_view(inputs: &EngineInputs<'_>, now_ms: Ms) -> Option<SessionView> {
         .as_deref()
         .or_else(|| capture.and_then(|c| c.model.as_ref()?.id.as_deref()))
         .or_else(|| desktop_session.and_then(|d| d.model.as_deref()));
-    Some(SessionView {
-        key: String::new(),
+    SessionView {
+        key: tail_key(tail),
         model_id: raw_id.map(|id| split_1m(id.trim()).0.to_owned()).filter(|s| !s.is_empty()),
         display_name: raw_id.and_then(name_of),
         ctx_pct: ctx.pct,
@@ -343,8 +410,8 @@ fn session_view(inputs: &EngineInputs<'_>, now_ms: Ms) -> Option<SessionView> {
         entrypoint: tail.entrypoint,
         last_active_ms: tail.last_assistant_ms,
         project: if inputs.show_project { tail.project.clone() } else { None },
-        concurrent: pick.concurrent,
-    })
+        concurrent,
+    }
 }
 
 /// No transcript found (e.g. `CLAUDE_CONFIG_DIR` points elsewhere): show the newest capture that
@@ -363,7 +430,7 @@ fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, St
         overrides: inputs.ctx_overrides,
     });
     Some(SessionView {
-        key: String::new(),
+        key: session_key(&capture.session_id),
         model_id: Some(split_1m(raw_id.trim()).0.to_owned()),
         display_name: Some(display_name(raw_id, learned)).filter(|n| !n.is_empty()),
         ctx_pct: ctx.pct,
@@ -394,6 +461,7 @@ mod tests {
     use crate::engine::types::{CtxBasis, Phase, ResetInfo};
     use crate::history::History;
     use crate::sources::desktop_usage::synth;
+    use crate::time::SECOND_MS;
     use pretty_assertions::assert_eq;
 
     const NOW: Ms = 1_790_000_000_000;
@@ -716,6 +784,135 @@ mod tests {
         assert_eq!(session.model_id.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(session.display_name.as_deref(), Some("Opus 5.5"));
         assert_eq!(session.ctx_pct, Some(12.0));
+    }
+
+    #[test]
+    fn session_key_is_opaque_stable_fnv_hex() {
+        // FNV-1a 64 of "a" (see fingerprint.rs known vectors).
+        assert_eq!(session_key("a"), "af63dc4c8601ec8c");
+        let id = "aaaaaaaa-0000-4000-8000-000000000001";
+        let key = session_key(id);
+        assert_eq!(key.len(), 16);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!key.contains("aaaaaaaa"), "never the raw id");
+        assert_eq!(key, session_key(id));
+        assert_ne!(key, session_key("aaaaaaaa-0000-4000-8000-000000000002"));
+    }
+
+    #[test]
+    fn sessions_list_recent_tails_newest_first_capped() {
+        let f = Fixture::new();
+        // Ten sessions within the window (s0 newest) plus one just outside it.
+        let mut tails: Vec<TranscriptTail> = (0..10)
+            .map(|i| tail(&format!("s{i}"), NOW - i * HOUR_MS))
+            .collect();
+        tails.push(tail("old", NOW - SESSIONS_WINDOW_MS - 1));
+        tails.rotate_left(3); // slice order must not matter
+        let s = build_snapshot(&f.inputs(&[], None, &tails), NOW);
+        let expected: Vec<String> = (0..MAX_SESSIONS).map(|i| session_key(&format!("s{i}"))).collect();
+        let keys: Vec<&str> = s.sessions.iter().map(|v| v.key.as_str()).collect();
+        assert_eq!(keys, expected);
+        assert_eq!(s.session.as_ref(), s.sessions.first(), "header session is the listed one");
+        assert!(s.sessions.windows(2).all(|w| w[0].last_active_ms >= w[1].last_active_ms));
+        // The window boundary is inclusive.
+        let edge = [tail("edge", NOW - SESSIONS_WINDOW_MS), tail("new", NOW)];
+        assert_eq!(build_snapshot(&f.inputs(&[], None, &edge), NOW).sessions.len(), 2);
+    }
+
+    #[test]
+    fn sessions_are_built_like_the_header_session() {
+        let f = Fixture::new();
+        let caps = [capture("s2", NOW - 2 * HOUR_MS, &[])];
+        let mut other = tail("s2", NOW - 2 * HOUR_MS);
+        other.entrypoint = Entrypoint::Cowork;
+        other.project = Some("other-project".into());
+        let tails = [tail("s1", NOW - MINUTE_MS), other];
+        let mut inputs = f.inputs(&caps, None, &tails);
+        inputs.show_project = true;
+        let s = build_snapshot(&inputs, NOW);
+        assert_eq!(s.sessions.len(), 2);
+        let [first, second] = [&s.sessions[0], &s.sessions[1]];
+        assert_eq!(first.key, session_key("s1"));
+        assert!(first.ctx_is_estimate, "s1 has no capture");
+        // s2 uses its own capture's context and keeps its entrypoint/project.
+        assert_eq!(second.key, session_key("s2"));
+        assert_eq!((second.ctx_pct, second.ctx_size), (Some(12.0), 1_000_000));
+        assert_eq!(second.ctx_basis, CtxBasis::Statusline);
+        assert_eq!(second.entrypoint, Entrypoint::Cowork);
+        assert_eq!(second.project.as_deref(), Some("other-project"));
+        assert_eq!(second.last_active_ms, NOW - 2 * HOUR_MS);
+        assert_eq!(first.concurrent, second.concurrent, "concurrent is a global count");
+
+        inputs.show_project = false;
+        let hidden = build_snapshot(&inputs, NOW);
+        assert!(hidden.sessions.iter().all(|v| v.project.is_none()));
+    }
+
+    #[test]
+    fn duplicate_session_ids_are_listed_once() {
+        let f = Fixture::new();
+        let mut copy = tail("s1", NOW - HOUR_MS);
+        copy.path = "C:/x/cowork/s1.jsonl".into();
+        let tails = [copy, tail("s1", NOW - MINUTE_MS), tail("s2", NOW - 2 * HOUR_MS)];
+        let s = build_snapshot(&f.inputs(&[], None, &tails), NOW);
+        let keys: Vec<&str> = s.sessions.iter().map(|v| v.key.as_str()).collect();
+        assert_eq!(keys, vec![session_key("s1"), session_key("s2")]);
+        assert_eq!(s.sessions[0].last_active_ms, NOW - MINUTE_MS, "newest copy wins");
+        assert_eq!(s.session.as_ref(), Some(&s.sessions[0]));
+    }
+
+    #[test]
+    fn header_session_is_listed_even_when_old() {
+        let f = Fixture::new();
+        let tails = [tail("s1", NOW - 2 * DAY_MS)];
+        let s = build_snapshot(&f.inputs(&[], None, &tails), NOW);
+        let session = s.session.expect("pick has no age cutoff");
+        assert_eq!(s.sessions, vec![session]);
+    }
+
+    #[test]
+    fn focused_header_session_replaces_the_last_entry() {
+        let f = Fixture::new();
+        // Nine sessions within the two-minute focus tie; the focused one is the oldest, so the
+        // newest-first cut would drop it.
+        let tails: Vec<TranscriptTail> = (0..9)
+            .map(|i| tail(&format!("s{i}"), NOW - i * 10 * SECOND_MS))
+            .collect();
+        let desk = [DesktopSession {
+            cli_session_id: Some("s8".into()),
+            model: None,
+            last_focused_ms: Some(NOW),
+            last_activity_ms: Some(NOW),
+        }];
+        let mut inputs = f.inputs(&[], None, &tails);
+        inputs.desktop_sessions = &desk;
+        let s = build_snapshot(&inputs, NOW);
+        let session = s.session.expect("session");
+        assert_eq!(session.key, session_key("s8"));
+        assert_eq!(s.sessions.len(), MAX_SESSIONS);
+        assert_eq!(s.sessions.last(), Some(&session));
+        assert!(!s.sessions.iter().any(|v| v.key == session_key("s7")), "s7 made room");
+        assert_eq!(s.sessions.iter().filter(|v| v.key == session.key).count(), 1);
+    }
+
+    #[test]
+    fn capture_only_session_is_keyed_and_listed() {
+        let f = Fixture::new();
+        let caps = [capture("s1", NOW - MINUTE_MS, &[("five_hour", 1.0, NOW + HOUR_MS)])];
+        let s = build_snapshot(&f.inputs(&caps, None, &[]), NOW);
+        let session = s.session.expect("session");
+        assert_eq!(session.key, session_key("s1"));
+        assert_eq!(s.sessions, vec![session]);
+        assert!(build_snapshot(&f.inputs(&[], None, &[]), NOW).sessions.is_empty());
+    }
+
+    #[test]
+    fn tail_without_session_id_is_keyed_by_path() {
+        let f = Fixture::new();
+        let tails = [tail("", NOW - MINUTE_MS)];
+        let s = build_snapshot(&f.inputs(&[], None, &tails), NOW);
+        assert_eq!(s.sessions[0].key, session_key("C:/x/.jsonl"));
+        assert_ne!(s.sessions[0].key, session_key(""));
     }
 
     #[test]

@@ -4,8 +4,10 @@
 //! (`w` = [`WindowKind::short`], `r` = reset at_ms if known, `e` = reset was estimated).
 //! Malformed lines (e.g. a torn last line after a crash) are skipped on load. Rows are kept sorted
 //! by `t`. Retention: [`RETAIN_MS`].
+//!
+//! [`History::view`] aggregates one window for the History view (see its docs for the rules).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -16,9 +18,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::types::{Phase, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState};
 use crate::sources::desktop_usage::DesktopUsage;
-use crate::time::{DAY_MS, HOUR_MS, Ms};
+use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
 
 pub const RETAIN_MS: Ms = 14 * DAY_MS;
+/// A drop of at least this many points between consecutive rows of a window is a reset.
+pub const RESET_DROP_PCT: f32 = 1.0;
+/// Reset marks closer than this (inclusive) are one reset in [`History::view`].
+pub const RESET_DEDUP_MS: Ms = 30 * MINUTE_MS;
 /// A sparkline bucket with no sample carries the previous value forward only if that value is
 /// at most this old; otherwise the bucket is a gap (`pct: None`).
 pub const SPARK_MAX_CARRY_MS: Ms = 2 * HOUR_MS;
@@ -49,6 +55,41 @@ impl HistoryRow {
     fn is_kind(&self, kind: &WindowKind) -> bool {
         self.w == kind.short() || WindowKind::from_short(&self.w) == *kind
     }
+}
+
+/// Range and local-day boundaries for [`History::view`].
+#[derive(Debug, Clone, Copy)]
+pub struct ViewRange<'a> {
+    pub from_ms: Ms,
+    /// Inclusive end; the caller aligns the range to whole hours.
+    pub to_ms: Ms,
+    /// Exact reset times after this have not happened yet.
+    pub now_ms: Ms,
+    /// Ascending local midnights. Day `i` covers `[day_starts[i], day_starts[i + 1])`, the last one
+    /// ends at `to_ms`. Computed by the caller in the user's zone, so 23 h and 25 h DST days work.
+    pub day_starts: &'a [Ms],
+}
+
+/// One local calendar day of one window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DayUsage {
+    pub day_start_ms: Ms,
+    /// Highest % recorded that day (0 without rows).
+    pub peak_pct: f32,
+    /// Share of the limit used that day: the sum of rises (see [`History::view`]).
+    pub consumed_pct: f32,
+}
+
+/// One window's history over a [`ViewRange`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowHistory {
+    pub kind: WindowKind,
+    /// One point per hour (max % in the hour), gaps as in [`History::spark`].
+    pub points: Vec<SparkPoint>,
+    /// Detected resets within the range, ascending.
+    pub resets_ms: Vec<Ms>,
+    /// One entry per `day_starts` value.
+    pub days: Vec<DayUsage>,
 }
 
 /// The in-memory copy of `history.jsonl`, sorted by `t`.
@@ -224,6 +265,98 @@ impl History {
             });
         }
         out
+    }
+
+    /// Every window kind with at least one row: FiveHour, SevenDay, then others by key.
+    pub fn kinds(&self) -> Vec<WindowKind> {
+        let shorts: BTreeSet<&str> = self.rows.iter().map(|r| r.w.as_str()).collect();
+        let kinds: BTreeSet<WindowKind> = shorts.into_iter().map(WindowKind::from_short).collect();
+        kinds.into_iter().collect()
+    }
+
+    /// Aggregates one window for the History view.
+    ///
+    /// - `points`: [`History::spark`] with one bucket per hour of the range (max per hour, gaps
+    ///   after [`SPARK_MAX_CARRY_MS`] without rows).
+    /// - Rows are walked in order, rows before `from_ms` seeding the state. A row starts a new
+    ///   window instance when its pct is at least [`RESET_DROP_PCT`] below the previous row, or
+    ///   when the latest exact reset time known (`r` of a row with `e: false`) passed since the
+    ///   previous row. A reset time superseded before it passed (re-estimated or moved) is not one.
+    /// - `resets_ms`: exact reset times that passed within `[from_ms, min(to_ms, now_ms)]`, plus
+    ///   the time of each in-range row that shows a drop not explained by an exact reset; sorted,
+    ///   and a mark within [`RESET_DEDUP_MS`] of the previous kept one is dropped.
+    /// - Days: `peak_pct` is the highest row that day. `consumed_pct` adds, for each row of the
+    ///   day, its rise over the instance's high-water mark (dips below one point of noise, e.g.
+    ///   Desktop's integer values, are not counted twice), or its whole value when it starts a new
+    ///   instance (the rise from 0 after a reset). The first row ever adds nothing.
+    pub fn view(&self, kind: &WindowKind, range: &ViewRange<'_>) -> WindowHistory {
+        let span = range.to_ms.saturating_sub(range.from_ms).max(0);
+        let hours = span / HOUR_MS + i64::from(span % HOUR_MS != 0);
+        let points = self.spark(kind, range.from_ms, range.to_ms, usize::try_from(hours).unwrap_or(0));
+
+        let passed = range.to_ms.min(range.now_ms);
+        let in_range = |t: Ms| t >= range.from_ms && t <= range.to_ms;
+        let passed_in_range = |t: &Ms| *t >= range.from_ms && *t <= passed;
+        let mut days: Vec<DayUsage> = range
+            .day_starts
+            .iter()
+            .map(|&day_start_ms| DayUsage {
+                day_start_ms,
+                peak_pct: 0.0,
+                consumed_pct: 0.0,
+            })
+            .collect();
+        let mut marks: Vec<Ms> = Vec::new();
+        let mut known_reset: Option<Ms> = None;
+        let mut prev: Option<&HistoryRow> = None;
+        let mut high = 0.0_f32;
+
+        for row in self.rows.iter().filter(|r| r.t <= range.to_ms && r.is_kind(kind)) {
+            let exact_reset = prev
+                .zip(known_reset)
+                .is_some_and(|(p, r)| p.t < r && r <= row.t);
+            let dropped = prev.is_some_and(|p| p.p - row.p >= RESET_DROP_PCT);
+            if dropped && !exact_reset && in_range(row.t) {
+                marks.push(row.t);
+            }
+            let new_instance = prev.is_none() || exact_reset || dropped;
+            let consumed = match prev {
+                None => 0.0,
+                Some(_) if new_instance => row.p,
+                Some(_) => (row.p - high).max(0.0),
+            };
+            high = if new_instance { row.p } else { high.max(row.p) };
+
+            let day = range.day_starts.partition_point(|&d| d <= row.t).checked_sub(1);
+            if let Some(day) = day.and_then(|i| days.get_mut(i)) {
+                day.consumed_pct += consumed;
+                day.peak_pct = day.peak_pct.max(row.p);
+            }
+
+            if let Some(r) = row.r.filter(|_| !row.e) {
+                // The previous reset time is replaced: it was a reset if it had already passed.
+                if let Some(old) = known_reset.filter(|&old| old != r && old <= row.t) {
+                    marks.extend(Some(old).filter(passed_in_range));
+                }
+                known_reset = Some(r);
+            }
+            prev = Some(row);
+        }
+        marks.extend(known_reset.filter(passed_in_range));
+        marks.sort_unstable();
+
+        let mut resets_ms: Vec<Ms> = Vec::with_capacity(marks.len());
+        for t in marks {
+            if resets_ms.last().is_none_or(|&last| t.saturating_sub(last) > RESET_DEDUP_MS) {
+                resets_ms.push(t);
+            }
+        }
+        WindowHistory {
+            kind: kind.clone(),
+            points,
+            resets_ms,
+            days,
+        }
     }
 
     /// Atomically rewrites the file with `rows`, then adopts them (memory is untouched on failure).
@@ -871,6 +1004,219 @@ mod tests {
         let wide = h.spark(&WindowKind::FiveHour, Ms::MIN, Ms::MAX, 3);
         assert_eq!(wide.first().map(|p| p.t_ms), Some(Ms::MIN));
         assert_eq!(wide.len(), 3);
+    }
+
+    // ---- kinds / view ----
+
+    /// An hour-aligned base for the view tests.
+    const H0: Ms = T0 / HOUR_MS * HOUR_MS;
+
+    /// A 5h row with an exact reset time.
+    fn exact(t: Ms, p: f32, r: Ms) -> HistoryRow {
+        HistoryRow {
+            r: Some(r),
+            ..row(t, "5h", p)
+        }
+    }
+
+    fn range(from_ms: Ms, to_ms: Ms, now_ms: Ms, day_starts: &[Ms]) -> ViewRange<'_> {
+        ViewRange {
+            from_ms,
+            to_ms,
+            now_ms,
+            day_starts,
+        }
+    }
+
+    fn day_values(v: &WindowHistory) -> Vec<(f32, f32)> {
+        v.days
+            .iter()
+            .map(|d| ((d.peak_pct * 10.0).round() / 10.0, (d.consumed_pct * 10.0).round() / 10.0))
+            .collect()
+    }
+
+    #[test]
+    fn kinds_are_ordered_and_unique() {
+        let (_dir, h) = with_rows(vec![
+            row(1, "seven_day_opus", 1.0),
+            row(2, "7d", 1.0),
+            row(3, "5h", 1.0),
+            row(4, "five_hour", 1.0),
+            row(5, "7d", 2.0),
+        ]);
+        assert_eq!(
+            h.kinds(),
+            vec![
+                WindowKind::FiveHour,
+                WindowKind::SevenDay,
+                WindowKind::Other("seven_day_opus".into())
+            ]
+        );
+        assert!(with_rows(vec![]).1.kinds().is_empty());
+    }
+
+    #[test]
+    fn view_points_are_hourly_maxima_with_gaps() {
+        let m = MINUTE_MS;
+        let (_dir, h) = with_rows(vec![
+            row(H0 + 10 * m, "5h", 10.0),
+            row(H0 + 50 * m, "5h", 30.0),
+            row(H0 + 70 * m, "5h", 20.0),
+            row(H0 + 80 * m, "7d", 90.0),
+        ]);
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + 5 * HOUR_MS, H0 + 5 * HOUR_MS, &[]));
+        let starts: Vec<Ms> = v.points.iter().map(|p| p.t_ms - H0).collect();
+        assert_eq!(starts, (0..5).map(|i| i * HOUR_MS).collect::<Vec<_>>());
+        // Hours 2 and 3 carry the 20% (≤ 2 h old); hour 4 starts 170 min after it: a gap.
+        assert_eq!(pcts(&v.points), vec![Some(30.0), Some(20.0), Some(20.0), Some(20.0), None]);
+        assert!(v.days.is_empty());
+        // A partial last hour still gets its own point.
+        let partial = h.view(&WindowKind::FiveHour, &range(H0, H0 + 90 * m, H0, &[]));
+        assert_eq!(partial.points.len(), 2);
+    }
+
+    #[test]
+    fn view_of_empty_history() {
+        let (_dir, h) = with_rows(vec![]);
+        let days = [H0, H0 + DAY_MS];
+        let v = h.view(&WindowKind::SevenDay, &range(H0, H0 + 2 * DAY_MS, H0 + 2 * DAY_MS, &days));
+        assert_eq!(v.kind, WindowKind::SevenDay);
+        assert_eq!(v.points.len(), 48);
+        assert!(v.points.iter().all(|p| p.pct.is_none()));
+        assert!(v.resets_ms.is_empty());
+        assert_eq!(day_values(&v), vec![(0.0, 0.0), (0.0, 0.0)]);
+        assert_eq!(v.days[1].day_start_ms, H0 + DAY_MS);
+        // A degenerate range yields no points and never panics.
+        assert!(h.view(&WindowKind::FiveHour, &range(H0, H0, H0, &[])).points.is_empty());
+        let wide = h.view(&WindowKind::FiveHour, &range(Ms::MIN, Ms::MAX, Ms::MAX, &[Ms::MIN]));
+        assert_eq!(wide.points.len(), MAX_SPARK_BUCKETS);
+    }
+
+    #[test]
+    fn view_resets_from_exact_times_and_drops() {
+        let h_ = HOUR_MS;
+        let (_dir, h) = with_rows(vec![
+            // Instance A resets exactly at +2h (the next row is a drop the exact time explains).
+            exact(H0, 10.0, H0 + 2 * h_),
+            exact(H0 + h_, 40.0, H0 + 2 * h_),
+            exact(H0 + 3 * h_, 15.0, H0 + 8 * h_),
+            // Desktop rows without reset times: an unexplained drop at +5h, noise 20 minutes later.
+            row(H0 + 4 * h_, "5h", 60.0),
+            row(H0 + 5 * h_, "5h", 20.0),
+            row(H0 + 5 * h_ + 20 * MINUTE_MS, "5h", 5.0),
+            // The +8h reset is re-estimated to +9h before it passes: not a reset.
+            exact(H0 + 6 * h_, 25.0, H0 + 9 * h_),
+        ]);
+        let now = H0 + 7 * h_;
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + 10 * h_, now, &[]));
+        assert_eq!(v.resets_ms, vec![H0 + 2 * h_, H0 + 5 * h_]);
+        // Once +9h has passed it is a reset too (no row needs to follow).
+        let later = h.view(&WindowKind::FiveHour, &range(H0, H0 + 10 * h_, H0 + 9 * h_, &[]));
+        assert_eq!(later.resets_ms, vec![H0 + 2 * h_, H0 + 5 * h_, H0 + 9 * h_]);
+        // Only resets inside the range, and never after to_ms.
+        let tail = h.view(&WindowKind::FiveHour, &range(H0 + 3 * h_, H0 + 8 * h_, H0 + 10 * h_, &[]));
+        assert_eq!(tail.resets_ms, vec![H0 + 5 * h_]);
+    }
+
+    #[test]
+    fn view_reset_marks_are_deduplicated_within_30_minutes() {
+        let m = MINUTE_MS;
+        let (_dir, h) = with_rows(vec![
+            row(H0, "5h", 50.0),
+            row(H0 + 10 * m, "5h", 30.0),
+            row(H0 + 40 * m, "5h", 10.0), // exactly 30 min later: same reset
+            row(H0 + 50 * m, "5h", 40.0),
+            row(H0 + 71 * m, "5h", 5.0), // 61 min after the kept mark: a new reset
+        ]);
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + 2 * HOUR_MS, H0 + 2 * HOUR_MS, &[]));
+        assert_eq!(v.resets_ms, vec![H0 + 10 * m, H0 + 71 * m]);
+    }
+
+    #[test]
+    fn view_consumed_sums_rises_across_resets() {
+        let d0 = H0;
+        let d1 = d0 + DAY_MS;
+        let (_dir, h) = with_rows(vec![
+            row(d0 - HOUR_MS, "5h", 40.0), // before the first day: seeds the walk
+            row(d0 + HOUR_MS, "5h", 45.0),
+            row(d0 + 2 * HOUR_MS, "5h", 50.0),
+            row(d0 + 3 * HOUR_MS, "5h", 49.5), // noise below one point
+            row(d0 + 4 * HOUR_MS, "5h", 50.3), // only 0.3 above the high-water mark
+            row(d1 + HOUR_MS, "5h", 5.0),      // reset: the whole 5% counts
+            row(d1 + 2 * HOUR_MS, "5h", 30.0),
+            row(d1 + 3 * HOUR_MS, "7d", 99.0), // other windows are ignored
+        ]);
+        let days = [d0, d1];
+        let v = h.view(&WindowKind::FiveHour, &range(d0, d1 + DAY_MS, d1 + DAY_MS, &days));
+        assert_eq!(day_values(&v), vec![(50.3, 10.3), (30.0, 30.0)]);
+        assert_eq!(v.resets_ms, vec![d1 + HOUR_MS]);
+    }
+
+    #[test]
+    fn view_counts_the_new_window_after_an_exact_reset() {
+        // 20% before a reset at +2h, 25% an hour after it: 25 points were used in the new window,
+        // although no drop is visible.
+        let (_dir, h) = with_rows(vec![
+            exact(H0, 10.0, H0 + 2 * HOUR_MS),
+            exact(H0 + HOUR_MS, 20.0, H0 + 2 * HOUR_MS),
+            exact(H0 + 3 * HOUR_MS, 25.0, H0 + 7 * HOUR_MS),
+        ]);
+        let days = [H0];
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 4 * HOUR_MS, &days));
+        assert_eq!(day_values(&v), vec![(25.0, 35.0)]);
+        assert_eq!(v.resets_ms, vec![H0 + 2 * HOUR_MS]);
+        // Estimated reset times (`e`) never count.
+        let (_dir, est) = with_rows(vec![
+            HistoryRow { e: true, ..exact(H0, 10.0, H0 + 2 * HOUR_MS) },
+            HistoryRow { e: true, ..exact(H0 + 3 * HOUR_MS, 25.0, H0 + 7 * HOUR_MS) },
+        ]);
+        let v = est.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 4 * HOUR_MS, &days));
+        assert_eq!(day_values(&v), vec![(25.0, 15.0)]);
+        assert!(v.resets_ms.is_empty());
+    }
+
+    #[test]
+    fn view_uses_the_given_day_boundaries() {
+        // A 23 h day (spring forward) followed by a 25 h day (fall back).
+        let d0 = H0;
+        let d1 = d0 + 23 * HOUR_MS;
+        let d2 = d1 + 25 * HOUR_MS;
+        let (_dir, h) = with_rows(vec![
+            row(d0 + HOUR_MS, "7d", 10.0),
+            row(d1 - 30 * MINUTE_MS, "7d", 12.0), // last half hour of the short day
+            row(d1, "7d", 15.0),                  // midnight belongs to the new day
+            row(d2 - 30 * MINUTE_MS, "7d", 19.0), // 24.5 h into the long day
+            row(d2 + HOUR_MS, "7d", 20.0),
+            row(d2 + 2 * HOUR_MS, "7d", 60.0), // after to_ms: ignored
+        ]);
+        let days = [d0, d1, d2];
+        let to = d2 + HOUR_MS;
+        let v = h.view(&WindowKind::SevenDay, &range(d0, to, to, &days));
+        assert_eq!(day_values(&v), vec![(12.0, 2.0), (19.0, 7.0), (20.0, 1.0)]);
+        let starts: Vec<Ms> = v.days.iter().map(|d| d.day_start_ms).collect();
+        assert_eq!(starts, days);
+    }
+
+    #[test]
+    fn view_handles_many_rows() {
+        // Two weeks of 1-minute rows for two windows (about the size of a busy history file).
+        let rows: Vec<HistoryRow> = (0..20_160)
+            .flat_map(|i| {
+                let t = H0 + i * MINUTE_MS;
+                let five = (i % 300) as f32 / 3.0; // 0 → 99.7 every 5 h
+                [row(t, "5h", five), row(t, "7d", (i / 200) as f32 / 1.1)]
+            })
+            .collect();
+        let (_dir, h) = with_rows(rows);
+        let to = H0 + 14 * DAY_MS;
+        let days: Vec<Ms> = (0..14).map(|d| H0 + d * DAY_MS).collect();
+        let v = h.view(&WindowKind::FiveHour, &range(H0, to, to, &days));
+        assert_eq!(v.points.len(), 14 * 24);
+        assert_eq!(v.resets_ms.len(), 67, "a drop every 5 h after the first window");
+        let total: f32 = v.days.iter().map(|d| d.consumed_pct).sum();
+        // 67 full windows rising 0 → 99.67, then a partial one up to 19.67.
+        let expected = 67.0 * (299.0 / 3.0) + 59.0 / 3.0;
+        assert!((total - expected).abs() < 1.0, "{total} vs {expected}");
     }
 
     #[test]
