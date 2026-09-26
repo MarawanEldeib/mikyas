@@ -1,16 +1,22 @@
 name: CI
 
+# Fork pull requests run here with a read-only token and no secrets (pull_request, never
+# pull_request_target). Keep "Require approval for all outside collaborators" on in the repo's
+# Actions settings so a fork cannot run code or write the caches before a review.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # release.yml runs this whole workflow as its quality and privacy gate.
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,6 +25,8 @@ env:
   # SHA-256 of gitleaks_8.30.1_windows_x64.zip, from the release's gitleaks_8.30.1_checksums.txt.
   GITLEAKS_SHA256: d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
 
+# Every action is pinned to a full commit SHA (the tag is in the comment): a moved tag cannot
+# change what runs here.
 jobs:
   check:
     name: Lint, test, build
@@ -27,9 +35,10 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # gitleaks scans the whole history
+          persist-credentials: false
 
       - name: Secret scan (gitleaks)
         run: |
@@ -41,18 +50,31 @@ jobs:
           & "$env:RUNNER_TEMP\gitleaks\gitleaks.exe" git --redact --no-banner --config .gitleaks.toml
           if ($LASTEXITCODE -ne 0) { throw "gitleaks found a secret" }
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      # The fixture check the pre-commit hook runs (added after a real token leak): enforced here
+      # too, because a local hook can be missing or skipped.
+      - name: Fixtures are synthetic
+        run: |
+          $files = @(git ls-files 'crates/**/fixtures/**')
+          if ($LASTEXITCODE -ne 0) { throw "git ls-files failed" }
+          if (-not $files) { throw "no fixture files found" }
+          node scripts/check-fixtures.mjs @files
+          if ($LASTEXITCODE -ne 0) { throw "fixture check failed" }
 
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # No install scripts: the only ones are lefthook's git-hook installer (not needed on a
+      # runner) and fsevents (macOS only).
+      - run: npm ci --ignore-scripts
 
-      - name: Privacy grep (no .credentials, api/oauth or claude.ai in code)
+      - name: Privacy grep (no credentials, cookies, Anthropic hosts or claude.ai in code)
         run: node scripts/privacy-grep.mjs
 
       - name: Versions agree (package.json, Cargo.toml, tauri.conf.json)
@@ -74,7 +96,8 @@ jobs:
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
 
-      # Advisory until the existing code is formatted in one sweep (it predates rustfmt in CI).
+      # Advisory until the existing code is formatted in one sweep (it predates rustfmt in CI);
+      # crates/capture is already clean.
       - name: rustfmt
         continue-on-error: true
         run: cargo fmt --all -- --check

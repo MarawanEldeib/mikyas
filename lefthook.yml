@@ -1,8 +1,12 @@
 pre-commit:
   parallel: true
   commands:
+    # Warns (and passes) when gitleaks is not installed; CI scans every push regardless.
     gitleaks:
-      run: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+      run: node scripts/gitleaks-staged.mjs
     fixtures:
       glob: "crates/**/fixtures/**"
       run: node scripts/check-fixtures.mjs {staged_files}
+    # Widget data files (settings backups, wrap/state/alerts.json, ...) must never be committed.
+    data-files:
+      run: node scripts/check-fixtures.mjs --data-names {staged_files}
