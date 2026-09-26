@@ -2,7 +2,6 @@
   // 16×16 line icons drawn with a 1.5px stroke (no icon font, no external requests).
   const PATHS = {
     pin: "M9.6 2.4 13.6 6.4 11.3 7.5 9.4 9.4 9.9 12.1 8.9 13.1 2.9 7.1 3.9 6.1 6.6 6.6 8.5 4.7ZM5.9 10.1 2.5 13.5",
-    collapse: "M2.5 9.5H6.5V13.5M13.5 6.5H9.5V2.5M6.5 9.5 2.5 13.5M9.5 6.5 13.5 2.5",
     expand: "M9.5 2.5H13.5V6.5M6.5 13.5H2.5V9.5M13.5 2.5 9.5 6.5M2.5 13.5 6.5 9.5",
     tune: "M2.5 4.5H8M12 4.5H13.5M2.5 11.5H4M8 11.5H13.5M10 2.5V6.5M6 9.5V13.5",
     back: "M13 8H3.5M7.5 4 3.5 8 7.5 12",
@@ -16,6 +15,8 @@
     close: "M4 4 12 12M12 4 4 12",
     plus: "M8 3V13M3 8H13",
     minus: "M3 8H13",
+    // Window controls: as wide as `close`, like the Windows caption glyphs.
+    minimize: "M4 8H12",
     folder: "M1.75 3.75H6.25L7.75 5.25H14.25V12.75H1.75Z",
     power: "M8 1.75V7.5M4.6 3.9A5.25 5.25 0 1 0 11.4 3.9",
     shield: "M8 1.75 13.25 3.5V7.5C13.25 10.6 11 12.95 8 14.25 5 12.95 2.75 10.6 2.75 7.5V3.5Z",

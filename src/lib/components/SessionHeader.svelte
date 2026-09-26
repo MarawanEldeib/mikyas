@@ -63,7 +63,8 @@
       <span class="age">{formatAge(session.last_active_ms, now)}</span>
       {#if showProject && session.project}<span class="project" title={session.project}>{session.project}</span>{/if}
     </span>
-    <span class="ctx" title={ctxTip}>
+    <!-- Fades out while the window controls show over it (WindowControls.svelte). -->
+    <span class="ctx" title={ctxTip} data-under-controls>
       <span class="ctx-label">{ctxLabel(session)}</span>
       <span class="ctx-bar" aria-hidden="true">
         {#if ctx !== null}<span class="ctx-fill" style:width="{ctx}%" style:background={fillColor(ctx)}></span>{/if}

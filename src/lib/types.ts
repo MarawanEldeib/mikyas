@@ -128,6 +128,8 @@ export type EffectName = "auto" | "mica" | "acrylic" | "blur" | "none";
 export type Accent = "auto" | "blue" | "violet" | "teal" | "green" | "amber" | "rose";
 export type GaugeStyle = "ring" | "bar";
 export type DockEdge = "off" | "left" | "right" | "top";
+/** What the widget's × does: hide to the tray, or quit the app. */
+export type CloseAction = "hide" | "quit";
 
 export interface CardRows {
   sparklines: boolean;
@@ -173,6 +175,10 @@ export interface Settings {
   ui_scale: number;
   card_rows: CardRows;
   dock: DockEdge;
+  /** Default "hide". */
+  close_action: CloseAction;
+  /** Internal: the first-hide toast was shown. No UI control; update_settings ignores it. */
+  hide_hint_shown: boolean;
 }
 
 export type HiddenReason = "none" | "user" | "fullscreen";
@@ -233,8 +239,11 @@ export interface ConnectPreview {
  *  disconnect_claude_code() -> ConnectionStatus
  *  open_data_folder() -> void
  *  quit_app() -> void
+ *  hide_widget() -> void                                 (the ×: hides like the tray, hint once)
+ *  show_context_menu() -> void                           (native right-click menu at the cursor)
  *  get_history({ days: number }) -> HistoryData          (days 1..14)
- *  set_dock_expanded({ expanded: boolean }) -> void       (pointer enter/leave while docked)
+ *  set_dock_expanded({ expanded: boolean, force?: boolean }) -> void
+ *                                   (pointer enter/leave while docked; force: the card's "–")
  *  check_updates_now() -> UpdateInfo | null              (explicit click; network)
  *  open_url({ url: string }) -> void                     (GitHub release pages only)
  * Events: "snapshot" (Snapshot), "ui-state" (UiState).
@@ -252,6 +261,8 @@ export type CommandName =
   | "disconnect_claude_code"
   | "open_data_folder"
   | "quit_app"
+  | "hide_widget"
+  | "show_context_menu"
   | "get_history"
   | "set_dock_expanded"
   | "check_updates_now"

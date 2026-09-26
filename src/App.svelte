@@ -6,7 +6,9 @@
   import SessionsView from "./lib/components/SessionsView.svelte";
   import Settings from "./lib/components/Settings.svelte";
   import UpdateBanner from "./lib/components/UpdateBanner.svelte";
-  import { startDragging } from "./lib/ipc";
+  import WindowControls from "./lib/components/WindowControls.svelte";
+  import { nativeMenuAllowed } from "./lib/controls";
+  import { api, startDragging } from "./lib/ipc";
   import { app } from "./lib/stores.svelte";
   import { createTicker, type Ticker } from "./lib/tick";
   import { onMount, untrack } from "svelte";
@@ -70,7 +72,17 @@
     }
     startDragging();
   }
+
+  // WebView2's own menu (Back, Reload, Inspect…) makes no sense here: the app's native menu
+  // replaces it, except in text fields (cut, copy, paste).
+  function oncontextmenu(e: MouseEvent) {
+    if (nativeMenuAllowed(e.target)) return;
+    e.preventDefault();
+    if (!app.ui.click_through) api.showContextMenu().catch((err: unknown) => console.warn("show_context_menu failed", err));
+  }
 </script>
+
+<svelte:window {oncontextmenu} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
@@ -92,6 +104,7 @@
   {:else}
     <Card />
   {/if}
+  {#if app.ready}<WindowControls />{/if}
 </div>
 
 <style>

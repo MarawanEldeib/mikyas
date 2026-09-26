@@ -4,6 +4,7 @@
 mod cli;
 mod commands;
 mod connect;
+mod context_menu;
 mod dock;
 mod fullscreen;
 mod history_view;
@@ -79,6 +80,8 @@ pub fn run() {
             commands::disconnect_claude_code,
             commands::open_data_folder,
             commands::quit_app,
+            commands::hide_widget,
+            context_menu::show_context_menu,
             history_view::get_history,
             dock::set_dock_expanded,
             updates::check_updates_now,

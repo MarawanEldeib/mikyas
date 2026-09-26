@@ -1,5 +1,6 @@
 //! Showing and hiding the widget, and why it is hidden (`UiState.hidden_reason`): by the user
-//! (tray Show/Hide, the show/hide hotkey) or automatically while a fullscreen app has the focus.
+//! (tray Show/Hide, the show/hide hotkey, the widget's own × or right-click Hide) or automatically
+//! while a fullscreen app has the focus.
 //!
 //! The user always wins: auto-hide never brings back a widget the user hid, and a widget the user
 //! brought back during a fullscreen app stays until that app loses the focus. The widget is shown
@@ -15,6 +16,8 @@ use crate::state::{HiddenReason, Shared};
 pub enum Event {
     /// Tray Show/Hide (menu item or left click) or the show/hide hotkey.
     UserToggle,
+    /// The widget's own × button or its right-click Hide (never shows it).
+    UserHide,
     /// An explicit request to see the widget (tray Settings/Compact, starting the app again).
     UserShow,
     /// A fullscreen app took the foreground.
@@ -39,6 +42,7 @@ pub fn transition(reason: HiddenReason, visible: bool, event: Event) -> (HiddenR
     use HiddenReason as R;
     match event {
         Event::UserToggle if visible => (R::User, Action::Hide),
+        Event::UserHide => (R::User, Action::Hide),
         Event::UserToggle | Event::UserShow => (R::None, Action::Show),
         Event::FullscreenStarted => match reason {
             R::None => (R::Fullscreen, Action::Hide),
@@ -53,6 +57,12 @@ pub fn transition(reason: HiddenReason, visible: bool, event: Event) -> (HiddenR
             other => (other, Action::Nothing),
         },
     }
+}
+
+/// The one-time "still running" hint is due on the first hide from the widget itself. Hiding from
+/// the tray or with the hotkey needs none: that is how the widget comes back.
+pub fn hide_hint_due(event: Event, already_shown: bool) -> bool {
+    event == Event::UserHide && !already_shown
 }
 
 /// Applies `event` to the window and `UiState.hidden_reason`, then emits `ui-state` if anything
@@ -107,6 +117,25 @@ mod tests {
         assert_eq!(transition(R::Fullscreen, false, Event::UserToggle), (R::None, Action::Show));
         assert_eq!(transition(R::User, false, Event::UserShow), (R::None, Action::Show));
         assert_eq!(transition(R::Fullscreen, false, Event::UserShow), (R::None, Action::Show));
+    }
+
+    #[test]
+    fn the_widgets_own_hide_never_shows_it() {
+        assert_eq!(transition(R::None, true, Event::UserHide), (R::User, Action::Hide));
+        // A second click racing the hide, or a hide while auto-hidden: stays hidden, now by the user.
+        assert_eq!(transition(R::User, false, Event::UserHide), (R::User, Action::Hide));
+        assert_eq!(transition(R::Fullscreen, false, Event::UserHide), (R::User, Action::Hide));
+        assert_eq!(transition(R::User, false, Event::FullscreenEnded), (R::User, Action::Nothing));
+    }
+
+    #[test]
+    fn the_hide_hint_is_due_once_and_only_for_the_widgets_own_hide() {
+        assert!(hide_hint_due(Event::UserHide, false));
+        assert!(!hide_hint_due(Event::UserHide, true), "already shown");
+        // The tray and the hotkey (both UserToggle) are how the widget comes back.
+        for event in [Event::UserToggle, Event::UserShow, Event::FullscreenStarted, Event::FullscreenOngoing] {
+            assert!(!hide_hint_due(event, false), "{event:?}");
+        }
     }
 
     #[test]

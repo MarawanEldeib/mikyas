@@ -65,8 +65,11 @@ export const api = {
   disconnectClaudeCode: () => call<ConnectionStatus>("disconnect_claude_code"),
   openDataFolder: () => call<void>("open_data_folder"),
   quitApp: () => call<void>("quit_app"),
+  hideWidget: () => call<void>("hide_widget"),
+  showContextMenu: () => call<void>("show_context_menu"),
   getHistory: (days: number) => call<HistoryData>("get_history", { days }),
-  setDockExpanded: (expanded: boolean) => call<void>("set_dock_expanded", { expanded }),
+  /** `force`: the user asked (the card's "–"), so Rust skips its pointer-still-inside check. */
+  setDockExpanded: (expanded: boolean, force = false) => call<void>("set_dock_expanded", { expanded, force }),
   checkUpdatesNow: () => call<UpdateInfo | null>("check_updates_now"),
   openUrl: (url: string) => call<void>("open_url", { url }),
 };

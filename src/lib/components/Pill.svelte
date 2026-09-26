@@ -14,6 +14,8 @@
   const warn = $derived(notices(snap));
   const session = $derived(snap?.session ?? null);
   const bars = $derived(app.settings?.gauge_style === "bar");
+  // The window controls (WindowControls.svelte) take the top-right corner while shown; the bars'
+  // first countdown, the right ring's stale tag and the warning dot there fade out meanwhile.
 
   // Slides the widget back into its strip when the pointer leaves (edge dock).
   startDock(app, api.setDockExpanded);
@@ -56,14 +58,14 @@
   {:else if bars}
     <!-- One grid for both rows so the bars line up whatever the labels and countdowns say. -->
     <div class="bars">
-      {#each shown as w (w.kind)}
+      {#each shown as w, i (w.kind)}
         <div class="brow" role="img" aria-label={describe(w)}>
           <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
           <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={barColor(w)}></span></span>
           <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
             {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{/if}
           </span>
-          <span class="count bcount" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
+          <span class="count bcount" class:crit={w.limit_reached} data-under-controls={i === 0 ? "" : undefined}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
         </div>
       {/each}
     </div>
@@ -73,7 +75,7 @@
       <div class="win" role="img" aria-label={describe(w)}>
         <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
-          <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
+          <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag" data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span>{/if}</span>
           <span class="count" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
         </div>
       </div>
@@ -85,7 +87,7 @@
     <button type="button" class="expand" aria-label="Show details" data-focus-home onclick={() => app.setView("card")}></button>
   {/if}
   {#if warn.length}
-    <span class="dot" aria-label="{warn.length} warning{warn.length > 1 ? 's' : ''}" role="img"></span>
+    <span class="dot" aria-label="{warn.length} warning{warn.length > 1 ? 's' : ''}" role="img" data-under-controls></span>
   {/if}
 </div>
 

@@ -31,7 +31,9 @@ Microsoft.
 ## 3. First run
 
 The widget appears in the bottom-right corner, with an icon in the system tray (click it to show
-or hide the widget; right-click for the menu).
+or hide the widget; right-click for the menu). Point at the widget for its minimize and close
+buttons in the top-right corner (close hides it to the tray; Settings → System → **Close button**
+can make it quit instead), or right-click it for a menu much like the tray's.
 
 It fills in by itself from two sources — use either or both:
 

@@ -92,6 +92,39 @@ describe("createMockBackend", () => {
     expect(await expanded("dock=off&view=settings")).toBe(false);
   });
 
+  it("hides from the ×, logs the hint once, and never lets a patch touch the hint flag", async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const b = createMockBackend(new URLSearchParams("close=quit"));
+    const states: UiState[] = [];
+    await b.listen<UiState>("ui-state", (u) => states.push(u));
+    const before = await b.invoke<Settings>("get_settings");
+    expect(before.close_action).toBe("quit");
+    expect(before.hide_hint_shown).toBe(false);
+    expect((await b.invoke<Settings>("update_settings", { patch: { hide_hint_shown: true } })).hide_hint_shown).toBe(false);
+
+    await b.invoke("hide_widget");
+    await b.invoke("hide_widget");
+    expect(states.at(-1)?.hidden_reason).toBe("user");
+    expect(info.mock.calls.filter(([m]) => String(m).includes("toast"))).toHaveLength(1);
+    const after = await b.invoke<Settings>("update_settings", { patch: { hide_hint_shown: false, close_action: "hide" } });
+    expect(after.hide_hint_shown).toBe(true);
+    expect(after.close_action).toBe("hide");
+
+    await b.invoke("show_context_menu");
+    expect(info).toHaveBeenCalledWith("[mock] show_context_menu");
+    expect((await createMockBackend(new URLSearchParams()).invoke<Settings>("get_settings")).close_action).toBe("hide");
+    info.mockRestore();
+  });
+
+  it("starts a docked pill or card slid out with ?expanded=1", async () => {
+    vi.useFakeTimers();
+    const ui = (q: string) => createMockBackend(new URLSearchParams(q)).invoke<UiState>("get_ui_state");
+    expect((await ui("dock=right&view=card&expanded=1")).dock_expanded).toBe(true);
+    expect((await ui("dock=right&view=pill&expanded=1")).dock_expanded).toBe(true);
+    expect((await ui("dock=off&view=card&expanded=1")).dock_expanded).toBe(false);
+  });
+
   it("previews, connects and disconnects", async () => {
     vi.useFakeTimers();
     const b = createMockBackend(new URLSearchParams("conn=foreign"));

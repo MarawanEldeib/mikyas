@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+import { controlAction, controlLabel, nativeMenuAllowed, windowControls, type ControlsState } from "./controls";
+import type { ViewMode } from "./types";
+
+const base: ControlsState = { view: "card", dock: "off", dockExpanded: false, clickThrough: false };
+
+describe("windowControls", () => {
+  it("shows minimize and close on the card, expand and close on the pill", () => {
+    expect(windowControls(base)).toEqual(["minimize", "close"]);
+    expect(windowControls({ ...base, view: "pill" })).toEqual(["expand", "close"]);
+  });
+
+  it("shows only close on the panels (they have a Back button)", () => {
+    for (const view of ["settings", "sessions", "history"] as ViewMode[]) {
+      expect(windowControls({ ...base, view })).toEqual(["close"]);
+    }
+  });
+
+  it("shows nothing in click-through mode, for any view", () => {
+    for (const view of ["pill", "card", "settings", "sessions", "history"] as ViewMode[]) {
+      expect(windowControls({ ...base, view, clickThrough: true })).toEqual([]);
+      expect(windowControls({ ...base, view, dock: "left", dockExpanded: true, clickThrough: true })).toEqual([]);
+    }
+  });
+
+  it("shows nothing on the collapsed dock strip, and the usual set once slid out", () => {
+    for (const dock of ["left", "right", "top"] as const) {
+      expect(windowControls({ ...base, dock })).toEqual([]);
+      expect(windowControls({ ...base, dock, view: "pill" })).toEqual([]);
+      expect(windowControls({ ...base, dock, dockExpanded: true })).toEqual(["minimize", "close"]);
+      expect(windowControls({ ...base, dock, dockExpanded: true, view: "settings" })).toEqual(["close"]);
+    }
+  });
+});
+
+describe("controlAction", () => {
+  it("minimizes the card to the pill, or a slid-out dock back into its strip", () => {
+    expect(controlAction("minimize", base, "hide")).toEqual({ type: "view", view: "pill" });
+    expect(controlAction("minimize", { ...base, dock: "right", dockExpanded: true }, "hide")).toEqual({ type: "dock-collapse" });
+    expect(controlAction("expand", { ...base, view: "pill" }, "hide")).toEqual({ type: "view", view: "card" });
+  });
+
+  it("closes by hiding or quitting, as set", () => {
+    expect(controlAction("close", base, "hide")).toEqual({ type: "hide" });
+    expect(controlAction("close", base, "quit")).toEqual({ type: "quit" });
+    expect(controlAction("close", { ...base, dock: "top", dockExpanded: true }, "hide")).toEqual({ type: "hide" });
+  });
+
+  it("names every control for its action", () => {
+    expect(controlLabel("close", base, "hide")).toBe("Hide to tray");
+    expect(controlLabel("close", base, "quit")).toBe("Quit Claude Usage");
+    expect(controlLabel("minimize", base, "hide")).toBe("Minimize to pill");
+    expect(controlLabel("minimize", { ...base, dock: "left", dockExpanded: true }, "hide")).toBe("Minimize to the screen edge");
+    expect(controlLabel("expand", { ...base, view: "pill" }, "hide")).toBe("Expand");
+  });
+});
+
+describe("nativeMenuAllowed", () => {
+  const input = (type?: string) => ({ tagName: "INPUT", type, isContentEditable: false });
+
+  it("keeps the browser menu in text fields", () => {
+    for (const type of ["text", "search", "url", "email", "tel", "password", "number", undefined]) {
+      expect(nativeMenuAllowed(input(type)), String(type)).toBe(true);
+    }
+    expect(nativeMenuAllowed({ tagName: "TEXTAREA", isContentEditable: false })).toBe(true);
+    expect(nativeMenuAllowed({ tagName: "DIV", isContentEditable: true })).toBe(true);
+  });
+
+  it("replaces it everywhere else", () => {
+    for (const type of ["range", "radio", "checkbox", "button", "submit"]) {
+      expect(nativeMenuAllowed(input(type)), type).toBe(false);
+    }
+    for (const tagName of ["BUTTON", "DIV", "SPAN", "svg", "path", "SELECT", "CODE"]) {
+      expect(nativeMenuAllowed({ tagName, isContentEditable: false }), tagName).toBe(false);
+    }
+    expect(nativeMenuAllowed(null)).toBe(false);
+    expect(nativeMenuAllowed(undefined)).toBe(false);
+    expect(nativeMenuAllowed("input")).toBe(false);
+  });
+});

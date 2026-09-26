@@ -53,7 +53,7 @@ impl PersistedState {
 #[serde(rename_all = "snake_case")]
 pub enum HiddenReason {
     None,
-    /// Hidden with the tray or the show/hide hotkey.
+    /// Hidden with the tray, the show/hide hotkey, or the widget's own × or right-click menu.
     User,
     /// Hidden automatically while a fullscreen app or game has focus.
     Fullscreen,

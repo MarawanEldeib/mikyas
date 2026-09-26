@@ -88,7 +88,7 @@
   class:v={vertical}
   class:h={!vertical}
   aria-label={label}
-  onpointerenter={() => dock.expand()}
+  onpointerenter={() => dock.hover()}
   onclick={() => dock.expand()}
 >
   {#each meters as m, i (m.key)}

@@ -143,8 +143,8 @@ fn contains((x, y, w, h): Rect, (px, py): (i32, i32)) -> bool {
 
 /// The slid-out view of `size` for `strip`, the window currently being `current`: centred on
 /// the strip; a view shorter than the strip along the edge is centred on the cursor instead
-/// while the cursor is over the widget (hovering the strip, or clicking "Collapse to pill" at
-/// the bottom of the card), so it opens under the pointer and isn't left straight away.
+/// while the cursor is over the widget (hovering the strip, or switching the card to the pill
+/// from its right-click menu), so it opens under the pointer and isn't left straight away.
 pub fn expanded_rect(side: Side, area: Rect, size: (i32, i32), strip: Rect, current: Rect, cursor: Option<(i32, i32)>) -> Rect {
     let (start, len) = side.span(strip);
     let view_len = side.along(size);
@@ -219,7 +219,8 @@ fn cursor_inside(window: &WebviewWindow) -> bool {
 }
 
 /// Slides the docked widget out or back in; updates `UiState.dock_expanded` and emits it.
-pub fn set_expanded(app: &AppHandle, shared: &Shared, expanded: bool) {
+/// `force` is the user's own request (the card's "–"), made with the cursor over the widget.
+pub fn set_expanded(app: &AppHandle, shared: &Shared, expanded: bool, force: bool) {
     let Some(side) = Side::from_edge(shared.settings().dock) else { return };
     let ui = shared.ui().clone();
     if !should_change(ui.dock_expanded, expanded, ui.click_through, ui.view) {
@@ -228,7 +229,7 @@ pub fn set_expanded(app: &AppHandle, shared: &Shared, expanded: bool) {
     let Some(window) = crate::window::get(app) else { return };
     // The webview can report a leave while the cursor is still over the window (e.g. around a
     // resize); that is not a leave.
-    if !expanded && cursor_inside(&window) {
+    if !expanded && !force && cursor_inside(&window) {
         return;
     }
     shared.ui().dock_expanded = expanded;
@@ -254,10 +255,11 @@ pub fn collapse_before_save(app: &AppHandle, shared: &Shared) {
     place(&window, side, &settings, view, false);
 }
 
-/// Called by the UI on pointer enter/leave of the docked widget.
+/// Called by the UI on pointer enter/leave of the docked widget, and with `force` by the card's
+/// "–" button.
 #[tauri::command]
-pub fn set_dock_expanded(app: AppHandle, shared: State<'_, Arc<Shared>>, expanded: bool) {
-    set_expanded(&app, &shared, expanded);
+pub fn set_dock_expanded(app: AppHandle, shared: State<'_, Arc<Shared>>, expanded: bool, force: Option<bool>) {
+    set_expanded(&app, &shared, expanded, force.unwrap_or(false));
 }
 
 #[cfg(test)]
@@ -321,7 +323,7 @@ mod tests {
         // Pointing at the strip: the pill is centred on the pointer.
         assert_eq!(pill(strip, Some((1925, 450))), (1920, 414, 240, 72));
         assert_eq!(pill(strip, Some((1925, 520))), (1920, 484, 240, 72));
-        // A click in the card's footer, below the strip, switches to a pill under the pointer.
+        // "Compact" picked from the card's right-click menu, below the strip: a pill under the pointer.
         let card = (1920, 400, 320, 232);
         let from_card = pill(card, Some((2100, 612)));
         assert_eq!(from_card, (1920, 576, 240, 72));
