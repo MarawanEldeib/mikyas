@@ -17,7 +17,39 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetWindowPos, ShowWindow,
 };
 
-use crate::fullscreen::{Foreground, Quns, Rect};
+use crate::fullscreen::{Bounds, Foreground, Quns};
+
+#[allow(dead_code, reason = "main.rs calls it first thing, through a lib.rs re-export")]
+pub fn restrict_dll_search() {
+    use windows_sys::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, SetDefaultDllDirectories};
+    // SAFETY: takes a flags value only. Failure (a very old Windows) leaves the default order.
+    unsafe {
+        SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    }
+}
+
+pub fn system_uses_light_theme() -> Option<bool> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("SystemUsesLightTheme");
+    let mut value: u32 = 0;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both strings are NUL-terminated and live across the call; `value` and `len`
+    // describe a writable 4-byte buffer, which RRF_RT_REG_DWORD never overruns.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&raw mut value).cast(),
+            &raw mut len,
+        )
+    };
+    (status == 0).then_some(value != 0)
+}
 
 pub fn after_create(window: &tauri::WebviewWindow) {
     let Ok(hwnd) = window.hwnd() else { return };
@@ -98,8 +130,8 @@ pub fn set_outer_rect(window: &tauri::WebviewWindow, (x, y, w, h): (i32, i32, i3
 // Fullscreen detection. Window queries only (no process handles, memory reads, injection or
 // hooks): the widget never touches other programs.
 
-fn rect(r: &RECT) -> Rect {
-    Rect {
+fn rect(r: &RECT) -> Bounds {
+    Bounds {
         left: r.left,
         top: r.top,
         right: r.right,
@@ -107,7 +139,7 @@ fn rect(r: &RECT) -> Rect {
     }
 }
 
-fn monitor_rect(monitor: HMONITOR) -> Option<Rect> {
+fn monitor_rect(monitor: HMONITOR) -> Option<Bounds> {
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         rcMonitor: RECT::default(),

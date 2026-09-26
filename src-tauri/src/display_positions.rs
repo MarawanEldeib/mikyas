@@ -3,29 +3,33 @@
 //! - Active while `settings.per_display_position` is on; the window-state plugin's position stays
 //!   the fallback for a setup seen for the first time.
 //! - Signature of a setup = the sorted monitor rects plus scale factors.
-//! - Stored in `<data_root>/positions.json`: signature → the window's outer rect. Saved when it
+//! - Stored in `<data_root>/positions.json`: signature → the window's visible rect (without the
+//!   invisible frame, so a widget flush against an edge comes back flush). Saved when it
 //!   moved (seen by the poll) while it shows the pill or the card, undocked or as the dock strip
 //!   (so a docked widget stores its edge position); never while slid out or with a panel open.
 //! - Restored on startup and when the monitor setup changes (polled every 3 s with window
 //!   queries only; a changed setup must hold for one more poll, as Windows moves windows around
 //!   while monitors come and go). The corner nearest the screen edges is kept, so a pill
-//!   restores where a card was saved; a strip then re-snaps flush to its edge.
+//!   restores where a card was saved; a strip then re-snaps flush to its edge. The poll runs on
+//!   its own thread; the restore itself runs on the main thread.
+//! - Switching the setting wakes the poll at once (`wake`, from the settings hook).
 //! - The same poll redraws the tray number when the scale or taskbar theme changed.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use cuw_core::time::{Ms, now_ms};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
 
 use crate::dock::{self, DockState};
 use crate::settings::ViewMode;
 use crate::state::{Shared, load_json, save_json};
-use crate::window::{Rect, anchored_position_with, area_for, nearest_anchor, window_rect, work_areas};
+use crate::window::{Rect, anchored_position_with, area_for, nearest_anchor, visible_rect, work_areas};
 
 /// Poll period while the setting is on.
 pub const POLL_ON: Duration = Duration::from_secs(3);
@@ -59,7 +63,7 @@ pub fn signature(monitors: &[MonitorInfo]) -> String {
 /// One remembered position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
-    /// Outer window rect (x, y, w, h), physical px.
+    /// Visible window rect (x, y, w, h), physical px.
     pub rect: Rect,
     pub used_ms: Ms,
 }
@@ -196,14 +200,25 @@ impl Poller {
         // Window queries wait for the main thread, so no lock may be held across them.
         let Some(window) = crate::window::get(app) else { return };
         let monitors = monitors(&window);
-        let Some(rect) = window_rect(&window).filter(|_| !monitors.is_empty()) else { return };
+        let Some((rect, _)) = visible_rect(&window).filter(|_| !monitors.is_empty()) else { return };
         let signature = signature(&monitors);
         if !was_enabled {
             self.tracker.adopt(&signature);
         }
         let view = shared.ui().view;
         match self.tracker.step(&signature, rect, savable(DockState::now(shared), view)) {
-            Step::Restore => self.restore(&window, &signature),
+            Step::Restore => {
+                let saved = self.file.setups.get(&signature).map(|s| s.rect);
+                let handle = app.clone();
+                // Placing the window queries it, which waits for the main thread, and the dock
+                // takes its placement lock there too; run it on the main thread (at once when
+                // already on it) so the two can never wait on each other.
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = crate::window::get(&handle) {
+                        restore(&window, saved);
+                    }
+                });
+            }
             Step::Save(rect) => {
                 self.file.remember(&signature, rect, now_ms());
                 if let Err(e) = save_json(&self.path, &self.file) {
@@ -213,17 +228,27 @@ impl Poller {
             Step::Wait => {}
         }
     }
+}
 
-    fn restore(&self, window: &WebviewWindow, signature: &str) {
-        let saved = self.file.setups.get(signature).map(|s| s.rect);
-        if let (Some(saved), Some(current)) = (saved, window_rect(window)) {
-            if let Some((x, y)) = restore_position(saved, (current.2, current.3), &work_areas(window)) {
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-            }
+/// Puts the window where it was for this setup (`saved`, a visible rect). Main thread only.
+fn restore(window: &WebviewWindow, saved: Option<Rect>) {
+    if let (Some(saved), Some((current, (dx, dy)))) = (saved, visible_rect(window)) {
+        if let Some((x, y)) = restore_position(saved, (current.2, current.3), &work_areas(window)) {
+            let _ = window.set_position(PhysicalPosition::new(x - dx, y - dy));
         }
-        // A first-seen setup keeps the window where it is (Windows moved it, or the window-state
-        // plugin restored it); either way it must be on-screen, and a strip flush to its edge.
-        crate::window::ensure_on_screen(window);
+    }
+    // A first-seen setup keeps the window where it is (Windows moved it, or the window-state
+    // plugin restored it); either way it must be on-screen, and a strip flush to its edge.
+    crate::window::ensure_on_screen(window);
+}
+
+/// Wakes the poll (managed; the setting was switched).
+struct Waker(Sender<()>);
+
+/// Polls at once instead of at the end of the current period.
+pub fn wake(app: &AppHandle) {
+    if let Some(waker) = app.try_state::<Waker>() {
+        let _ = waker.0.send(());
     }
 }
 
@@ -238,17 +263,21 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     };
     poller.file = load_json(&poller.path);
     poller.poll(app, &shared);
+    let (tx, rx) = mpsc::channel();
+    app.manage(Waker(tx));
     let app = app.clone();
     std::thread::Builder::new()
         .name("cuw-displays".into())
-        .spawn(move || run(&app, &shared, poller))?;
+        .spawn(move || run(&app, &shared, poller, &rx))?;
     Ok(())
 }
 
-fn run(app: &AppHandle, shared: &Shared, mut poller: Poller) {
+fn run(app: &AppHandle, shared: &Shared, mut poller: Poller, rx: &Receiver<()>) {
     loop {
         let period = if shared.settings().per_display_position { POLL_ON } else { POLL_OFF };
-        std::thread::sleep(period);
+        if let Err(RecvTimeoutError::Disconnected) = rx.recv_timeout(period) {
+            break;
+        }
         if shared.quitting.load(Ordering::SeqCst) {
             break;
         }

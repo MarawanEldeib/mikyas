@@ -3,6 +3,24 @@
 #[cfg(windows)]
 mod windows;
 
+/// Restricts where the process loads DLLs from to the app's folder, System32 and folders added
+/// with `AddDllDirectory` (no current directory, no `PATH`). Call first thing in `main`, before
+/// anything loads a DLL on demand. No-op elsewhere.
+#[allow(dead_code, reason = "main.rs calls it first thing, through a lib.rs re-export")]
+pub fn restrict_dll_search() {
+    #[cfg(windows)]
+    windows::restrict_dll_search();
+}
+
+/// The Windows `SystemUsesLightTheme` value (the taskbar's colour scheme); `None` when unreadable
+/// or on other systems.
+pub fn system_uses_light_theme() -> Option<bool> {
+    #[cfg(windows)]
+    return windows::system_uses_light_theme();
+    #[cfg(not(windows))]
+    None
+}
+
 /// Called once after the window is created.
 pub fn after_create(window: &tauri::WebviewWindow) {
     #[cfg(windows)]

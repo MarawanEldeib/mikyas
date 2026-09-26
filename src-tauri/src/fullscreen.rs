@@ -10,12 +10,12 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-use crate::state::{HiddenReason, Shared, lock};
+use crate::state::{HiddenReason, Shared};
 use crate::visibility::{self, Event};
 
 /// Sampling period while auto-hide is on.
@@ -31,16 +31,16 @@ pub const EDGE_SLACK: i32 = 1;
 
 /// Screen rectangle in physical pixels (`right`/`bottom` exclusive, like Win32 `RECT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rect {
+pub struct Bounds {
     pub left: i32,
     pub top: i32,
     pub right: i32,
     pub bottom: i32,
 }
 
-impl Rect {
+impl Bounds {
     /// Every edge of `self` is within [`EDGE_SLACK`] px of the same edge of `other`.
-    pub fn matches(&self, other: &Rect) -> bool {
+    pub fn matches(&self, other: &Bounds) -> bool {
         [
             self.left - other.left,
             self.top - other.top,
@@ -80,9 +80,9 @@ impl Quns {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Foreground {
     pub class: String,
-    pub rect: Rect,
+    pub rect: Bounds,
     /// Full bounds of the monitor the window is on (`rcMonitor`, taskbar included).
-    pub monitor: Rect,
+    pub monitor: Bounds,
     /// That monitor's handle, compared with the widget's.
     pub monitor_id: isize,
     /// The widget itself is in front.
@@ -193,12 +193,12 @@ pub fn tick(
 // ---------------------------------------------------------------------------------------------
 // Thread
 
-struct Waker(Mutex<Sender<()>>);
+struct Waker(Sender<()>);
 
 /// Starts the sampling thread.
 pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
-    app.manage(Waker(Mutex::new(tx)));
+    app.manage(Waker(tx));
     let app = app.clone();
     std::thread::Builder::new()
         .name("cuw-fullscreen".into())
@@ -209,7 +209,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
 /// Re-evaluates at once (the setting changed).
 pub fn wake(app: &AppHandle) {
     if let Some(waker) = app.try_state::<Waker>() {
-        let _ = lock(&waker.0).send(());
+        let _ = waker.0.send(());
     }
 }
 
@@ -259,14 +259,14 @@ fn sample(app: &AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    const MONITOR: Rect = Rect {
+    const MONITOR: Bounds = Bounds {
         left: 0,
         top: 0,
         right: 1920,
         bottom: 1080,
     };
 
-    fn fg(class: &str, rect: Rect) -> Foreground {
+    fn fg(class: &str, rect: Bounds) -> Foreground {
         Foreground {
             class: class.into(),
             rect,
@@ -276,8 +276,8 @@ mod tests {
         }
     }
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect { left, top, right, bottom }
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Bounds {
+        Bounds { left, top, right, bottom }
     }
 
     #[test]

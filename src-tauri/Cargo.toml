@@ -36,6 +36,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
     # Fullscreen auto-hide: window queries only (see src/fullscreen.rs).
     "Win32_Graphics_Gdi",
+    # DLL search restricted to the app folder and System32 at startup.
+    "Win32_System_LibraryLoader",
+    # The taskbar theme (SystemUsesLightTheme) for the tray number.
+    "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

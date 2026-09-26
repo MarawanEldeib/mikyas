@@ -2,7 +2,7 @@
 //! nearest screen corner), keeping it on-screen, edge docking (geometry in `dock.rs`), backdrop
 //! effects, pinning, click-through and non-activation.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::webview::PageLoadEvent;
 use tauri::window::{Effect, EffectsBuilder};
@@ -11,11 +11,21 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-use crate::dock::{self, DockState, Side};
+use crate::dock::{self, DockState, Placement, Side};
 use crate::settings::{CardRows, DockEdge, EffectName, Settings, ViewMode};
-use crate::state::{HiddenReason, Shared};
+use crate::state::{HiddenReason, Shared, lock};
 
 pub const LABEL: &str = "main";
+
+/// Placement memory of the window, managed by the app (see [`create`]).
+#[derive(Debug, Default)]
+pub struct WindowState {
+    /// Where the dock last put the window (`dock::place`).
+    pub last_placement: Mutex<Option<Placement>>,
+    /// The anchor chosen when a panel (Settings, Sessions, History) was opened: the larger panel
+    /// would otherwise pick a different corner and the card would not return to where it was.
+    panel_anchor: Mutex<Option<Anchor>>,
+}
 /// Gap to the work-area edge for the default position.
 const MARGIN: f64 = 16.0;
 
@@ -72,6 +82,8 @@ pub fn get(app: &AppHandle) -> Option<WebviewWindow> {
 
 /// Creates the (hidden) window; it is shown once the page has loaded, so it never flashes white.
 pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWindow> {
+    // Before the window exists: placing it (below) already reads and writes this.
+    app.manage(WindowState::default());
     // A docked widget starts as the strip, so the restored position (saved while it was the
     // strip) maps back onto the same strip.
     let (w, h) = match Side::from_edge(settings.dock) {
@@ -99,7 +111,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
                 if !hidden {
                     let _ = window.show();
                 }
-                if std::env::var_os("CUW_MEMORY_NORMAL").is_none() {
+                if dev_override("CUW_MEMORY_NORMAL").is_none() {
                     crate::platform::set_memory_low(&window, true);
                 }
             }
@@ -107,7 +119,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
     if let Some((x, y)) = default_position(app, w, h) {
         builder = builder.position(x, y);
     }
-    if let Ok(args) = std::env::var("CUW_BROWSER_ARGS") {
+    if let Some(args) = dev_override("CUW_BROWSER_ARGS") {
         builder = builder.additional_browser_args(&args);
     }
     let window = builder.build()?;
@@ -148,7 +160,20 @@ fn replace_on_scale_change(state: DockState) -> bool {
 }
 
 fn env_i32(name: &str) -> Option<i32> {
-    std::env::var(name).ok()?.trim().parse().ok()
+    dev_override(name)?.trim().parse().ok()
+}
+
+/// A development override (`CUW_BROWSER_ARGS`, `CUW_MEMORY_NORMAL`, `CUW_X` / `CUW_Y`). Debug
+/// builds only: a release build ignores them, so nothing can start it with extra WebView2 flags
+/// such as remote debugging.
+fn dev_override(name: &str) -> Option<String> {
+    #[cfg(debug_assertions)]
+    return std::env::var(name).ok();
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = name;
+        None
+    }
 }
 
 /// Bottom-right of the primary monitor's work area (logical coordinates).
@@ -163,12 +188,6 @@ fn default_position(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
 
 /// Physical rectangle (x, y, w, h).
 pub type Rect = (i32, i32, i32, i32);
-
-pub fn window_rect(window: &WebviewWindow) -> Option<Rect> {
-    let pos = window.outer_position().ok()?;
-    let size = window.outer_size().ok()?;
-    Some((pos.x, pos.y, size.width as i32, size.height as i32))
-}
 
 /// The visible (client) rectangle, and the offset of the outer frame's origin from it.
 pub fn visible_rect(window: &WebviewWindow) -> Option<(Rect, (i32, i32))> {
@@ -217,16 +236,19 @@ fn resize_first((w, h): (i32, i32), (new_w, new_h): (i32, i32)) -> bool {
     new_w <= w && new_h <= h
 }
 
+fn work_area_of(m: &tauri::Monitor) -> Rect {
+    let a = m.work_area();
+    (a.position.x, a.position.y, a.size.width as i32, a.size.height as i32)
+}
+
 pub fn work_areas(window: &WebviewWindow) -> Vec<Rect> {
-    window
-        .available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| {
-            let a = m.work_area();
-            (a.position.x, a.position.y, a.size.width as i32, a.size.height as i32)
-        })
-        .collect()
+    window.available_monitors().unwrap_or_default().iter().map(work_area_of).collect()
+}
+
+/// The primary monitor's work area and scale factor.
+fn primary_work_area(window: &WebviewWindow) -> Option<(Rect, f64)> {
+    let m = window.primary_monitor().ok().flatten()?;
+    Some((work_area_of(&m), m.scale_factor()))
 }
 
 /// The work area containing the rectangle's centre, else the one it overlaps most.
@@ -264,9 +286,16 @@ pub fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
     )
 }
 
-/// The anchor chosen when a panel (Settings, Sessions, History) was opened: the larger panel
-/// would otherwise pick a different corner and the card would not return to where it was.
-static SETTINGS_ANCHOR: std::sync::Mutex<Option<Anchor>> = std::sync::Mutex::new(None);
+/// The anchor for a view switch: the one saved on opening a panel is kept while panels are
+/// shown and used once more on returning to the pill or card.
+fn switch_anchor(saved: &mut Option<Anchor>, from: ViewMode, view: ViewMode, nearest: Anchor) -> Anchor {
+    match (is_panel(from), is_panel(view)) {
+        (true, true) => saved.unwrap_or(nearest),
+        (true, false) => saved.take().unwrap_or(nearest),
+        (false, true) => *saved.insert(nearest),
+        (false, false) => nearest,
+    }
+}
 
 /// Panels are opened from the card, take keyboard focus (Esc, Tab) and return to the card.
 pub fn is_panel(view: ViewMode) -> bool {
@@ -308,21 +337,31 @@ pub fn ensure_on_screen(window: &WebviewWindow) {
             }
         }
     }
-    let Some(rect) = window_rect(window) else { return };
+    // Undocked: the visible rect is kept inside a work area (the invisible frame may overhang).
+    let Some((visible, (dx, dy))) = visible_rect(window) else { return };
     let areas = work_areas(window);
     if areas.is_empty() {
         return;
     }
-    let (x, y) = match area_for(rect, &areas) {
-        Some(area) => clamp_into(rect, area),
-        None => {
-            let area = areas[0];
-            let margin = (MARGIN * window.scale_factor().unwrap_or(1.0)) as i32;
-            (area.0 + area.2 - rect.2 - margin, area.1 + area.3 - rect.3 - margin)
-        }
-    };
-    if (x, y) != (rect.0, rect.1) {
-        let _ = window.set_position(PhysicalPosition::new(x, y));
+    let (fallback, scale) =
+        primary_work_area(window).unwrap_or_else(|| (areas[0], window.scale_factor().unwrap_or(1.0)));
+    let margin = (MARGIN * scale) as i32;
+    let (x, y) = undocked_on_screen(visible, &areas, fallback, margin);
+    if (x, y) != (visible.0, visible.1) {
+        let _ = window.set_position(PhysicalPosition::new(x - dx, y - dy));
+    }
+}
+
+/// Where an undocked window's visible rect goes when it is shown or its monitors changed: clamped
+/// into the work area it is on (unchanged when it fits, flush against an edge or not); on no
+/// monitor, the bottom-right corner of `fallback` (the primary monitor's work area).
+fn undocked_on_screen(visible: Rect, areas: &[Rect], fallback: Rect, margin: i32) -> (i32, i32) {
+    match area_for(visible, areas) {
+        Some(area) => clamp_into(visible, area),
+        None => (
+            fallback.0 + fallback.2 - visible.2 - margin,
+            fallback.1 + fallback.3 - visible.3 - margin,
+        ),
     }
 }
 
@@ -336,7 +375,7 @@ fn slid_out_on_screen(visible: Rect, areas: &[Rect]) -> Option<(i32, i32)> {
 /// Sizes and places the window for `view` at the user's scale and card rows. Docked: the strip,
 /// or the view slid out flush to the edge. Otherwise: the view anchored to the nearest corner
 /// and kept on-screen. Every resize goes through here. `from` is the view being left (the
-/// anchor chosen on entering Settings is reused on leaving).
+/// anchor chosen on opening a panel is reused on leaving it).
 pub fn resize_anchored(window: &WebviewWindow, from: ViewMode, view: ViewMode) {
     let Some(shared) = shared_of(window) else {
         resize_free(window, from, view, logical_size(view));
@@ -355,31 +394,31 @@ pub fn resize_anchored(window: &WebviewWindow, from: ViewMode, view: ViewMode) {
 fn resize_free(window: &WebviewWindow, from: ViewMode, view: ViewMode, logical: (f64, f64)) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (w, h) = physical(logical, scale);
-    let Some(rect) = window_rect(window) else {
+    let Some((visible, inset)) = visible_rect(window) else {
         let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
         return;
     };
-    // `set_size` sets the inner size; the outer rect also holds the invisible shadow frame.
-    let (frame_w, frame_h) = window
-        .inner_size()
-        .map(|inner| (rect.2 - inner.width as i32, rect.3 - inner.height as i32))
-        .unwrap_or((0, 0));
     let areas = work_areas(window);
-    let (x, y) = match area_for(rect, &areas) {
+    let target = match area_for(visible, &areas) {
         Some(area) => {
-            let mut saved = crate::state::lock(&SETTINGS_ANCHOR);
-            let anchor = match (is_panel(from), is_panel(view)) {
-                (true, true) => saved.unwrap_or_else(|| nearest_anchor(rect, area)),
-                (true, false) => saved.take().unwrap_or_else(|| nearest_anchor(rect, area)),
-                (false, true) => *saved.insert(nearest_anchor(rect, area)),
-                (false, false) => nearest_anchor(rect, area),
+            let nearest = nearest_anchor(visible, area);
+            let anchor = match window.try_state::<WindowState>() {
+                Some(state) => switch_anchor(&mut lock(&state.panel_anchor), from, view, nearest),
+                None => nearest,
             };
-            anchored_position_with(rect, w + frame_w, h + frame_h, area, anchor)
+            undocked_rect(visible, (w, h), area, anchor)
         }
-        None => (rect.0, rect.1),
+        None => (visible.0, visible.1, w, h),
     };
-    let _ = window.set_position(PhysicalPosition::new(x, y));
-    let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+    set_visible_rect(window, target, inset);
+}
+
+/// The visible rect of an undocked view of `(w, h)` resized from `visible`: `anchor` kept, inside
+/// `area`. Visible rects, not outer ones: the invisible frame must not push a widget that sits
+/// flush against an edge away from it.
+fn undocked_rect(visible: Rect, (w, h): (i32, i32), area: Rect, anchor: Anchor) -> Rect {
+    let (x, y) = anchored_position_with(visible, w, h, area, anchor);
+    (x, y, w, h)
 }
 
 /// Switches view: size, focusability (only panels take keyboard focus). A docked strip
@@ -448,8 +487,8 @@ pub fn set_click_through(app: &AppHandle, on: bool, effect: EffectName) {
 }
 
 /// Applies the appearance settings that change the window (the `apply_settings_patch` hook,
-/// which emits `ui-state` afterwards), and hands the tray number and the connection watchdog
-/// their setting changes.
+/// which emits `ui-state` afterwards), and hands the tray number, the connection watchdog and
+/// the display poll their setting changes.
 pub fn on_settings_changed(app: &AppHandle, shared: &Shared, old: &Settings, new: &Settings) {
     let Some(window) = get(app) else { return };
     let view = shared.ui().view;
@@ -458,9 +497,11 @@ pub fn on_settings_changed(app: &AppHandle, shared: &Shared, old: &Settings, new
         // Docking is switched on from Settings, which never slides in: it stays out, flush to
         // the edge, until the user goes back to the card.
         shared.ui().dock_expanded = new.dock != DockEdge::Off && !dock::collapsible(view);
-        dock::forget();
-        // Docked placement ignores the Settings anchor; one saved before docking is stale.
-        *crate::state::lock(&SETTINGS_ANCHOR) = None;
+        dock::forget(&window);
+        // Docked placement ignores the panel anchor; one saved before docking is stale.
+        if let Some(state) = window.try_state::<WindowState>() {
+            *lock(&state.panel_anchor) = None;
+        }
     }
     if new.tray_number != old.tray_number {
         crate::tray::refresh_style(app);
@@ -468,16 +509,12 @@ pub fn on_settings_changed(app: &AppHandle, shared: &Shared, old: &Settings, new
     if new.connection_watchdog != old.connection_watchdog {
         crate::watchdog::wake(app);
     }
+    if new.per_display_position != old.per_display_position {
+        crate::display_positions::wake(app);
+    }
     let rows_changed = new.card_rows != old.card_rows && view == ViewMode::Card;
     if dock_changed || rows_changed || new.ui_scale != old.ui_scale {
         resize_anchored(&window, view, view);
-    }
-}
-
-pub fn show(app: &AppHandle) {
-    if let Some(w) = get(app) {
-        ensure_on_screen(&w);
-        let _ = w.show();
     }
 }
 
@@ -532,6 +569,46 @@ mod tests {
         assert_eq!(area_for((5000, 5000, 320, 232), &areas), None);
         assert_eq!(clamp_into((1800, 900, 320, 232), AREA), (1600, 808));
         assert_eq!(clamp_into((-50, -50, 320, 232), AREA), (0, 0));
+    }
+
+    #[test]
+    fn undocked_placement_uses_the_visible_rect() {
+        // A card flush against the right edge; its outer rect (7 px invisible frame left, right
+        // and bottom) overhangs the edge. Showing it again or switching views keeps it flush.
+        let visible = (1600, 400, 320, 232);
+        assert_eq!(undocked_on_screen(visible, &[AREA], AREA, 16), (1600, 400));
+        assert_eq!(undocked_rect(visible, (320, 232), AREA, (true, false)), visible);
+        assert_eq!(undocked_rect(visible, (240, 72), AREA, (true, false)), (1680, 400, 240, 72));
+        // Flush against the bottom (above the taskbar): the pill keeps the bottom edge.
+        let low = (100, 808, 320, 232);
+        assert_eq!(undocked_rect(low, (240, 72), AREA, (false, true)), (100, 968, 240, 72));
+        // Partly off-screen: comes back in.
+        assert_eq!(undocked_on_screen((1700, 900, 320, 232), &[AREA], AREA, 16), (1600, 808));
+    }
+
+    #[test]
+    fn a_widget_on_no_monitor_returns_to_the_primary_one() {
+        let second = (-1280, 0, 1280, 1000);
+        // The primary work area is the fallback, even though it is listed second.
+        let (x, y) = undocked_on_screen((5000, 5000, 320, 232), &[second, AREA], AREA, 16);
+        assert_eq!((x, y), (1584, 792));
+    }
+
+    #[test]
+    fn panels_share_the_anchor_they_were_opened_with() {
+        let mut saved = None;
+        let (br, tr) = ((true, true), (true, false));
+        assert_eq!(switch_anchor(&mut saved, ViewMode::Card, ViewMode::Settings, br), br);
+        assert_eq!(switch_anchor(&mut saved, ViewMode::Settings, ViewMode::History, tr), br);
+        assert_eq!(switch_anchor(&mut saved, ViewMode::History, ViewMode::Card, tr), br);
+        assert_eq!(saved, None, "used once on the way back");
+        assert_eq!(switch_anchor(&mut saved, ViewMode::Card, ViewMode::Pill, tr), tr);
+    }
+
+    #[test]
+    fn dev_overrides_are_debug_only() {
+        // PATH is always set: it is read in a debug build and ignored in a release one.
+        assert_eq!(dev_override("PATH").is_some(), cfg!(debug_assertions));
     }
 
     #[test]
