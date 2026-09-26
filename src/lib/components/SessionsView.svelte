@@ -46,8 +46,9 @@
   <header class="bar">
     <IconButton icon="back" label="Back" size="m" onclick={() => app.back()} />
     <h1>Sessions</h1>
-    <!-- aria-label is ignored on a plain span; the hidden word gives the number its meaning. -->
-    {#if sessions.length}<span class="count">{sessions.length}<span class="sr"> sessions</span></span>{/if}
+    <!-- aria-label is ignored on a plain span; the hidden word gives the number its meaning.
+         {" "}: Svelte 5 trims a literal space at the edge of an element. -->
+    {#if sessions.length}<span class="count">{sessions.length}<span class="sr">{" "}sessions</span></span>{/if}
     <span class="span">Last 12 hours</span>
   </header>
 
@@ -72,7 +73,7 @@
                 <span class="ctx-bar" aria-hidden="true">
                   {#if ctx !== null}<span class="ctx-fill" style:width="{ctx}%" style:background={fillColor(ctx)}></span>{/if}
                 </span>
-                <span class="ctx-pct"><span class="sr">context </span>{ctxText(s)}</span>
+                <span class="ctx-pct"><span class="sr">context{" "}</span>{ctxText(s)}</span>
               </span>
             </div>
           </div>

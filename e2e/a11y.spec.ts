@@ -167,20 +167,6 @@ test.describe("reduced motion", () => {
   });
 });
 
-/**
- * Serious axe findings in components this suite does not own, reported to their owners. They are
- * left out of the scans below and pinned by the `known issue` tests, which are expected to fail:
- * once a fix lands they pass, Playwright reports that, and the entry here must be removed.
- */
-const KNOWN_AXE: { id: string; target: string; why: string }[] = [
-  {
-    id: "scrollable-region-focusable",
-    target: ".releases",
-    why: "UpdateList.svelte: the compact list scrolls but has no focusable element",
-  },
-  { id: "color-contrast", target: ".tag", why: 'UpdateList.svelte: the light-mode "latest" tag is below 4.5:1' },
-];
-
 async function seriousViolations(page: Page): Promise<string[]> {
   const results = await new AxeBuilder({ page }).include("#app").analyze();
   return results.violations
@@ -189,10 +175,7 @@ async function seriousViolations(page: Page): Promise<string[]> {
     .map((v) => `${v.id} (${v.impact}): ${v.target}`);
 }
 
-/** Only the open update list has the known findings; every other scan reports everything. */
-const isKnown = (finding: string) => KNOWN_AXE.some((k) => finding === `${k.id} (serious): ${k.target}`);
-
-/** Light mode, card with the update list open (where the known findings are). */
+/** Light mode, card with the update list open. */
 async function openUpdateList(page: Page): Promise<void> {
   await page.emulateMedia({ colorScheme: "light" });
   await openWidget(page, { params: { update: "1", bg: "light" } });
@@ -200,36 +183,60 @@ async function openUpdateList(page: Page): Promise<void> {
   await expect(page.getByRole("dialog", { name: "Updates available" })).toBeVisible();
 }
 
-// Each test asserts that its defect is still there (not test.fail, which would also pass when the
-// setup itself breaks). Once the owner fixes one, its test fails with FIXED: delete the test and,
-// for an axe finding, its KNOWN_AXE entry.
-const FIXED = (why: string) => `FIXED? ${why}. Remove this known-issue test (and its KNOWN_AXE entry).`;
-
-test.describe("known issues (pinned until fixed)", () => {
-  // One test per finding, so each one flips on its own when it is fixed.
-  for (const k of KNOWN_AXE) {
-    test(`update list: ${k.id} on ${k.target}`, async ({ page }) => {
-      await openUpdateList(page);
-      expect(await seriousViolations(page), FIXED(k.why)).toContain(`${k.id} (serious): ${k.target}`);
+// Once-known findings, kept as regression tests now that they are fixed.
+test.describe("fixed a11y issues stay fixed", () => {
+  for (const scheme of ["light", "dark"] as const) {
+    test(`update list (${scheme}): no scrollable-region-focusable or color-contrast finding`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await openWidget(page, { params: { update: "1", bg: scheme } });
+      await page.getByRole("button", { name: "3 updates available" }).click();
+      await expect(page.getByRole("dialog", { name: "Updates available" })).toBeVisible();
+      const found = await seriousViolations(page);
+      expect(found.filter((f) => /^(scrollable-region-focusable|color-contrast) /.test(f))).toEqual([]);
     });
   }
 
-  test("sessions: the count loses its screen-reader space", async ({ page }) => {
-    await openWidget(page, { view: "sessions" });
-    const why = 'SessionsView.svelte: Svelte 5 trims the leading space of <span class="sr"> sessions</span> ("4sessions")';
-    await expect(page.locator(".count"), FIXED(why)).toHaveText("4sessions");
+  test("update list: the scrolling release list takes keyboard focus and shows a ring", async ({ page }) => {
+    await openUpdateList(page);
+    const list = page.getByRole("list", { name: "Release notes" });
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Tab");
+      if (await list.evaluate((el) => el === document.activeElement)) break;
+    }
+    await expect(list).toBeFocused();
+    expect(await focusVisible(page)).toBe(true);
+    // It really scrolls (why it needs the focus stop), and the keyboard scrolls it.
+    expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await page.keyboard.press("End");
+    await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   });
 
-  test("sessions: the context label loses its screen-reader space", async ({ page }) => {
-    await openWidget(page, { view: "sessions" });
-    const why = 'SessionsView.svelte: Svelte 5 trims the trailing space of <span class="sr">context </span> ("context34%")';
-    await expect(page.locator(".ctx-pct").first(), FIXED(why)).toHaveText("context34%");
+  test("update list: the latest tag has at least 4.5:1 contrast in both themes", async ({ page }) => {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await openWidget(page, { params: { update: "1", bg: scheme } });
+      await page.getByRole("button", { name: "3 updates available" }).click();
+      const results = await new AxeBuilder({ page }).include(".tag").withRules(["color-contrast"]).analyze();
+      expect(results.violations, scheme).toEqual([]);
+      expect(results.passes.length, scheme).toBeGreaterThan(0);
+    }
   });
 
-  test("pill: a window waiting after its reset reads 'resets in reset'", async ({ page }) => {
+  test("sessions: the count reads as '4 sessions'", async ({ page }) => {
+    await openWidget(page, { view: "sessions" });
+    await expect(page.locator(".count")).toHaveText("4 sessions");
+  });
+
+  test("sessions: the context label reads as 'context 34%'", async ({ page }) => {
+    await openWidget(page, { view: "sessions" });
+    await expect(page.locator(".ctx-pct").first()).toHaveText("context 34%");
+  });
+
+  test("pill: a window waiting after its reset says so instead of 'resets in reset'", async ({ page }) => {
     await openWidget(page, { view: "pill", params: { scenario: "reset" } });
-    const why = "Pill.svelte describe(): pushes `resets in ${pillCountdown()}` even when the countdown is 'reset' or '—'";
-    await expect(page.getByRole("img", { name: /^5-hour limit 0% used/ }), FIXED(why)).toHaveAccessibleName(/resets in reset$/);
+    const win = page.getByRole("img", { name: /^5-hour limit 0% used/ });
+    await expect(win).toHaveAccessibleName(/, reset now, waiting for new data(,|$)/);
+    await expect(win).not.toHaveAccessibleName(/resets in (reset|—)/);
   });
 });
 
@@ -254,10 +261,7 @@ test.describe("axe-core", () => {
           waitFor: c.params?.dock ? VIEW_ROOT.dock : undefined,
         });
         if (c.params?.update) await page.getByRole("button", { name: "3 updates available" }).click();
-        const all = await seriousViolations(page);
-        // Known findings are only skipped where they are known to be: the open update list.
-        const serious = c.params?.update ? all.filter((f) => !isKnown(f)) : all;
-        expect(serious).toEqual([]);
+        expect(await seriousViolations(page)).toEqual([]);
       });
     }
   }
