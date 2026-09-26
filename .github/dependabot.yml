@@ -1,0 +1,34 @@
+# Weekly dependency updates. Minor and patch bumps come as one grouped PR per ecosystem; major
+# bumps stay separate so each can be reviewed on its own. Actions are pinned to commit SHAs and
+# Dependabot updates the SHA and its version comment together.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]

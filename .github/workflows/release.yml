@@ -3,7 +3,9 @@ name: Release
 # DISABLED on GitHub: releases are made by hand (cuw-release skill). Keep it disabled in the
 # Actions tab; this file is kept hardened for when it is turned back on.
 #
-# Pushing a tag like v0.2.0 runs the full CI as a gate, builds the per-user NSIS installer in a job
+# Manual only (workflow_dispatch): run it from the Actions tab and pick a tag like v0.2.0 under
+# "Use workflow from" (it refuses to run on a branch). It runs the whole CI workflow as the test
+# gate (lint, Rust/UI/browser/app tests, security), then builds the per-user NSIS installer in a job
 # that holds only a read-only token, then a separate publish job (gated by the `release`
 # environment) attests the build provenance and creates a DRAFT GitHub release with the installer
 # and SHA256SUMS. Review the draft, then publish it by hand. The version in package.json,
@@ -17,8 +19,7 @@ name: Release
 #   gh attestation verify <installer.exe> --repo MarawanEldeib/claude-usage-widget
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 # Nothing by default; each job asks for exactly what it needs.
 permissions: {}
@@ -29,11 +30,31 @@ env:
 # Every action is pinned to a full commit SHA (the tag is in the comment). No caches are restored
 # or saved here: a release always builds from a clean state.
 jobs:
+  guard:
+    name: Dispatched from a tag
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Refuse branch runs
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::run this workflow from a release tag (v*), not the branch $REF_NAME"
+            exit 1
+          fi
+          case "$REF_NAME" in v*) ;; *) echo "::error::tag $REF_NAME is not a v* tag"; exit 1 ;; esac
+
+  # Every test (unit, property, integration, browser and app end-to-end, visual) and every
+  # security check, from a clean state. The CI installer job is skipped: `build` makes the real one.
   check:
     name: CI gate
+    needs: guard
     uses: ./.github/workflows/ci.yml
     with:
       no_cache: true
+      skip_installer: true
     permissions:
       contents: read
 
@@ -47,18 +68,13 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # the "tag is on main" check needs history
           persist-credentials: false
 
       - name: Tag matches the app version
-        run: |
-          $npm = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
-          if ($npm -ne $tauri -or $npm -ne $cargo) { throw "version mismatch: package.json $npm, tauri.conf.json $tauri, Cargo.toml $cargo" }
-          if ("v$npm" -ne "$env:GITHUB_REF_NAME") { throw "tag $env:GITHUB_REF_NAME does not match version $npm" }
+        run: ./scripts/ci/check-versions.ps1 -Tag $env:GITHUB_REF_NAME
 
       - name: Tagged commit is on main
         run: |
@@ -70,9 +86,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: stable
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          package-manager-cache: false # never a cache in a release build
       # No install scripts (lefthook's hook installer is not needed here), and no token to steal:
       # this job's GITHUB_TOKEN is read-only and checkout did not persist it.
       - run: npm ci --ignore-scripts
@@ -103,7 +120,7 @@ jobs:
           $line
           [IO.File]::WriteAllText((Join-Path $out 'SHA256SUMS'), "$line`n")
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: installer
           path: ${{ runner.temp }}/dist/
@@ -122,7 +139,7 @@ jobs:
       attestations: write
     steps:
       # No checkout and no build here: this job only handles the finished files.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: installer
           path: dist
@@ -131,7 +148,7 @@ jobs:
         working-directory: dist
         run: sha256sum --check --strict SHA256SUMS
 
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/*.exe

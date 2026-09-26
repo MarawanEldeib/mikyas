@@ -1,5 +1,8 @@
 name: CI
 
+# Required status checks (branch protection / ruleset for main), by job name:
+#   Lint · Rust tests · UI tests · Browser E2E · App E2E · Security · Installer
+#
 # Fork pull requests run here with a read-only token and no secrets (pull_request, never
 # pull_request_target). Keep "Require approval for all outside collaborators" on in the repo's
 # Actions settings so a fork cannot run code or write the caches before a review.
@@ -9,12 +12,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # release.yml runs this whole workflow as its quality and privacy gate, with no_cache: true so a
-  # release never restores (or saves) a cache that another ref could have written.
+  # release.yml runs this whole workflow as its test gate, with no_cache: true so a release never
+  # restores (or saves) a cache that another ref could have written.
   workflow_call:
     inputs:
       no_cache:
         description: Run without restoring or saving any Rust or npm cache.
+        type: boolean
+        default: false
+      skip_installer:
+        description: Skip the installer job (the release workflow builds its own).
         type: boolean
         default: false
 
@@ -27,34 +34,42 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  GITLEAKS_VERSION: 8.30.1
-  # SHA-256 of gitleaks_8.30.1_windows_x64.zip, from the release's gitleaks_8.30.1_checksums.txt.
-  GITLEAKS_SHA256: d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
+  CARGO_LLVM_COV_VERSION: 0.9.1
+  CARGO_DENY_VERSION: 0.20.2
+  # Rust line coverage floor for the whole workspace: 86.9% measured locally (2026-09), minus
+  # headroom. Raise it as tests are added.
+  COVERAGE_MIN_LINES: 83
 
 # Every action is pinned to a full commit SHA (the tag is in the comment): a moved tag cannot
-# change what runs here.
-jobs:
-  check:
-    name: Lint, test, build
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 0 # gitleaks scans the whole history
-          persist-credentials: false
+# change what runs here. Dependabot (.github/dependabot.yml) bumps SHA and comment together.
+# Caches are for CI only: every cache step is off when a caller passes no_cache (release.yml).
+defaults:
+  run:
+    shell: pwsh
 
-      - name: Secret scan (gitleaks)
-        run: |
-          $zip = "$env:RUNNER_TEMP\gitleaks.zip"
-          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_${env:GITLEAKS_VERSION}_windows_x64.zip" -OutFile $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
-          if ($hash -ne $env:GITLEAKS_SHA256) { throw "gitleaks download checksum mismatch: $hash" }
-          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\gitleaks"
-          & "$env:RUNNER_TEMP\gitleaks\gitleaks.exe" git --redact --no-banner --config .gitleaks.toml
-          if ($LASTEXITCODE -ne 0) { throw "gitleaks found a secret" }
+jobs:
+  lint:
+    name: Lint
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.no_cache }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: ${{ !inputs.no_cache && 'npm' || '' }}
+          package-manager-cache: false
+      # No install scripts: the only ones are lefthook's git-hook installer (not needed on a
+      # runner) and fsevents (macOS only).
+      - run: npm ci --ignore-scripts
 
       # The fixture check the pre-commit hook runs (added after a real token leak): enforced here
       # too, because a local hook can be missing or skipped.
@@ -65,59 +80,230 @@ jobs:
           if (-not $files) { throw "no fixture files found" }
           node scripts/check-fixtures.mjs @files
           if ($LASTEXITCODE -ne 0) { throw "fixture check failed" }
+      - name: Versions agree (package.json, Cargo.toml, tauri.conf.json)
+        run: ./scripts/ci/check-versions.ps1
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      # Tauri's build script needs the sidecar binary to exist.
+      - name: Build the capture shim
+        run: ./scripts/build-sidecar.ps1
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Prettier
+        run: npm run format:check
+      - name: svelte-check
+        run: npm run check
+
+  rust-tests:
+    name: Rust tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.no_cache }}
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
+      - name: Build the capture shim
+        run: ./scripts/build-sidecar.ps1
+
+      # Plain `cargo test --workspace` (unit, property, integration and doc tests, plus the example
+      # the shim tests spawn) under cargo-llvm-cov's instrumentation, then the line-coverage floor.
+      # `cargo llvm-cov` itself does not build that example, so the env form is used.
+      - name: Tests with coverage (cargo test + cargo llvm-cov)
+        run: |
+          cargo llvm-cov show-env --pwsh | Invoke-Expression
+          cargo llvm-cov clean --workspace
+          cargo test --workspace
+          if ($LASTEXITCODE -ne 0) { throw "cargo test failed ($LASTEXITCODE)" }
+          cargo llvm-cov report --summary-only
+          cargo llvm-cov report --lcov --output-path lcov.info --fail-under-lines $env:COVERAGE_MIN_LINES
+          if ($LASTEXITCODE -ne 0) { throw "line coverage is below $env:COVERAGE_MIN_LINES%" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: rust-coverage
+          path: lcov.info
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ui-tests:
+    name: UI tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: ${{ !inputs.no_cache && 'npm' || '' }}
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Unit tests with coverage (vitest)
+        run: npm run test:coverage
+      - name: UI build
+        run: npm run build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: ui-coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  e2e:
+    name: Browser E2E
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: ${{ !inputs.no_cache && 'npm' || '' }}
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Install Chromium for Playwright
+        run: npx --no-install playwright install --with-deps chromium
+      - name: End-to-end tests (Playwright)
+        run: npm run test:e2e
+      - name: Visual regression tests (Playwright)
+        if: ${{ !cancelled() }}
+        run: npm run test:visual
+      # The HTML report plus the expected/actual/diff images of any failed screenshot comparison.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ failure() }}
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  app-e2e:
+    name: App E2E
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.no_cache }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: ${{ !inputs.no_cache && 'npm' || '' }}
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      # Tauri's build script needs both the built UI (dist/) and the sidecar binary.
+      - name: UI build
+        run: npm run build
+      - name: Build the capture shim
+        run: ./scripts/build-sidecar.ps1
+      - name: Build the debug app
+        run: cargo build -p claude-usage-widget
+      - name: App end-to-end tests
+        run: npm run test:app-e2e
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ failure() }}
+        with:
+          name: app-e2e-results
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  security:
+    name: Security
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans the whole history
+          persist-credentials: false
+      - name: Secret scan, full history (gitleaks, checksum-verified)
+        run: ./scripts/ci/gitleaks.ps1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Privacy grep (no credentials, cookies, Anthropic hosts or claude.ai in code)
+        run: node scripts/privacy-grep.mjs
+      # Runtime dependencies only: what ships in the app.
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: stable
-          components: clippy, rustfmt
+      - name: No network client crates (the only network use is the opt-in update check via curl.exe)
+        run: ./scripts/ci/no-network-crates.ps1
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        run: cargo deny --locked check advisories licenses bans sources
+
+  installer:
+    name: Installer
+    if: ${{ !inputs.skip_installer }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !inputs.no_cache }}
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: ${{ !inputs.no_cache && 'npm' || '' }}
-      # No install scripts: the only ones are lefthook's git-hook installer (not needed on a
-      # runner) and fsevents (macOS only).
+          package-manager-cache: false
       - run: npm ci --ignore-scripts
-
-      - name: Privacy grep (no credentials, cookies, Anthropic hosts or claude.ai in code)
-        run: node scripts/privacy-grep.mjs
-
-      - name: Versions agree (package.json, Cargo.toml, tauri.conf.json)
-        run: |
-          $npm = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
-          "package.json $npm · tauri.conf.json $tauri · Cargo.toml $cargo"
-          if ($npm -ne $tauri -or $npm -ne $cargo) { throw "version mismatch" }
-
-      - name: No network client crates (the only network use is the opt-in update check via curl.exe)
-        run: |
-          $tree = cargo tree --workspace --target x86_64-pc-windows-msvc -e normal --prefix none
-          if ($LASTEXITCODE -ne 0) { throw "cargo tree failed" }
-          $hits = $tree | Select-String -Pattern '^(reqwest|hyper|ureq|isahc|surf|attohttpc|opentelemetry)[ -]'
-          if ($hits) { $hits; throw "network client crates in the dependency tree" }
-
-      # Tauri's build script needs the sidecar binary to exist.
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
-
-      # crates/capture is formatted: keep it that way.
-      - name: rustfmt (capture shim)
-        run: cargo fmt -p cuw-capture -- --check
-      # Advisory for the rest until it is formatted in one sweep (it predates rustfmt in CI).
-      - name: rustfmt
-        continue-on-error: true
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Rust tests
-        run: cargo test --workspace
-      - name: UI tests (vitest)
-        run: npm test
-      - name: svelte-check
-        run: npm run check
-      - name: UI build
-        run: npm run build
+      # Same flags as the release build (static CRT, no local paths embedded).
+      - name: Build the NSIS installer
+        run: |
+          $env:CARGO_ENCODED_RUSTFLAGS = & ./scripts/release-rustflags.ps1
+          npx --no-install tauri build --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed ($LASTEXITCODE)" }
+      - name: Locate the installer
+        id: installer
+        run: |
+          $targetDir = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+          $files = @(Get-ChildItem (Join-Path $targetDir 'release\bundle\nsis') -Filter '*.exe')
+          if ($files.Count -ne 1) { throw "expected one installer, found $($files.Count)" }
+          "path=$($files[0].FullName)" >> $env:GITHUB_OUTPUT
+      # A CI build for testing only (unsigned, not a release): kept for a few days.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-ci
+          path: ${{ steps.installer.outputs.path }}
+          if-no-files-found: error
+          retention-days: 3
