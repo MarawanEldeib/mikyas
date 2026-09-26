@@ -162,12 +162,16 @@ pub struct PipelineState {
 }
 
 /// Opens `path`, retrying a few times with a short backoff (another program, e.g. a virus
-/// scanner or a sync client, may hold it briefly).
-fn open_history(path: &Path, attempts: u32) -> Option<History> {
+/// scanner or a sync client, may hold it briefly). Logs the failure when `log_failure`.
+fn open_history(path: &Path, attempts: u32, log_failure: bool) -> Option<History> {
     for attempt in 1..=attempts {
         match History::open(path.to_path_buf()) {
             Ok(history) => return Some(history),
-            Err(e) if attempt == attempts => log(&format!("history.jsonl unreadable ({e}); retrying later")),
+            Err(e) if attempt == attempts => {
+                if log_failure {
+                    log(&format!("history.jsonl unreadable ({e}); retrying every tick"));
+                }
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(50 * u64::from(attempt))),
         }
     }
@@ -177,7 +181,7 @@ fn open_history(path: &Path, attempts: u32) -> Option<History> {
 impl PipelineState {
     pub fn new(paths: Paths) -> Self {
         let reader = SafeReader::new(&paths);
-        let (history, history_ok) = match open_history(&paths.history_file(), HISTORY_OPEN_ATTEMPTS) {
+        let (history, history_ok) = match open_history(&paths.history_file(), HISTORY_OPEN_ATTEMPTS, true) {
             Some(history) => (history, true),
             None => (empty_history(&paths), false),
         };
@@ -221,7 +225,9 @@ impl PipelineState {
     pub fn tick(&mut self, now: Ms, settings: &Settings, dirty: &Dirty) -> TickOutput {
         let before = self.persisted.clone();
         if !self.history_ok {
-            if let Some(history) = open_history(&self.paths.history_file(), 1) {
+            // Logged once, at startup, not on every retry.
+            if let Some(history) = open_history(&self.paths.history_file(), 1, false) {
+                log("history.jsonl readable again");
                 self.history = history;
                 self.history_ok = true;
                 // Desktop samples not copied in meanwhile are backfilled on this poll.
@@ -729,7 +735,7 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, mut state: PipelineState, rx: Re
         }
 
         match rx.recv_timeout(timeout) {
-            Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => break,
             Ok(msg) => {
                 match msg {
                     Msg::Captures => dirty.captures = true,
@@ -742,7 +748,8 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, mut state: PipelineState, rx: Re
                         let transcripts = std::mem::take(&mut dirty.transcripts);
                         dirty = Dirty { transcripts, ..Dirty::all() };
                     }
-                    Msg::SettingsChanged | Msg::Shutdown => {}
+                    Msg::SettingsChanged => {}
+                    Msg::Shutdown => break,
                 }
                 last_event = Instant::now();
                 first_event.get_or_insert(last_event);
