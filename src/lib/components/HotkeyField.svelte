@@ -1,19 +1,38 @@
 <script lang="ts">
   import { displayHotkey, readHotkey } from "../hotkey";
+  import IconButton from "./IconButton.svelte";
 
   interface Props {
     value: string;
-    /** Registration error reported by Rust (UiState.hotkey_error). */
+    /** Registration error reported by Rust (UiState.hotkey_error / toggle_hotkey_error). */
     error: string | null;
     onchange: (accelerator: string) => void;
+    label?: string;
+    /** Offers a button that removes the shortcut ("" = none); Backspace works either way. */
+    clearable?: boolean;
   }
 
-  let { value, error, onchange }: Props = $props();
+  let { value, error, onchange, label = "Click-through shortcut", clearable = false }: Props = $props();
 
   const uid = $props.id();
   let recording = $state(false);
   let hint = $state<string | null>(null);
   let held = $state("");
+  let field = $state<HTMLButtonElement>();
+  /** Focus returned to the field after "Remove" must not start recording. */
+  let quietFocus = false;
+
+  function record() {
+    recording = true;
+    hint = null;
+    held = "";
+  }
+
+  function clear() {
+    onchange("");
+    quietFocus = true;
+    field?.focus();
+  }
 
   function onkeydown(e: KeyboardEvent) {
     if (!recording) return;
@@ -49,35 +68,46 @@
 
 <div class="hotkey">
   <div class="line">
-    <span class="label" id="{uid}-l">Show / hide shortcut</span>
-    <button
-      type="button"
-      class="field"
-      class:recording
-      aria-labelledby="{uid}-l {uid}-v"
-      aria-describedby="{uid}-m"
-      onfocus={() => {
-        recording = true;
-        hint = null;
-        held = "";
-      }}
-      onblur={() => (recording = false)}
-      {onkeydown}
-    >
-      <span id="{uid}-v">
-        {#if recording}
-          <span class="rec">{held ? `${held} + …` : "Press keys…"}</span>
-        {:else}
-          <kbd>{displayHotkey(value)}</kbd>
-        {/if}
-      </span>
-    </button>
+    <span class="label" id="{uid}-l">{label}</span>
+    <div class="controls">
+      {#if clearable && value && !recording}
+        <IconButton icon="close" label="Remove the {label.toLowerCase()}" onclick={clear} />
+      {/if}
+      <button
+        bind:this={field}
+        type="button"
+        class="field"
+        class:recording
+        class:none={!value && !recording}
+        aria-labelledby="{uid}-l {uid}-v"
+        aria-describedby="{uid}-m"
+        onfocus={() => {
+          if (quietFocus) quietFocus = false;
+          else record();
+        }}
+        onclick={() => {
+          if (!recording) record();
+        }}
+        onblur={() => (recording = false)}
+        {onkeydown}
+      >
+        <span id="{uid}-v">
+          {#if recording}
+            <span class="rec">{held ? `${held} + …` : "Press keys…"}</span>
+          {:else}
+            <kbd>{displayHotkey(value)}</kbd>
+          {/if}
+        </span>
+      </button>
+    </div>
   </div>
   <p class="msg" id="{uid}-m" class:err={!recording && error} role={!recording && error ? "alert" : undefined}>
     {#if recording}
       {hint ?? "Esc cancels · Backspace removes the shortcut"}
     {:else if error}
       {error}
+    {:else if !value}
+      No shortcut. Click to record one.
     {:else}
       Click to record a new shortcut.
     {/if}
@@ -98,6 +128,12 @@
   }
   .label {
     min-width: 0;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
   }
   .field {
     min-width: 112px;
@@ -121,6 +157,10 @@
     font-family: var(--font);
     font-weight: 600;
     font-size: 12px;
+  }
+  .none kbd {
+    font-weight: 400;
+    color: var(--fg-2);
   }
   .rec {
     color: var(--fg-2);

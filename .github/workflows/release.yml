@@ -1,0 +1,87 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds the per-user NSIS installer and creates a DRAFT GitHub release
+# with the installer and SHA256SUMS. Review the draft, then publish it by hand. The version in
+# package.json, Cargo.toml and src-tauri/tauri.conf.json must equal the tag (without "v").
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        run: |
+          $npm = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($npm -ne $tauri -or $npm -ne $cargo) { throw "version mismatch: package.json $npm, tauri.conf.json $tauri, Cargo.toml $cargo" }
+          if ("v$npm" -ne "$env:GITHUB_REF_NAME") { throw "tag $env:GITHUB_REF_NAME does not match version $npm" }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # Only the cuw-capture shim, copied to src-tauri/binaries/ for bundle.externalBin.
+      - name: Build the capture shim
+        run: ./scripts/build-sidecar.ps1
+
+      - name: Build the installer and create a draft release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Claude Usage Widget ${{ github.ref_name }}
+          releaseBody: |
+            Per-user installer for Windows 10/11 (no admin rights needed). It is not code-signed yet,
+            so SmartScreen may warn: choose **More info → Run anyway**. See INSTALL.md for the
+            first-run steps; SHA256SUMS lists the installer's checksum.
+          releaseDraft: true
+          prerelease: false
+
+      - name: SHA256SUMS
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          $files = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*.exe' }
+          if (-not $files) { throw "no installer in $env:ARTIFACTS" }
+          # The name GitHub gives the uploaded asset (tauri-action's ghAssetName): spaces and other
+          # special characters become dots, e.g. Claude.Usage.Widget_0.1.0_x64-setup.exe.
+          $ghName = { param($f) ((Split-Path $f -Leaf).Trim() -replace '[^a-zA-Z0-9_-]', '.') -replace '\.\.', '.' }
+          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower(), (& $ghName $f) }
+          $lines
+          [IO.File]::WriteAllText("$PWD/SHA256SUMS", ($lines -join "`n") + "`n")
+
+      - name: Attach SHA256SUMS to the draft
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+        with:
+          script: |
+            const fs = require("fs");
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(process.env.RELEASE_ID),
+              name: "SHA256SUMS",
+              data: fs.readFileSync("SHA256SUMS"),
+            });

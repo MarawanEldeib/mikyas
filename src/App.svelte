@@ -5,6 +5,7 @@
   import Pill from "./lib/components/Pill.svelte";
   import SessionsView from "./lib/components/SessionsView.svelte";
   import Settings from "./lib/components/Settings.svelte";
+  import UpdateBanner from "./lib/components/UpdateBanner.svelte";
   import { startDragging } from "./lib/ipc";
   import { app } from "./lib/stores.svelte";
   import { createTicker, type Ticker } from "./lib/tick";
@@ -73,6 +74,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
+  <UpdateBanner />
   {#if !app.ready}
     {#if app.error}
       <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>

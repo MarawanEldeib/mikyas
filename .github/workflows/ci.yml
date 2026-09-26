@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  GITLEAKS_VERSION: 8.30.1
+
+jobs:
+  check:
+    name: Lint, test, build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans the whole history
+
+      - name: Secret scan (gitleaks)
+        run: |
+          $zip = "$env:RUNNER_TEMP\gitleaks.zip"
+          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_${env:GITLEAKS_VERSION}_windows_x64.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\gitleaks"
+          & "$env:RUNNER_TEMP\gitleaks\gitleaks.exe" git --redact --no-banner --config .gitleaks.toml
+          if ($LASTEXITCODE -ne 0) { throw "gitleaks found a secret" }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Versions agree (package.json, Cargo.toml, tauri.conf.json)
+        run: |
+          $npm = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          "package.json $npm · tauri.conf.json $tauri · Cargo.toml $cargo"
+          if ($npm -ne $tauri -or $npm -ne $cargo) { throw "version mismatch" }
+
+      - name: No network client crates (the only network use is the opt-in update check via curl.exe)
+        run: |
+          $tree = cargo tree --workspace --target x86_64-pc-windows-msvc -e normal --prefix none
+          if ($LASTEXITCODE -ne 0) { throw "cargo tree failed" }
+          $hits = $tree | Select-String -Pattern '^(reqwest|hyper|ureq|isahc|surf|attohttpc|opentelemetry)[ -]'
+          if ($hits) { $hits; throw "network client crates in the dependency tree" }
+
+      # Tauri's build script needs the sidecar binary to exist.
+      - name: Build the capture shim
+        run: ./scripts/build-sidecar.ps1
+
+      # Advisory until the existing code is formatted in one sweep (it predates rustfmt in CI).
+      - name: rustfmt
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: UI tests (vitest)
+        run: npm test
+      - name: svelte-check
+        run: npm run check
+      - name: UI build
+        run: npm run build

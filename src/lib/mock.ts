@@ -1,6 +1,6 @@
 // Browser-only mock backend: realistic, deterministic snapshots for every UI state, driven by
-// URL params (?scenario=…&view=…&effect=…&ghost=1&conn=…). Loaded lazily by ipc.ts only when
-// not running inside Tauri. All data here is synthetic.
+// URL params (?scenario=…&view=…&effect=…&ghost=1&conn=…&update=…&hidden=…). Loaded lazily by
+// ipc.ts only when not running inside Tauri. All data here is synthetic.
 
 import { ACCENTS } from "./color";
 import { DAY, HOUR, MIN, SEC } from "./format";
@@ -10,6 +10,7 @@ import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
 import type {
   Burn,
   CommandName,
+  HiddenReason,
   ConnectPreview,
   ConnectionStatus,
   DesktopHealth,
@@ -20,6 +21,7 @@ import type {
   Snapshot,
   SparkPoint,
   UiState,
+  UpdateInfo,
   ViewMode,
   Warning,
   WindowView,
@@ -40,6 +42,14 @@ export const SCENARIOS = [
 export type Scenario = (typeof SCENARIOS)[number];
 
 const VIEWS: readonly ViewMode[] = ["pill", "card", "settings", "sessions", "history"];
+const HIDDEN: readonly HiddenReason[] = ["none", "user", "fullscreen"];
+/** ?update=1: already known at start; none: "Check now" finds nothing; error: it fails (like
+ *  Tauri, with a string). By default "Check now" finds MOCK_UPDATE. */
+const UPDATE_MODES = ["default", "1", "none", "error"] as const;
+export const MOCK_UPDATE: UpdateInfo = {
+  version: "0.2.0",
+  url: "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.2.0",
+};
 const EFFECTS: readonly EffectName[] = ["auto", "mica", "acrylic", "blur", "none"];
 
 /** Live-update period of the mock `snapshot` event. */
@@ -376,6 +386,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
   const spec = SPECS[scenario];
   const t0 = Date.now();
   const view = pick(params.get("view"), VIEWS, "card");
+  const updateMode = pick(params.get("update"), UPDATE_MODES, "default");
   const listeners = new Map<EventName, Set<(p: unknown) => void>>();
 
   let snapshot = buildSnapshot(scenario, t0, t0);
@@ -413,8 +424,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
     hotkey_error: spec.hotkeyError ?? null,
     toggle_hotkey_error: null,
     dock_expanded: false,
-    hidden_reason: "none",
-    update: null,
+    hidden_reason: pick(params.get("hidden"), HIDDEN, "none"),
+    update: updateMode === "1" ? MOCK_UPDATE : null,
   };
   const connParam = params.get("conn");
   let connection: ConnectionStatus =
@@ -520,7 +531,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
     },
     check_updates_now: async () => {
       await sleep(400);
-      ui = { ...ui, update: { version: "0.2.0", url: "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.2.0" } };
+      if (updateMode === "error") throw "Couldn't reach GitHub; check your connection";
+      ui = { ...ui, update: updateMode === "none" ? null : MOCK_UPDATE };
       emit("ui-state", ui);
       return ui.update;
     },

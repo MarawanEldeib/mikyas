@@ -19,6 +19,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "MarawanEldeib",
+    "homepage": "https://github.com/MarawanEldeib/claude-usage-widget",
+    "shortDescription": "Floating, token-free Claude usage widget",
+    "longDescription": "Shows your Claude 5-hour and weekly usage, reset countdowns, model and context % in a small always-on-top widget. Reads only local files; never your Claude login.",
+    "category": "Utility",
     "externalBin": ["binaries/cuw-capture"],
     "icon": [
       "icons/32x32.png",
@@ -27,7 +32,10 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "nsis": { "installMode": "currentUser" }
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh"
+      }
     }
   }
 }

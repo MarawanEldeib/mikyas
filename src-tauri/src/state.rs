@@ -49,8 +49,6 @@ impl PersistedState {
 }
 
 /// Why the widget is currently hidden.
-// TODO(stream C): remove the allow once the tray/hotkey/fullscreen code sets these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HiddenReason {
