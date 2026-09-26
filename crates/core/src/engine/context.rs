@@ -163,6 +163,7 @@ mod tests {
             identity_1m,
             last_assistant_ms: T,
             project: None,
+            turn: Default::default(),
         }
     }
 

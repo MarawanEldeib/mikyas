@@ -6,6 +6,7 @@
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
+  import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
 
   // The collapsed edge-dock strip: vertical meters on a side edge, one line on the top edge.
@@ -20,6 +21,8 @@
     color: string;
     stale: boolean;
     locked: boolean;
+    /** Claude worked after this reading: the real value is higher ("▲"). */
+    worked: boolean;
   }
 
   const vertical = $derived(app.settings?.dock !== "top");
@@ -42,6 +45,7 @@
         color: "var(--fg-3)",
         stale: true,
         locked: false,
+        worked: false,
       }));
     }
     return shown.map((w) => {
@@ -54,6 +58,7 @@
         color: muted ? "var(--fg-3)" : fillColor(w.pct),
         stale: w.stale,
         locked: w.limit_reached,
+        worked: showWorkedSince(w),
       };
     });
   });
@@ -63,7 +68,7 @@
       ...meters.map((m) =>
         m.pct === null
           ? `${m.name}: no data`
-          : `${m.name} ${formatPct(m.pct)}% used${m.locked ? ", limit reached" : ""}${m.stale ? ", stale" : ""}`,
+          : `${m.name} ${formatPct(m.pct)}% used${m.locked ? ", limit reached" : ""}${m.stale ? ", stale" : ""}${m.worked ? `, ${WORKED_SINCE_TIP}` : ""}`,
       ),
       warn ? "Warnings" : null,
       "Show details",
@@ -97,7 +102,7 @@
       <span class="label">{m.short}</span>
       <span class="track"><span class="fill" style:--p="{m.pct ?? 0}%" style:background={m.color}></span></span>
       <span class="pct" class:crit={m.locked}>
-        {#if m.locked}<Icon name="lock" size={11} />{:else if m.pct === null}–{:else}{formatPct(m.pct)}<span class="u">%</span>{/if}
+        {#if m.locked}<Icon name="lock" size={11} />{:else if m.pct === null}–{:else}{formatPct(m.pct)}<span class="u">%</span>{#if m.worked}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
       </span>
     </span>
   {/each}
@@ -168,6 +173,12 @@
   .pct.crit {
     align-self: center;
     color: var(--crit);
+  }
+  .worked {
+    font-size: 7px;
+    font-weight: 400;
+    color: var(--fg-2);
+    margin-left: 1px;
   }
   /* Stale (or no data): neutral fill, secondary text and a dotted track, like the stale source
      badges. */

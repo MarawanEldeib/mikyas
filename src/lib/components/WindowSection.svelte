@@ -2,6 +2,7 @@
   import { clampPct, fillColor } from "../color";
   import { estimateTooltip, formatAgeShort, formatPct, resetLine, windowLabel } from "../format";
   import type { WindowView } from "../types";
+  import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import BurnLine from "./BurnLine.svelte";
   import Icon from "./Icon.svelte";
   import Sparkline from "./Sparkline.svelte";
@@ -30,6 +31,7 @@
   // A reached limit's burn line says when it is usable again ("… at 21:36"); the reset line
   // then keeps only the countdown, so the clock shows once.
   const clock = $derived(!(burn && w.limit_reached));
+  const worked = $derived(showWorkedSince(w));
 </script>
 
 <section class="win" class:no-burn={!burn} aria-label="{label} limit">
@@ -37,6 +39,9 @@
     <div class="figures">
       <div class="headline">
         <span class="pct" class:crit={w.limit_reached}>{formatPct(p)}<span class="unit">%</span></span>
+        {#if worked}
+          <span class="worked" role="img" title={WORKED_SINCE_TIP} aria-label={WORKED_SINCE_TIP}>▲</span>
+        {/if}
         {#if w.limit_reached}
           <span class="lock" title="Limit reached"><Icon name="lock" size={13} /></span>
         {/if}
@@ -115,6 +120,13 @@
     margin-left: 1px;
     color: var(--fg-2);
     letter-spacing: 0;
+  }
+  /* "38% ▲": the value predates Claude activity seen since (tooltip explains). */
+  .worked {
+    margin-left: -3px;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--fg-2);
   }
   .lock {
     align-self: center;
