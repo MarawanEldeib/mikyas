@@ -153,7 +153,6 @@ mod tests {
             written_at_ms: changed_at_ms,
             changed_at_ms,
             fingerprint: 0,
-            transcript_path: None,
             model: Some(ModelInfo {
                 id: Some("claude-opus-5-5[1m]".into()),
                 display_name: Some("Opus 5.5 (1M context)".into()),
@@ -161,7 +160,6 @@ mod tests {
             context: Some(CtxInfo { used_percentage: pct, context_window_size: size, exceeds_200k: None }),
             rate_limits: BTreeMap::new(),
             api_ms: None,
-            cc_version: None,
         }
     }
 

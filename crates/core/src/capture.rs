@@ -5,9 +5,9 @@
 //! which keeps ONLY the whitelisted fields below and writes one file per session:
 //! `<capture_dir>/<session_id>.json`.
 //!
-//! Whitelist (everything else — `cwd`, `workspace`, `output_style`, cost totals, ... — is dropped):
+//! Whitelist (everything else — `cwd`, `workspace`, `output_style`, cost totals, `transcript_path`,
+//! `version`, ... — is dropped):
 //! - `session_id` (validated by [`sanitize_session_id`]; records without a valid id are ignored)
-//! - `transcript_path`
 //! - `model.id`, `model.display_name`
 //! - `context_window.used_percentage`, `context_window.context_window_size`
 //! - `exceeds_200k_tokens`
@@ -16,7 +16,6 @@
 //!   field, or resetting before 2001 or after 2200, is skipped. `used_percentage` is clamped to
 //!   0..=100; non-finite values are skipped.
 //! - `cost.total_api_duration_ms` (only used to detect a real new API response)
-//! - `version` (Claude Code version)
 //!
 //! [`parse_capture`] applies the same rules again, so a hand-edited file cannot bring back what
 //! extraction drops.
@@ -50,9 +49,8 @@ pub const REWRITE_AFTER_MS: Ms = 5 * MINUTE_MS;
 
 /// Longest accepted session id (a UUID is 36 characters).
 const MAX_SESSION_ID_LEN: usize = 64;
-/// Whitelisted strings longer than these are dropped (not truncated: a cut-off path or id would be
-/// wrong rather than short). The caps keep every record far below [`MAX_CAPTURE_FILE_BYTES`].
-const MAX_PATH_LEN: usize = 4096;
+/// Whitelisted strings longer than this are dropped (not truncated: a cut-off id would be wrong
+/// rather than short). The cap keeps every record far below [`MAX_CAPTURE_FILE_BYTES`].
 const MAX_LABEL_LEN: usize = 256;
 /// At most this many rate-limit windows are kept, each keyed `[A-Za-z0-9_-]{1,64}`.
 const MAX_WINDOWS: usize = 16;
@@ -73,8 +71,6 @@ pub struct CaptureRecord {
     pub changed_at_ms: Ms,
     pub fingerprint: u64,
     #[serde(default)]
-    pub transcript_path: Option<String>,
-    #[serde(default)]
     pub model: Option<ModelInfo>,
     #[serde(default)]
     pub context: Option<CtxInfo>,
@@ -83,8 +79,6 @@ pub struct CaptureRecord {
     pub rate_limits: BTreeMap<String, RateLimit>,
     #[serde(default)]
     pub api_ms: Option<u64>,
-    #[serde(default)]
-    pub cc_version: Option<String>,
 }
 
 /// `model` object of the statusline JSON.
@@ -181,19 +175,17 @@ pub fn extract_whitelisted(json: &serde_json::Value, now_ms: Ms) -> Option<Captu
         written_at_ms: now_ms,
         changed_at_ms: now_ms,
         fingerprint: 0,
-        transcript_path: bounded_str(obj.get("transcript_path"), MAX_PATH_LEN),
         model,
         context,
         rate_limits,
         api_ms,
-        cc_version: bounded_str(obj.get("version"), MAX_LABEL_LEN),
     };
     rec.fingerprint = fingerprint(&rec);
     Some(rec)
 }
 
 /// FNV-1a over: rate limits (key, pct, resets_at in key order), context (pct, size, exceeds_200k),
-/// `model.id`, and `api_ms`. Excludes timestamps and `transcript_path`.
+/// `model.id`, and `api_ms`. Excludes timestamps and `model.display_name`.
 pub fn fingerprint(rec: &CaptureRecord) -> u64 {
     let mut h = Fnv64::new();
     h.write_u64(rec.rate_limits.len() as u64);
@@ -297,14 +289,7 @@ pub fn parse_capture(bytes: &[u8]) -> Option<CaptureRecord> {
     let context = rec
         .context
         .and_then(|c| ctx_info(c.used_percentage.map(|p| p.clamp(0.0, 100.0)), c.context_window_size, c.exceeds_200k));
-    Some(CaptureRecord {
-        transcript_path: rec.transcript_path.filter(|s| within(s, MAX_PATH_LEN)),
-        model,
-        context,
-        rate_limits,
-        cc_version: rec.cc_version.filter(|s| within(s, MAX_LABEL_LEN)),
-        ..rec
-    })
+    Some(CaptureRecord { model, context, rate_limits, ..rec })
 }
 
 /// Reads and parses one capture file with a size cap. Missing, oversized or malformed → `None`.
@@ -509,10 +494,6 @@ mod tests {
         assert_eq!(rec.changed_at_ms, NOW);
         assert_eq!(rec.fingerprint, fingerprint(&rec));
         assert_eq!(
-            rec.transcript_path.as_deref(),
-            Some(r"C:\Users\tester\.claude\projects\C--work-demo\00000000-0000-4000-8000-000000000001.jsonl")
-        );
-        assert_eq!(
             rec.model,
             Some(ModelInfo {
                 id: Some("claude-opus-5-5[1m]".into()),
@@ -532,7 +513,6 @@ mod tests {
         assert_eq!(rec.rate_limits["five_hour"], RateLimit { used_percentage: 22.4, resets_at: 1_790_208_000 });
         assert_eq!(rec.rate_limits["seven_day"].used_percentage, 61.0);
         assert_eq!(rec.api_ms, Some(123_456));
-        assert_eq!(rec.cc_version.as_deref(), Some("2.3.4"));
     }
 
     #[test]
@@ -557,6 +537,11 @@ mod tests {
             "987654321",
             "876543219",
             "7654321987",
+            // Not read by anything: the path holds the Windows user name, the version is noise.
+            "transcript_path",
+            "tester",
+            "cc_version",
+            "2.3.4",
         ] {
             assert!(!out.contains(banned), "capture output leaked {banned:?}: {out}");
         }
@@ -653,23 +638,31 @@ mod tests {
         assert_eq!(rec.context, None);
         assert!(rec.rate_limits.is_empty());
         assert_eq!(rec.api_ms, None);
-        assert_eq!(rec.transcript_path, None);
-        assert_eq!(rec.cc_version, None);
 
         let odd = json!({
             "session_id": SID,
             "model": { "id": 5, "display_name": "" },
             "context_window": { "used_percentage": null, "context_window_size": 0 },
-            "cost": { "total_api_duration_ms": -1 },
-            "transcript_path": "x".repeat(MAX_PATH_LEN + 1),
-            "version": ["2"]
+            "cost": { "total_api_duration_ms": -1 }
         });
         let rec = extract_whitelisted(&odd, NOW).unwrap();
         assert_eq!(rec.model, None);
         assert_eq!(rec.context, None);
         assert_eq!(rec.api_ms, None);
-        assert_eq!(rec.transcript_path, None);
-        assert_eq!(rec.cc_version, None);
+    }
+
+    #[test]
+    fn captures_from_earlier_versions_still_load_without_the_dropped_fields() {
+        // Version 1 files written before `transcript_path` and `cc_version` were dropped.
+        let mut old = serde_json::to_value(rec_at(NOW)).unwrap();
+        old["transcript_path"] =
+            json!(r"C:\Users\tester\.claude\projects\p\00000000-0000-4000-8000-000000000001.jsonl");
+        old["cc_version"] = json!("2.3.4");
+        let read = parse_capture(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(read, rec_at(NOW));
+        let rewritten = serde_json::to_string(&read).unwrap();
+        assert!(!rewritten.contains("transcript_path") && !rewritten.contains("tester"), "{rewritten}");
+        assert!(!rewritten.contains("cc_version") && !rewritten.contains("2.3.4"), "{rewritten}");
     }
 
     #[test]
@@ -689,8 +682,6 @@ mod tests {
         let mut same = base.clone();
         same.written_at_ms += HOUR_MS;
         same.changed_at_ms += HOUR_MS;
-        same.transcript_path = Some("elsewhere.jsonl".into());
-        same.cc_version = None;
         same.fingerprint = 0;
         if let Some(m) = same.model.as_mut() {
             m.display_name = Some("Renamed".into());
@@ -871,16 +862,12 @@ mod tests {
         for (key, resets_at) in [("zero", 0), ("negative", -1), ("tiny", 5), ("far", i64::MAX)] {
             limits.insert(key.to_owned(), json!({ "used_percentage": 5.0, "resets_at": resets_at }));
         }
-        edited["transcript_path"] = json!("p".repeat(MAX_PATH_LEN + 1));
-        edited["cc_version"] = json!("v".repeat(MAX_LABEL_LEN + 1));
         edited["model"] = json!({ "id": "m".repeat(MAX_LABEL_LEN + 1), "display_name": "" });
         edited["context"] = json!({ "used_percentage": null, "context_window_size": 0 });
 
         let read = parse_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
         let keys: Vec<&str> = read.rate_limits.keys().map(String::as_str).collect();
         assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
-        assert_eq!(read.transcript_path, None);
-        assert_eq!(read.cc_version, None);
         assert_eq!(read.model, None);
         assert_eq!(read.context, None);
 

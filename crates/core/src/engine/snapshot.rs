@@ -476,7 +476,6 @@ mod tests {
             written_at_ms: changed,
             changed_at_ms: changed,
             fingerprint: 0,
-            transcript_path: None,
             model: Some(ModelInfo {
                 id: Some("claude-opus-5-5[1m]".into()),
                 display_name: Some("Opus 5.5 (1M context)".into()),
@@ -491,7 +490,6 @@ mod tests {
                 .map(|&(k, p, reset_ms)| (k.to_string(), RateLimit { used_percentage: p, resets_at: reset_ms / 1000 }))
                 .collect(),
             api_ms: None,
-            cc_version: None,
         }
     }
 
