@@ -47,7 +47,7 @@ All reads go through one allowlist; anything not listed here cannot be opened.
 | `state.json` | newest exact reset time per window, the newest Desktop sample already copied into the history, learned model display names (e.g. `claude-opus-5-5 → Opus 5.5`), last maintenance time. |
 | `alerts.json` | which alert thresholds already fired for the current window, so alerts fire once. |
 | `settings.json` | your widget settings. |
-| `update-check.json` | only if you use the update check: time of the last successful check and the newest version already announced. |
+| `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, and the newer release that check found (version and release page, so the notice survives a restart). |
 | `wrap.json` | after Connect: your original statusline command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
 | `bin\cuw-capture.exe` | the capture shim your statusline command points to. |

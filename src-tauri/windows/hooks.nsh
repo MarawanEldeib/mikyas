@@ -34,6 +34,9 @@ Var CuwDisconnected   ; 1 = the statusline was restored (or there was nothing to
   ${If} $CuwReinstall = 1
     ReadRegStr $CuwAutostart HKCU "${CUW_RUN_KEY}" "${PRODUCTNAME}"
   ${Else}
+    ; The template only asks to close a running widget after this hook. Ask first: cancelling
+    ; that question aborts the uninstall, which must leave the widget connected and autostarting.
+    !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
     DetailPrint "Restoring the Claude Code statusline..."
     ; Exits 0 when restored or when it was never connected; the uninstall goes on either way.
     ClearErrors

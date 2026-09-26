@@ -8,12 +8,12 @@ Claude account, password or token, and never reads your Claude login.**
 ## 1. Download
 
 Open the [Releases page](https://github.com/MarawanEldeib/claude-usage-widget/releases) and
-download `Claude Usage Widget_<version>_x64-setup.exe`.
+download `Claude.Usage.Widget_<version>_x64-setup.exe`.
 
 Optional: check the download against `SHA256SUMS` from the same release. In PowerShell:
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\Claude Usage Widget_*_x64-setup.exe" -Algorithm SHA256
+Get-FileHash "$env:USERPROFILE\Downloads\Claude.Usage.Widget_*_x64-setup.exe" -Algorithm SHA256
 ```
 
 The hash must match the line in `SHA256SUMS`.

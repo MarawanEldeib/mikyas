@@ -64,7 +64,10 @@ jobs:
         run: |
           $files = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*.exe' }
           if (-not $files) { throw "no installer in $env:ARTIFACTS" }
-          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower(), (Split-Path $f -Leaf) }
+          # The name GitHub gives the uploaded asset (tauri-action's ghAssetName): spaces and other
+          # special characters become dots, e.g. Claude.Usage.Widget_0.1.0_x64-setup.exe.
+          $ghName = { param($f) ((Split-Path $f -Leaf).Trim() -replace '[^a-zA-Z0-9_-]', '.') -replace '\.\.', '.' }
+          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower(), (& $ghName $f) }
           $lines
           [IO.File]::WriteAllText("$PWD/SHA256SUMS", ($lines -join "`n") + "`n")
 

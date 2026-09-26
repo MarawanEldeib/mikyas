@@ -4,11 +4,13 @@
 //! every 24 h, plus whenever the user clicks "Check now". The request is made by Windows' own
 //! `curl.exe` (System32), so the app contains no HTTP client; it sends nothing but the app
 //! version (in the User-Agent) and reads only `tag_name` and `html_url` of the answer. A newer
-//! version sets `UiState.update` and is announced with one toast per version. The last check is
-//! kept in `<data_root>/update-check.json` (not `state.json`: the pipeline thread rewrites that
-//! file from its own copy). Only release pages of this repository can be opened.
+//! version sets `UiState.update` and is announced with one toast per version. The last check (and
+//! the release it found, restored at startup) is kept in `<data_root>/update-check.json` (not
+//! `state.json`: the pipeline thread rewrites that file from its own copy). Only release pages of
+//! this repository can be opened.
 
 use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -291,15 +293,16 @@ pub fn curl_args() -> Vec<String> {
     .to_vec()
 }
 
-/// Windows' own curl (System32), not whatever `curl` comes first on the PATH.
-fn curl_exe() -> PathBuf {
-    let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    let system = root.join("System32").join("curl.exe");
-    if system.is_file() { system } else { PathBuf::from("curl") }
+/// Windows' own curl (`<system_root>\System32\curl.exe`), never whatever `curl` comes first on
+/// the PATH; missing (Windows before 10 1803) → a friendly error.
+fn system_curl(system_root: Option<&OsStr>) -> Result<PathBuf, CheckError> {
+    let root = system_root.map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let exe = root.join("System32").join("curl.exe");
+    if exe.is_file() { Ok(exe) } else { Err(CheckError::CurlMissing) }
 }
 
 fn fetch() -> Result<(u16, Vec<u8>), CheckError> {
-    let mut cmd = Command::new(curl_exe());
+    let mut cmd = Command::new(system_curl(std::env::var_os("SystemRoot").as_deref())?);
     cmd.args(curl_args()).stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -328,6 +331,8 @@ pub struct CheckRecord {
     pub last_check_ms: Ms,
     /// Newest version already announced (toast or "Check now"), so each one is announced once.
     pub notified_version: Option<String>,
+    /// The newer release the last answered check found, shown again after a restart.
+    pub update: Option<UpdateInfo>,
 }
 
 impl CheckRecord {
@@ -340,6 +345,9 @@ impl CheckRecord {
         if reached {
             self.last_check_ms = now;
         }
+        if let Ok(update) = result {
+            self.update = update.clone();
+        }
         let Ok(Some(info)) = result else { return None };
         if self.notified_version.as_deref() == Some(info.version.as_str()) {
             return None;
@@ -347,6 +355,14 @@ impl CheckRecord {
         self.notified_version = Some(info.version.clone());
         toast.then(|| info.clone())
     }
+}
+
+/// The release a previous run found, while it is still newer than this build (it may have been
+/// installed since) and its page is one of this repository's (the file could have been edited).
+pub fn remembered(record: &CheckRecord, current: &Version) -> Option<UpdateInfo> {
+    let info = record.update.as_ref()?;
+    let newer = Version::parse(&info.version).is_some_and(|v| v > *current);
+    (newer && is_release_url(&info.url)).then(|| info.clone())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,6 +383,11 @@ struct Updater {
 pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let path = shared.paths.data_root().join(RECORD_FILE);
     let record: CheckRecord = load_json(&path);
+    // Keeps the banner and the Settings status across restarts (the next check may be a day off).
+    // The page has not loaded yet, so it reads this with `get_ui_state`.
+    if let Some(current) = Version::parse(CURRENT_VERSION) {
+        shared.ui().update = remembered(&record, &current);
+    }
     let (tx, rx) = mpsc::channel();
     app.manage(Updater {
         waker: Mutex::new(tx),
@@ -616,6 +637,18 @@ mod tests {
     }
 
     #[test]
+    fn only_windows_own_curl_is_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No System32\curl.exe: a friendly error, never some other `curl` from the PATH.
+        assert_eq!(system_curl(Some(tmp.path().as_os_str())), Err(CheckError::CurlMissing));
+        let exe = tmp.path().join("System32").join("curl.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        assert_eq!(system_curl(Some(tmp.path().as_os_str())), Ok(exe));
+        assert!(CheckError::CurlMissing.to_string().starts_with("curl.exe was not found"));
+    }
+
+    #[test]
     fn daily_schedule() {
         let now = 1_790_000_000_000;
         assert!(due(0, now), "never checked");
@@ -649,6 +682,44 @@ mod tests {
     }
 
     #[test]
+    fn a_found_update_is_shown_again_after_a_restart_until_installed() {
+        let info = UpdateInfo {
+            version: "0.2.0".into(),
+            url: format!("{RELEASES_PREFIX}tag/v0.2.0"),
+        };
+        let mut r = CheckRecord::default();
+        assert_eq!(remembered(&r, &v("0.1.0")), None, "nothing found yet");
+        r.record(&Ok(Some(info.clone())), 5, true);
+        // The record is what a restart loads.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join(RECORD_FILE);
+        save_json(&p, &r).unwrap();
+        let back: CheckRecord = load_json(&p);
+        assert_eq!(remembered(&back, &v("0.1.0")), Some(info.clone()));
+        assert_eq!(remembered(&back, &v("0.2.0")), None, "installed since");
+        assert_eq!(remembered(&back, &v("0.3.0")), None);
+        // A check that could not reach GitHub keeps it; an up-to-date answer clears it.
+        r.record(&Err(CheckError::Offline), 6, true);
+        assert_eq!(remembered(&r, &v("0.1.0")), Some(info));
+        r.record(&Ok(None), 7, true);
+        assert_eq!(remembered(&r, &v("0.1.0")), None);
+        // A hand-edited record can never smuggle in another page or a garbage version.
+        for (version, url) in [
+            ("9.0.0", "https://example.com/releases/tag/v9.0.0".to_owned()),
+            ("latest", format!("{RELEASES_PREFIX}tag/latest")),
+        ] {
+            let bad = CheckRecord {
+                update: Some(UpdateInfo {
+                    version: version.into(),
+                    url,
+                }),
+                ..CheckRecord::default()
+            };
+            assert_eq!(remembered(&bad, &v("0.1.0")), None, "{version}");
+        }
+    }
+
+    #[test]
     fn record_file_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join(RECORD_FILE);
@@ -656,6 +727,10 @@ mod tests {
         let r = CheckRecord {
             last_check_ms: 42,
             notified_version: Some("0.2.0".into()),
+            update: Some(UpdateInfo {
+                version: "0.2.0".into(),
+                url: format!("{RELEASES_PREFIX}tag/v0.2.0"),
+            }),
         };
         save_json(&p, &r).unwrap();
         assert_eq!(load_json::<CheckRecord>(&p), r);
