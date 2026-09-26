@@ -8,8 +8,9 @@
 //!   `t100_ms - now >= MIN_LEAD_MS` (10 min) — a forecast that close is not a warning anymore;
 //! - never re-fires in the same instance, even if the forecast recovers and worsens again.
 //!
-//! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >= 99.5) and the
-//! reset is known and `reset - now <= lead` (five_hour: 10 min, weekly kinds: 60 min).
+//! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >= 99.5), the phase
+//! is Active and the reset is known, still ahead and `reset - now <= lead` (five_hour: 10 min,
+//! weekly kinds: 60 min). Stale data does not stop it: a capped window stays capped until then.
 //!
 //! `first_run` suppresses nothing here (a forecast is still useful right after start), but events
 //! whose instance was already handled before a restart must not repeat (the state is persisted).

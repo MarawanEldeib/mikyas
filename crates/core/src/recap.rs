@@ -91,7 +91,7 @@ impl RecapState {
     }
 }
 
-/// The newest weekly window that ended by `now_ms`.
+/// The newest weekly window with at least [`MIN_SAMPLES`] rows that ended by `now_ms`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EndedWeek {
     end_ms: Ms,
@@ -104,7 +104,9 @@ struct EndedWeek {
 /// Walks the weekly rows with the reset rule of `History::view`: a row starts a new window when
 /// its pct is at least [`MIXED_SOURCE_DROP_PCT`] below the previous row (the window ended at that
 /// row), or when the latest exact reset time known passed since the previous row (it ended then).
-/// An exact reset time that passed with no row after it ends the current window too.
+/// An exact reset time that passed with no row after it ends the current window too. A window
+/// with too few rows is passed over, so a Desktop drop just before the exact reset time (a
+/// one-row "window" between them) does not hide the week that ended with the drop.
 fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
     let weekly: Vec<&HistoryRow> = rows
         .iter()
@@ -129,7 +131,8 @@ fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
             let exact = known_reset.filter(|&r| prev.t < r && r <= row.t);
             let dropped = prev.p - row.p >= MIXED_SOURCE_DROP_PCT;
             if let Some(end_ms) = exact.or(dropped.then_some(row.t)) {
-                ended = Some(summarize(&weekly[window_start..i], end_ms));
+                let week = summarize(&weekly[window_start..i], end_ms);
+                ended = Some(week).filter(|w| w.samples >= MIN_SAMPLES).or(ended);
                 window_start = i;
             }
         }
@@ -140,7 +143,8 @@ fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
     }
     let last_t = weekly.last().map(|r| r.t);
     if let Some(r) = known_reset.filter(|&r| last_t.is_some_and(|t| t < r) && r <= now_ms) {
-        ended = Some(summarize(&weekly[window_start..], r));
+        let week = summarize(&weekly[window_start..], r);
+        ended = Some(week).filter(|w| w.samples >= MIN_SAMPLES).or(ended);
     }
     ended
 }
@@ -231,6 +235,24 @@ mod tests {
         );
         assert_eq!(s.last_recapped_end_ms, Some(END));
         assert_eq!(s.evaluate(&h, &day_starts(), END + 2 * HOUR_MS), None, "once");
+        // The week before was recapped already: this one still is.
+        let mut s = RecapState {
+            last_recapped_end_ms: Some(START),
+        };
+        assert_eq!(s.evaluate(&h, &day_starts(), END + HOUR_MS).map(|r| r.window_end_ms), Some(END));
+    }
+
+    #[test]
+    fn a_drop_just_before_the_exact_reset_keeps_its_week() {
+        // Desktop shows the drop first; the CLI row after the exact time ends a one-row window.
+        let mut rows: Vec<Row> = week().into_iter().filter(|r| r.1 == "7d" && r.0 >= START).collect();
+        rows.push((END - 20 * MINUTE_MS, "7d", 0.0, None));
+        rows.push((END + 10 * MINUTE_MS, "7d", 1.0, Some(END + SEVEN_DAYS_MS)));
+        let (_d, h) = history(&rows);
+        let mut s = RecapState::default();
+        let recap = s.evaluate(&h, &day_starts(), END + HOUR_MS);
+        assert_eq!(recap.map(|r| (r.window_end_ms, r.used_pct)), Some((END - 20 * MINUTE_MS, 82.0)));
+        assert_eq!(s.evaluate(&h, &day_starts(), END + 2 * HOUR_MS), None);
     }
 
     #[test]
