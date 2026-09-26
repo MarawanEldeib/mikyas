@@ -15,16 +15,23 @@ use crate::time::Ms;
 pub const CAPTURE_RETAIN_MS: Ms = 7 * crate::time::DAY_MS;
 /// Stray `.tmp` files older than this are deleted by [`prune`].
 pub const TMP_RETAIN_MS: Ms = crate::time::MINUTE_MS;
+/// Captures stamped further ahead of `now_ms` than this were written while the clock ran fast:
+/// [`load_captures`] ignores them (they would sort first and never go stale).
+pub const FUTURE_TOLERANCE_MS: Ms = 5 * crate::time::MINUTE_MS;
+/// [`prune`] deletes files stamped further ahead of `now_ms` than this.
+pub const FUTURE_RETAIN_MS: Ms = crate::time::DAY_MS;
 
 /// Reads every `<capture_dir>/*.json` whose name does not start with `.` or `_`, through the
 /// reader, skipping files larger than [`crate::capture::MAX_CAPTURE_FILE_BYTES`] and files that
-/// fail [`crate::capture::read_capture`]. A missing dir yields an empty vec. Sorted by
+/// fail [`crate::capture::read_capture`], and records whose `changed_at_ms` or `written_at_ms` is
+/// more than [`FUTURE_TOLERANCE_MS`] after `now_ms`. A missing dir yields an empty vec. Sorted by
 /// `changed_at_ms` descending.
-pub fn load_captures(reader: &SafeReader, capture_dir: &Path) -> Vec<CaptureRecord> {
+pub fn load_captures(reader: &SafeReader, capture_dir: &Path, now_ms: Ms) -> Vec<CaptureRecord> {
     // Missing, unlistable or denied dirs all mean "no captures".
     let Ok(entries) = reader.read_dir(capture_dir) else {
         return Vec::new();
     };
+    let latest = now_ms.saturating_add(FUTURE_TOLERANCE_MS);
     let mut records: Vec<CaptureRecord> = entries
         .flatten()
         // `DirEntry::file_type` does not follow links, so symlinks and junctions are skipped too.
@@ -32,6 +39,7 @@ pub fn load_captures(reader: &SafeReader, capture_dir: &Path) -> Vec<CaptureReco
         .filter(|e| is_loadable_name(&e.file_name()))
         .filter_map(|e| reader.read(&e.path(), MAX_CAPTURE_FILE_BYTES).ok())
         .filter_map(|bytes| read_capture(&bytes))
+        .filter(|r| r.changed_at_ms <= latest && r.written_at_ms <= latest)
         .collect();
     records.sort_by(|a, b| {
         b.changed_at_ms
@@ -41,9 +49,20 @@ pub fn load_captures(reader: &SafeReader, capture_dir: &Path) -> Vec<CaptureReco
     records
 }
 
-/// Deletes expired captures and stale temp files. Returns how many files were removed.
+/// Deletes expired captures and stale temp files, and files stamped more than
+/// [`FUTURE_RETAIN_MS`] after `now_ms`. Returns how many files were removed.
 /// Never touches anything that is not `*.json` / `*.tmp` directly inside `capture_dir`.
 pub fn prune(capture_dir: &Path, now_ms: Ms) -> io::Result<usize> {
+    prune_with(capture_dir, now_ms, |_| {})
+}
+
+/// [`prune`], calling `before_remove` between judging a file expired and removing it (tests use
+/// it to replace the file there, as the shim can).
+fn prune_with(
+    capture_dir: &Path,
+    now_ms: Ms,
+    mut before_remove: impl FnMut(&Path),
+) -> io::Result<usize> {
     let entries = match fs::read_dir(capture_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -58,11 +77,12 @@ pub fn prune(capture_dir: &Path, now_ms: Ms) -> io::Result<usize> {
         let Some(kind) = prunable_kind(&path) else {
             continue;
         };
-        let mtime_ms = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(system_time_ms);
+        // Taken before the read, so a replacement made after it can be detected before deleting.
+        // A file that vanished or is locked is simply left for next time.
+        let Ok(before) = fs::metadata(&path) else {
+            continue;
+        };
+        let mtime_ms = before.modified().ok().and_then(system_time_ms);
         let (stamp, retain) = match kind {
             Prunable::Capture => (
                 read_capture_file(&path)
@@ -72,13 +92,28 @@ pub fn prune(capture_dir: &Path, now_ms: Ms) -> io::Result<usize> {
             ),
             Prunable::Tmp => (mtime_ms, TMP_RETAIN_MS),
         };
-        // Unknown age → keep. A file that vanished or is locked is simply left for next time.
-        let expired = stamp.is_some_and(|t| now_ms.saturating_sub(t) > retain);
-        if expired && fs::remove_file(&path).is_ok() {
-            removed += 1;
+        // Unknown age → keep.
+        let expired = stamp.is_some_and(|t| {
+            now_ms.saturating_sub(t) > retain || t.saturating_sub(now_ms) > FUTURE_RETAIN_MS
+        });
+        if expired {
+            before_remove(&path);
+            if remove_if_unchanged(&path, &before) {
+                removed += 1;
+            }
         }
     }
     Ok(removed)
+}
+
+/// The shim may have renamed a fresh capture over `path` since it was read: delete it only if its
+/// size and modification time still match `before`. This narrows the race to the gap between
+/// this check and the delete; closing it fully would need a delete through the handle we read.
+fn remove_if_unchanged(path: &Path, before: &fs::Metadata) -> bool {
+    let unchanged = fs::metadata(path).is_ok_and(|now| {
+        now.len() == before.len() && now.modified().ok() == before.modified().ok()
+    });
+    unchanged && fs::remove_file(path).is_ok()
 }
 
 /// One observation per rate-limit window per record: `kind = WindowKind::from_key(key)`,
@@ -228,7 +263,7 @@ mod tests {
         let newer = record(SID2, NOW, &[("seven_day", 50.0, 1_790_500_000)]);
         write_json(&dir.join(format!("{SID1}.json")), &older);
         write_json(&dir.join(format!("{SID2}.JSON")), &newer);
-        assert_eq!(load_captures(&reader, &dir), vec![newer, older]);
+        assert_eq!(load_captures(&reader, &dir, NOW), vec![newer, older]);
     }
 
     #[test]
@@ -268,13 +303,13 @@ mod tests {
             &other,
         );
 
-        assert_eq!(load_captures(&reader, &dir), vec![good]);
+        assert_eq!(load_captures(&reader, &dir, NOW), vec![good]);
     }
 
     #[test]
     fn load_of_missing_or_disallowed_dir_is_empty() {
         let (tmp, reader, dir) = setup();
-        assert!(load_captures(&reader, &dir.join("missing")).is_empty());
+        assert!(load_captures(&reader, &dir.join("missing"), NOW).is_empty());
 
         let outside = tmp.path().join("elsewhere");
         fs::create_dir_all(&outside).unwrap();
@@ -283,7 +318,7 @@ mod tests {
             &record(SID1, NOW, &[]),
         );
         assert!(
-            load_captures(&reader, &outside).is_empty(),
+            load_captures(&reader, &outside, NOW).is_empty(),
             "the reader's allowlist applies"
         );
     }
@@ -352,6 +387,79 @@ mod tests {
     fn prune_of_missing_dir_is_zero() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(prune(&tmp.path().join("missing"), NOW).unwrap(), 0);
+    }
+
+    #[test]
+    fn load_ignores_captures_stamped_in_the_future() {
+        let (_tmp, reader, dir) = setup();
+        let sid3 = "00000000-0000-4000-8000-000000000003";
+        let slightly_ahead = record(SID1, NOW + FUTURE_TOLERANCE_MS, &[]);
+        let changed_ahead = record(SID2, NOW + FUTURE_TOLERANCE_MS + 1, &[]);
+        let mut written_ahead = record(sid3, NOW, &[]);
+        written_ahead.written_at_ms = NOW + HOUR_MS;
+        write_json(&dir.join(format!("{SID1}.json")), &slightly_ahead);
+        write_json(&dir.join(format!("{SID2}.json")), &changed_ahead);
+        write_json(&dir.join(format!("{sid3}.json")), &written_ahead);
+        assert_eq!(load_captures(&reader, &dir, NOW), vec![slightly_ahead]);
+    }
+
+    #[test]
+    fn prune_deletes_files_stamped_more_than_a_day_ahead() {
+        let (_tmp, _reader, dir) = setup();
+        let far_ahead = dir.join(format!("{SID1}.json"));
+        write_json(&far_ahead, &record(SID1, NOW + DAY_MS + 1, &[]));
+        let hours_ahead = dir.join(format!("{SID2}.json"));
+        write_json(&hours_ahead, &record(SID2, NOW + 12 * HOUR_MS, &[]));
+
+        // Files without a readable stamp are judged by mtime, with the same limits.
+        let corrupt_far_ahead = dir.join("corrupt.json");
+        fs::write(&corrupt_far_ahead, b"nope").unwrap();
+        set_mtime(&corrupt_far_ahead, NOW + DAY_MS + 1);
+        let tmp_far_ahead = dir.join(format!(".{SID1}.1.2.tmp"));
+        fs::write(&tmp_far_ahead, b"{").unwrap();
+        set_mtime(&tmp_far_ahead, NOW + DAY_MS + 1);
+        let tmp_hours_ahead = dir.join(format!(".{SID2}.1.2.tmp"));
+        fs::write(&tmp_hours_ahead, b"{").unwrap();
+        set_mtime(&tmp_hours_ahead, NOW + 12 * HOUR_MS);
+
+        assert_eq!(prune(&dir, NOW).unwrap(), 3);
+        assert_eq!(
+            names(&dir),
+            [format!(".{SID2}.1.2.tmp"), format!("{SID2}.json")]
+        );
+    }
+
+    #[test]
+    fn prune_keeps_a_capture_replaced_after_it_was_judged_expired() {
+        let (_tmp, _reader, dir) = setup();
+        let path = dir.join(format!("{SID1}.json"));
+        let expired = record(SID1, NOW - 8 * DAY_MS, &[]);
+        let larger = record(SID1, NOW, &[("five_hour", 10.0, 1_790_210_000)]);
+        let same_size = record(SID1, NOW, &[]);
+        assert_eq!(
+            serde_json::to_vec(&same_size).unwrap().len(),
+            serde_json::to_vec(&expired).unwrap().len(),
+            "only the modification time tells this replacement apart"
+        );
+
+        for fresh in [larger, same_size] {
+            write_json(&path, &expired);
+            set_mtime(&path, NOW - 8 * DAY_MS);
+            // The shim renames a fresh capture over the file between prune's read and its delete.
+            let removed = prune_with(&dir, NOW, |p| {
+                let tmp = dir.join(format!(".{SID1}.1.2.tmp"));
+                write_json(&tmp, &fresh);
+                fs::rename(&tmp, p).unwrap();
+            })
+            .unwrap();
+            assert_eq!(removed, 0);
+            assert_eq!(read_capture_file(&path), Some(fresh));
+        }
+
+        // Untouched, the same expired capture is removed.
+        write_json(&path, &expired);
+        assert_eq!(prune_with(&dir, NOW, |_| {}).unwrap(), 1);
+        assert!(names(&dir).is_empty());
     }
 
     #[test]

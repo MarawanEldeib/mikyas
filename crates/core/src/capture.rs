@@ -13,9 +13,13 @@
 //! - `exceeds_200k_tokens`
 //! - `rate_limits.<key>.used_percentage` + `rate_limits.<key>.resets_at` (epoch **seconds**)
 //!   for every key except `spend_limit` (gateway spend, not a plan window). A window missing either
-//!   field is skipped. `used_percentage` is clamped to 0..=100; non-finite values are skipped.
+//!   field, or resetting before 2001 or after 2200, is skipped. `used_percentage` is clamped to
+//!   0..=100; non-finite values are skipped.
 //! - `cost.total_api_duration_ms` (only used to detect a real new API response)
 //! - `version` (Claude Code version)
+//!
+//! [`read_capture`] applies the same rules again, so a hand-edited file cannot bring back what
+//! extraction drops.
 //!
 //! Freshness: `refreshInterval` re-runs the statusline with the SAME cached data, so
 //! `changed_at_ms` must only advance when the [`fingerprint`] changes. [`write_capture`] carries
@@ -33,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::fingerprint::Fnv64;
-use crate::time::{MINUTE_MS, Ms};
+use crate::time::{MAX_PLAUSIBLE_MS, MIN_PLAUSIBLE_MS, MINUTE_MS, Ms};
 
 /// Schema version written to (and required in) every capture file.
 pub const CAPTURE_VERSION: u8 = 1;
@@ -131,10 +135,21 @@ pub enum CaptureError {
 
 /// Accepts only `[A-Za-z0-9-]{1,64}` (Claude Code session ids are UUIDs). Anything else — path
 /// separators, `..`, dots, spaces, over-long values — returns `None`, which blocks path traversal.
+/// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, any case) are
+/// rejected too: `NUL.json` opens the device, not a file.
 pub fn sanitize_session_id(raw: &str) -> Option<String> {
     let valid = (1..=MAX_SESSION_ID_LEN).contains(&raw.len())
-        && raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        && raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !is_windows_device_name(raw);
     valid.then(|| raw.to_owned())
+}
+
+fn is_windows_device_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    match upper.as_bytes() {
+        [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] => digit.is_ascii_digit(),
+        _ => matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL"),
+    }
 }
 
 /// Builds a record from a parsed statusline JSON value using the whitelist in the module docs.
@@ -145,25 +160,18 @@ pub fn extract_whitelisted(json: &serde_json::Value, now_ms: Ms) -> Option<Captu
     let session_id = sanitize_session_id(obj.get("session_id")?.as_str()?)?;
 
     let model = obj.get("model").and_then(Value::as_object).and_then(|m| {
-        let id = bounded_str(m.get("id"), MAX_LABEL_LEN);
-        let display_name = bounded_str(m.get("display_name"), MAX_LABEL_LEN);
-        (id.is_some() || display_name.is_some()).then_some(ModelInfo { id, display_name })
+        model_info(
+            bounded_str(m.get("id"), MAX_LABEL_LEN),
+            bounded_str(m.get("display_name"), MAX_LABEL_LEN),
+        )
     });
 
     let ctx = obj.get("context_window").and_then(Value::as_object);
-    let used_percentage = ctx.and_then(|c| percent(c.get("used_percentage")));
-    // A zero-sized window is nonsense and would only cause divisions by zero downstream.
-    let context_window_size = ctx
-        .and_then(|c| non_negative_u64(c.get("context_window_size")))
-        .filter(|&size| size > 0);
-    let exceeds_200k = obj.get("exceeds_200k_tokens").and_then(Value::as_bool);
-    let context =
-        (used_percentage.is_some() || context_window_size.is_some() || exceeds_200k.is_some())
-            .then_some(CtxInfo {
-                used_percentage,
-                context_window_size,
-                exceeds_200k,
-            });
+    let context = ctx_info(
+        ctx.and_then(|c| percent(c.get("used_percentage"))),
+        ctx.and_then(|c| non_negative_u64(c.get("context_window_size"))),
+        obj.get("exceeds_200k_tokens").and_then(Value::as_bool),
+    );
 
     let rate_limits = obj
         .get("rate_limits")
@@ -285,18 +293,43 @@ pub fn capture_from_bytes(
 /// Parses a capture file written by [`write_capture`]. Returns `None` for other schema versions
 /// or malformed content.
 pub fn read_capture(bytes: &[u8]) -> Option<CaptureRecord> {
-    let mut rec: CaptureRecord = serde_json::from_slice(bytes).ok()?;
+    let rec: CaptureRecord = serde_json::from_slice(bytes).ok()?;
     if rec.v != CAPTURE_VERSION || sanitize_session_id(&rec.session_id).is_none() {
         return None;
     }
-    // The file is ours, but it may have been edited by hand; restore the 0..=100 invariant.
-    for window in rec.rate_limits.values_mut() {
-        window.used_percentage = window.used_percentage.clamp(0.0, 100.0);
-    }
-    if let Some(ctx) = rec.context.as_mut() {
-        ctx.used_percentage = ctx.used_percentage.map(|p| p.clamp(0.0, 100.0));
-    }
-    Some(rec)
+    // The file is ours, but it may have been edited by hand: apply the extraction rules again, so
+    // a loaded record never holds what `extract_whitelisted` would have dropped.
+    let rate_limits = rec
+        .rate_limits
+        .into_iter()
+        .filter(|(key, window)| is_window_key(key) && plausible_resets_at(window.resets_at))
+        .take(MAX_WINDOWS)
+        .map(|(key, mut window)| {
+            window.used_percentage = window.used_percentage.clamp(0.0, 100.0);
+            (key, window)
+        })
+        .collect();
+    let model = rec.model.and_then(|m| {
+        model_info(
+            m.id.filter(|s| within(s, MAX_LABEL_LEN)),
+            m.display_name.filter(|s| within(s, MAX_LABEL_LEN)),
+        )
+    });
+    let context = rec.context.and_then(|c| {
+        ctx_info(
+            c.used_percentage.map(|p| p.clamp(0.0, 100.0)),
+            c.context_window_size,
+            c.exceeds_200k,
+        )
+    });
+    Some(CaptureRecord {
+        transcript_path: rec.transcript_path.filter(|s| within(s, MAX_PATH_LEN)),
+        model,
+        context,
+        rate_limits,
+        cc_version: rec.cc_version.filter(|s| within(s, MAX_LABEL_LEN)),
+        ..rec
+    })
 }
 
 /// Reads and parses one capture file with a size cap. Missing, oversized or malformed → `None`.
@@ -318,8 +351,31 @@ pub(crate) fn read_capture_file(path: &Path) -> Option<CaptureRecord> {
 
 fn bounded_str(v: Option<&Value>, max_len: usize) -> Option<String> {
     v?.as_str()
-        .filter(|s| !s.is_empty() && s.len() <= max_len)
+        .filter(|s| within(s, max_len))
         .map(str::to_owned)
+}
+
+fn within(s: &str, max_len: usize) -> bool {
+    !s.is_empty() && s.len() <= max_len
+}
+
+fn model_info(id: Option<String>, display_name: Option<String>) -> Option<ModelInfo> {
+    (id.is_some() || display_name.is_some()).then_some(ModelInfo { id, display_name })
+}
+
+fn ctx_info(
+    used_percentage: Option<f32>,
+    context_window_size: Option<u64>,
+    exceeds_200k: Option<bool>,
+) -> Option<CtxInfo> {
+    // A zero-sized window is nonsense and would only cause divisions by zero downstream.
+    let context_window_size = context_window_size.filter(|&size| size > 0);
+    (used_percentage.is_some() || context_window_size.is_some() || exceeds_200k.is_some())
+        .then_some(CtxInfo {
+            used_percentage,
+            context_window_size,
+            exceeds_200k,
+        })
 }
 
 /// A finite number clamped to 0..=100. Clamped as f64 first so huge values do not become `inf`.
@@ -338,12 +394,19 @@ fn non_negative_u64(v: Option<&Value>) -> Option<u64> {
 }
 
 /// `resets_at` as epoch seconds. Claude Code sends integer seconds; epoch milliseconds and
-/// RFC 3339 strings are also accepted (see [`crate::time::json_time_to_ms`]). Zero or negative → `None`.
+/// RFC 3339 strings are also accepted (see [`crate::time::json_time_to_ms`]). Outside
+/// [`plausible_resets_at`] → `None`.
 fn epoch_secs(v: &Value) -> Option<i64> {
-    // Checked after the conversion: sub-second numbers and pre-1970 strings round to <= 0.
+    // Checked after the conversion: strings are not range-checked by `json_time_to_ms`.
     crate::time::json_time_to_ms(v)
         .map(|ms| ms.div_euclid(1000))
-        .filter(|&secs| secs > 0)
+        .filter(|&secs| plausible_resets_at(secs))
+}
+
+/// Between 2001 and 2200 (see [`crate::time::MIN_PLAUSIBLE_MS`]); anything else is corrupt.
+fn plausible_resets_at(secs: i64) -> bool {
+    secs.checked_mul(1000)
+        .is_some_and(|ms| (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).contains(&ms))
 }
 
 fn valid_window_key(key: &str) -> bool {
@@ -353,9 +416,14 @@ fn valid_window_key(key: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// A key that may name a plan usage window: well-formed and not the gateway spend limit.
+fn is_window_key(key: &str) -> bool {
+    key != SPEND_LIMIT_KEY && valid_window_key(key)
+}
+
 fn rate_limits(obj: &Map<String, Value>) -> BTreeMap<String, RateLimit> {
     obj.iter()
-        .filter(|(key, _)| key.as_str() != SPEND_LIMIT_KEY && valid_window_key(key))
+        .filter(|(key, _)| is_window_key(key))
         .filter_map(|(key, window)| {
             let window = window.as_object()?;
             let used_percentage = percent(window.get("used_percentage"))?;
@@ -470,6 +538,30 @@ mod tests {
             assert_eq!(sanitize_session_id(bad), None, "{bad:?} must be rejected");
         }
         assert_eq!(sanitize_session_id(&"a".repeat(65)), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_device_names() {
+        // `<id>.json` would name the device itself (`NUL.json` is NUL), not a file.
+        for device in [
+            "CON", "con", "Prn", "aux", "NUL", "nul", "COM0", "com1", "COM9", "LPT0", "lpt5",
+            "LpT9",
+        ] {
+            assert_eq!(
+                sanitize_session_id(device),
+                None,
+                "{device:?} must be rejected"
+            );
+        }
+        for ordinary in [
+            "CON1", "CONS", "NULL", "AUXX", "COM", "COM10", "LPT", "LPT-1", "COMA", "XCON", "PRN0",
+        ] {
+            assert_eq!(
+                sanitize_session_id(ordinary).as_deref(),
+                Some(ordinary),
+                "{ordinary:?} is not a device name"
+            );
+        }
     }
 
     #[test]
@@ -605,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn resets_at_that_rounds_to_zero_or_before_the_epoch_is_skipped() {
+    fn resets_at_before_2001_or_after_2200_is_skipped() {
         let json = json!({
             "session_id": SID,
             "rate_limits": {
@@ -613,13 +705,23 @@ mod tests {
                 "subnormal": { "used_percentage": 1, "resets_at": 1e-300 },
                 "pre_epoch": { "used_percentage": 1, "resets_at": "1969-12-31T23:59:59Z" },
                 "epoch_plus_half": { "used_percentage": 1, "resets_at": "1970-01-01T00:00:00.5Z" },
-                "one_second": { "used_percentage": 1, "resets_at": 1 }
+                "one_second": { "used_percentage": 1, "resets_at": 1 },
+                "last_second_of_2000": { "used_percentage": 1, "resets_at": 978_307_199 },
+                "string_1990": { "used_percentage": 1, "resets_at": "1990-01-01T00:00:00Z" },
+                "after_2200": { "used_percentage": 1, "resets_at": 7_258_118_401_i64 },
+                "string_2300": { "used_percentage": 1, "resets_at": "2300-01-01T00:00:00Z" },
+                "first_second_of_2001": { "used_percentage": 1, "resets_at": 978_307_200 },
+                "start_of_2200": { "used_percentage": 1, "resets_at": "2200-01-01T00:00:00Z" }
             }
         });
         let rec = extract_whitelisted(&json, NOW).unwrap();
         let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["one_second"]);
-        assert_eq!(rec.rate_limits["one_second"].resets_at, 1);
+        assert_eq!(keys, ["first_second_of_2001", "start_of_2200"]);
+        assert_eq!(
+            rec.rate_limits["first_second_of_2001"].resets_at,
+            978_307_200
+        );
+        assert_eq!(rec.rate_limits["start_of_2200"].resets_at, 7_258_118_400);
     }
 
     #[test]
@@ -898,6 +1000,67 @@ mod tests {
     }
 
     #[test]
+    fn read_capture_reapplies_the_extraction_rules_to_edited_files() {
+        let window = json!({ "used_percentage": 5.0, "resets_at": 1_790_000_000 });
+        let mut edited = serde_json::to_value(rec_at(NOW)).unwrap();
+        let limits = edited["rate_limits"].as_object_mut().unwrap();
+        let long_key = "k".repeat(MAX_WINDOW_KEY_LEN + 1);
+        for key in [SPEND_LIMIT_KEY, "bad key!", "", long_key.as_str()] {
+            limits.insert(key.to_owned(), window.clone());
+        }
+        for (key, resets_at) in [
+            ("zero", 0),
+            ("negative", -1),
+            ("tiny", 5),
+            ("far", i64::MAX),
+        ] {
+            limits.insert(
+                key.to_owned(),
+                json!({ "used_percentage": 5.0, "resets_at": resets_at }),
+            );
+        }
+        edited["transcript_path"] = json!("p".repeat(MAX_PATH_LEN + 1));
+        edited["cc_version"] = json!("v".repeat(MAX_LABEL_LEN + 1));
+        edited["model"] = json!({ "id": "m".repeat(MAX_LABEL_LEN + 1), "display_name": "" });
+        edited["context"] = json!({ "used_percentage": null, "context_window_size": 0 });
+
+        let read = read_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
+        let keys: Vec<&str> = read.rate_limits.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
+        assert_eq!(read.transcript_path, None);
+        assert_eq!(read.cc_version, None);
+        assert_eq!(read.model, None);
+        assert_eq!(read.context, None);
+
+        let mut label_only = serde_json::to_value(rec_at(NOW)).unwrap();
+        label_only["model"]["display_name"] = json!("d".repeat(MAX_LABEL_LEN + 1));
+        let read = read_capture(&serde_json::to_vec(&label_only).unwrap()).unwrap();
+        assert_eq!(
+            read.model,
+            Some(ModelInfo {
+                id: Some("claude-opus-5-5[1m]".into()),
+                display_name: None,
+            })
+        );
+    }
+
+    #[test]
+    fn read_capture_keeps_at_most_max_windows() {
+        let mut rec = rec_at(NOW);
+        for i in 0..MAX_WINDOWS {
+            rec.rate_limits.insert(
+                format!("extra_{i:02}"),
+                RateLimit {
+                    used_percentage: 1.0,
+                    resets_at: 1_790_000_000,
+                },
+            );
+        }
+        let read = read_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        assert_eq!(read.rate_limits.len(), MAX_WINDOWS);
+    }
+
+    #[test]
     fn oversized_existing_file_is_ignored() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(format!("{SID}.json"));
@@ -946,6 +1109,88 @@ mod tests {
         })
     }
 
+    const RESETS_AT_RANGE: std::ops::RangeInclusive<i64> =
+        MIN_PLAUSIBLE_MS / 1000..=MAX_PLAUSIBLE_MS / 1000;
+
+    /// A percentage as Claude Code might send it, or a corrupted one.
+    fn arb_pct() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            3 => (0.0..=1.0f64).prop_map(Value::from),
+            3 => (-1e3..1e3f64).prop_map(Value::from),
+            1 => any::<i64>().prop_map(Value::from),
+            1 => prop_oneof![Just(1e300), Just(-1e300), Just(f64::MAX)].prop_map(Value::from),
+            1 => prop_oneof![Just("NaN"), Just("inf"), Just("-Infinity"), Just("1e999"), Just("12")]
+                .prop_map(Value::from),
+            1 => Just(Value::Null),
+        ]
+    }
+
+    /// A reset time in any accepted unit, or a corrupted one.
+    fn arb_resets_at() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            4 => RESETS_AT_RANGE.prop_map(Value::from),
+            2 => (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).prop_map(Value::from),
+            1 => (0.0..2e12f64).prop_map(Value::from),
+            1 => (-10i64..10).prop_map(Value::from),
+            1 => any::<i64>().prop_map(Value::from),
+            1 => Just(Value::from(1e300)),
+            1 => Just(Value::from("2026-09-24T00:00:00Z")),
+            1 => prop_oneof![Just("1990-01-01T00:00:00Z"), Just("soon"), Just("NaN")]
+                .prop_map(Value::from),
+            1 => Just(Value::Null),
+        ]
+    }
+
+    /// Statusline-shaped objects whose `rate_limits` hold many windows mixing valid and invalid
+    /// keys, percentages and reset times, so the window rules are actually reached ([`arb_json`]
+    /// almost never builds a complete window).
+    fn arb_statusline() -> impl Strategy<Value = Value> {
+        let key = prop_oneof![
+            12 => "[A-Za-z0-9_-]{1,64}",
+            1 => "[A-Za-z0-9_-]{65,70}",
+            1 => Just("bad key!".to_owned()),
+            1 => Just(String::new()),
+            1 => Just(SPEND_LIMIT_KEY.to_owned()),
+        ];
+        let window = prop_oneof![
+            19 => (arb_pct(), arb_resets_at())
+                .prop_map(|(pct, resets_at)| json!({ "used_percentage": pct, "resets_at": resets_at })),
+            1 => Just(json!(7)),
+        ];
+        let windows = prop::collection::vec((key, window), 0..48)
+            .prop_map(|kv| Value::Object(kv.into_iter().collect()));
+        let session_id = prop_oneof![9 => Just(SID), 1 => Just("../evil")];
+        (session_id, windows, arb_pct()).prop_map(|(sid, windows, ctx_pct)| {
+            json!({
+                "session_id": sid,
+                "rate_limits": windows,
+                "context_window": { "used_percentage": ctx_pct }
+            })
+        })
+    }
+
+    #[test]
+    fn statusline_strategy_reaches_the_window_rules() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::TestRunner;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = arb_statusline();
+        let (mut with_windows, mut capped) = (0, 0);
+        for _ in 0..256 {
+            let json = strategy.new_tree(&mut runner).unwrap().current();
+            if let Some(rec) = extract_whitelisted(&json, NOW) {
+                with_windows += usize::from(!rec.rate_limits.is_empty());
+                capped += usize::from(rec.rate_limits.len() == MAX_WINDOWS);
+            }
+        }
+        assert!(
+            with_windows > 128,
+            "only {with_windows}/256 records kept a window"
+        );
+        assert!(capped > 0, "no record reached the {MAX_WINDOWS}-window cap");
+    }
+
     proptest! {
         #[test]
         fn extraction_never_panics_and_keeps_invariants(json in arb_json()) {
@@ -954,7 +1199,7 @@ mod tests {
                 prop_assert!(!rec.rate_limits.contains_key(SPEND_LIMIT_KEY));
                 for w in rec.rate_limits.values() {
                     prop_assert!((0.0..=100.0).contains(&w.used_percentage));
-                    prop_assert!(w.resets_at > 0);
+                    prop_assert!(RESETS_AT_RANGE.contains(&w.resets_at));
                 }
                 if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {
                     prop_assert!((0.0..=100.0).contains(&pct));
@@ -962,6 +1207,44 @@ mod tests {
                 let bytes = serde_json::to_vec(&rec).unwrap();
                 prop_assert_eq!(read_capture(&bytes), Some(rec));
             }
+        }
+
+        #[test]
+        fn shaped_statusline_keeps_window_invariants(json in arb_statusline()) {
+            let Some(rec) = extract_whitelisted(&json, NOW) else {
+                prop_assert_ne!(json["session_id"].as_str(), Some(SID));
+                return Ok(());
+            };
+            let input = json["rate_limits"].as_object().unwrap();
+            prop_assert!(rec.rate_limits.len() <= MAX_WINDOWS);
+            for (key, w) in &rec.rate_limits {
+                prop_assert!(key != SPEND_LIMIT_KEY, "{:?}", key);
+                prop_assert!(
+                    (1..=MAX_WINDOW_KEY_LEN).contains(&key.len())
+                        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                    "{:?}", key
+                );
+                prop_assert!(input.contains_key(key));
+                prop_assert!((0.0..=100.0).contains(&w.used_percentage), "{}", w.used_percentage);
+                prop_assert!(RESETS_AT_RANGE.contains(&w.resets_at), "{}", w.resets_at);
+            }
+            // Nothing acceptable is dropped below the cap: a window with a whitelisted key, a
+            // finite numeric percentage and a plausible reset time is kept.
+            let acceptable = input
+                .iter()
+                .filter(|(key, w)| {
+                    key.as_str() != SPEND_LIMIT_KEY
+                        && valid_window_key(key)
+                        && w["used_percentage"].as_f64().is_some_and(f64::is_finite)
+                        && epoch_secs(&w["resets_at"]).is_some_and(|s| RESETS_AT_RANGE.contains(&s))
+                })
+                .count();
+            prop_assert_eq!(rec.rate_limits.len(), acceptable.min(MAX_WINDOWS));
+            if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {
+                prop_assert!((0.0..=100.0).contains(&pct));
+            }
+            let bytes = serde_json::to_vec(&rec).unwrap();
+            prop_assert_eq!(read_capture(&bytes), Some(rec));
         }
 
         #[test]
