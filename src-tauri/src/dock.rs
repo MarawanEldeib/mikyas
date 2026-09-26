@@ -12,8 +12,11 @@
 //! - Dragging: the strip itself can't be dragged (pointing at it slides the widget out). The
 //!   slid-out widget drags freely, and when it slides back in it snaps flush to the edge at
 //!   its new position along it (on whichever monitor it was dropped). A drag therefore moves
-//!   the dock along the edge; it never undocks.
-//! - Nothing extra is persisted: the window-state plugin saves the strip's position on quit.
+//!   the dock along the edge; it never undocks. Until then it stays where it was dropped:
+//!   showing the window only keeps it on-screen, and a DPI change (dragged onto another
+//!   monitor) only resizes it.
+//! - Nothing extra is persisted: the window-state plugin saves the strip's position on quit (a
+//!   slid-out widget slides in first).
 
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +66,32 @@ impl Side {
             Self::Left | Self::Right => y,
             Self::Top => x,
         }
+    }
+}
+
+/// Where the widget is, for what happens to it outside a slide (showing it, a DPI change, quit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockState {
+    Undocked,
+    /// The strip, flush against the edge.
+    Strip,
+    /// Slid out, and possibly dragged since.
+    SlidOut,
+}
+
+impl DockState {
+    pub fn of(edge: DockEdge, expanded: bool) -> Self {
+        match (edge, expanded) {
+            (DockEdge::Off, _) => Self::Undocked,
+            (_, false) => Self::Strip,
+            (_, true) => Self::SlidOut,
+        }
+    }
+
+    pub fn now(shared: &Shared) -> Self {
+        let edge = shared.settings().dock;
+        let expanded = shared.ui().dock_expanded;
+        Self::of(edge, expanded)
     }
 }
 
@@ -208,6 +237,23 @@ pub fn set_expanded(app: &AppHandle, shared: &Shared, expanded: bool) {
     crate::window::emit_ui(app, shared);
 }
 
+/// Slides a slid-out widget (any view) back into its strip before the window-state plugin saves
+/// the position: the next start recreates the strip where the window was saved.
+pub fn collapse_before_save(app: &AppHandle, shared: &Shared) {
+    let Some(side) = Side::from_edge(shared.settings().dock) else { return };
+    if DockState::now(shared) != DockState::SlidOut {
+        return;
+    }
+    let Some(window) = crate::window::get(app) else { return };
+    let view = {
+        let mut ui = shared.ui();
+        ui.dock_expanded = false;
+        ui.view
+    };
+    let settings = shared.settings().clone();
+    place(&window, side, &settings, view, false);
+}
+
 /// Called by the UI on pointer enter/leave of the docked widget.
 #[tauri::command]
 pub fn set_dock_expanded(app: AppHandle, shared: State<'_, Arc<Shared>>, expanded: bool) {
@@ -309,6 +355,37 @@ mod tests {
         assert_eq!(current_strip(last, Side::Left, AREA, (47, 203), card), (1920, 0, 47, 203));
         // Another edge starts from the window, not from the old edge's strip.
         assert_eq!(current_strip(last, Side::Top, AREA, (232, 34), card), (1964, 0, 232, 34));
+    }
+
+    #[test]
+    fn dock_states() {
+        assert_eq!(DockState::of(DockEdge::Off, false), DockState::Undocked);
+        assert_eq!(DockState::of(DockEdge::Off, true), DockState::Undocked, "stale flag");
+        assert_eq!(DockState::of(DockEdge::Left, false), DockState::Strip);
+        assert_eq!(DockState::of(DockEdge::Right, true), DockState::SlidOut);
+        assert_eq!(DockState::of(DockEdge::Top, true), DockState::SlidOut);
+    }
+
+    #[test]
+    fn quitting_slid_out_saves_the_strip_the_next_start_recreates() {
+        let strip = (1920, 438, 36, 156);
+        let card = expanded_rect(Side::Left, AREA, (320, 232), strip, strip, None);
+        let last = Some(Placement {
+            side: Side::Left,
+            strip,
+            placed: card,
+        });
+        // Saved slid out, the next start creates the strip at the card's origin, and centring
+        // it there moves it.
+        let restored = (card.0, card.1, 36, 156);
+        assert_ne!(strip_rect(Side::Left, AREA, (36, 156), restored), strip);
+        // Slid in first, the saved position is the strip's, and the next start keeps it.
+        let saved = current_strip(last, Side::Left, AREA, (36, 156), card);
+        assert_eq!(saved, strip);
+        assert_eq!(strip_rect(Side::Left, AREA, (36, 156), saved), strip);
+        // Dragged before quitting: the strip saved is the one it would slide into.
+        let dragged = (1990, 600, 320, 232);
+        assert_eq!(current_strip(last, Side::Left, AREA, (36, 156), dragged), (1920, 638, 36, 156));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-use crate::dock::{self, Side};
+use crate::dock::{self, DockState, Side};
 use crate::settings::{CardRows, DockEdge, EffectName, Settings, ViewMode};
 use crate::state::{HiddenReason, Shared};
 
@@ -123,12 +123,28 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
 
     let handle = window.clone();
     window.on_window_event(move |event| {
-        if let WindowEvent::ScaleFactorChanged { .. } = event {
-            let view = handle.state::<Arc<Shared>>().ui().view;
-            resize_anchored(&handle, view, view);
+        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+            let shared = handle.state::<Arc<Shared>>().inner().clone();
+            let view = shared.ui().view;
+            if replace_on_scale_change(DockState::now(&shared)) {
+                resize_anchored(&handle, view, view);
+            } else {
+                // During a drag tao applies Windows' suggested rect after this handler, which keeps
+                // the logical size to within a pixel; the exact size returns with the next slide.
+                let settings = shared.settings().clone();
+                let (w, h) = physical(view_size(view, &settings), *scale_factor);
+                let _ = handle.set_size(PhysicalSize::new(w as u32, h as u32));
+            }
         }
     });
     Ok(window)
+}
+
+/// A DPI change re-places the window (anchored corner, or the dock strip), except a slid-out
+/// dock: it is most likely being dragged onto that monitor, so it is only resized, and snaps
+/// flush to the edge when it slides back in.
+fn replace_on_scale_change(state: DockState) -> bool {
+    state != DockState::SlidOut
 }
 
 fn env_i32(name: &str) -> Option<i32> {
@@ -164,10 +180,41 @@ pub fn visible_rect(window: &WebviewWindow) -> Option<(Rect, (i32, i32))> {
 }
 
 /// Moves and sizes the window so that its visible part is `rect` (a flush placement must not
-/// leave an invisible frame as a gap).
-pub fn set_visible_rect(window: &WebviewWindow, (x, y, w, h): Rect, (dx, dy): (i32, i32)) {
-    let _ = window.set_position(PhysicalPosition::new(x - dx, y - dy));
-    let _ = window.set_size(PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
+/// leave an invisible frame as a gap). On Windows in one step: moved and resized separately, the
+/// frame in between could poke past the screen edge.
+pub fn set_visible_rect(window: &WebviewWindow, rect: Rect, inset: (i32, i32)) {
+    let current = window.inner_size().ok();
+    let frame = match (window.outer_size(), current) {
+        (Ok(outer), Some(inner)) => (outer.width as i32 - inner.width as i32, outer.height as i32 - inner.height as i32),
+        _ => (0, 0),
+    };
+    let outer = outer_rect(rect, inset, frame);
+    if crate::platform::set_outer_rect(window, outer) {
+        return;
+    }
+    let (w, h) = (rect.2.max(1), rect.3.max(1));
+    let position = PhysicalPosition::new(outer.0, outer.1);
+    let size = PhysicalSize::new(w as u32, h as u32);
+    let from = current.map_or((0, 0), |s| (s.width as i32, s.height as i32));
+    if resize_first(from, (w, h)) {
+        let _ = window.set_size(size);
+        let _ = window.set_position(position);
+    } else {
+        let _ = window.set_position(position);
+        let _ = window.set_size(size);
+    }
+}
+
+/// The outer window rect whose visible part is `(x, y, w, h)`: `inset` is the visible part's
+/// offset from the outer origin, `frame` the outer size minus the visible size.
+fn outer_rect((x, y, w, h): Rect, (dx, dy): (i32, i32), (fw, fh): (i32, i32)) -> Rect {
+    (x - dx, y - dy, w.max(1) + fw, h.max(1) + fh)
+}
+
+/// For a move and a resize in two calls: shrinking resizes first (at the old origin) and growing
+/// moves first, so the rect shown in between lies inside the old or the new one.
+fn resize_first((w, h): (i32, i32), (new_w, new_h): (i32, i32)) -> bool {
+    new_w <= w && new_h <= h
 }
 
 pub fn work_areas(window: &WebviewWindow) -> Vec<Rect> {
@@ -236,13 +283,29 @@ fn shared_of(window: &WebviewWindow) -> Option<Arc<Shared>> {
     window.try_state::<Arc<Shared>>().map(|s| s.inner().clone())
 }
 
-/// Brings the window back if it is (mostly) off every monitor; a docked one is re-snapped.
+/// Brings the window back if it is (mostly) off every monitor. The dock strip is re-snapped; a
+/// slid-out dock stays where it was dragged (kept on-screen), unless it is on no monitor.
 pub fn ensure_on_screen(window: &WebviewWindow) {
     if let Some(shared) = shared_of(window) {
-        if shared.settings().dock != DockEdge::Off {
-            let view = shared.ui().view;
-            resize_anchored(window, view, view);
-            return;
+        let state = DockState::now(&shared);
+        let view = shared.ui().view;
+        match state {
+            DockState::Undocked => {}
+            DockState::Strip => {
+                resize_anchored(window, view, view);
+                return;
+            }
+            DockState::SlidOut => {
+                let Some((visible, (dx, dy))) = visible_rect(window) else { return };
+                match slid_out_on_screen(visible, &work_areas(window)) {
+                    Some((x, y)) if (x, y) != (visible.0, visible.1) => {
+                        let _ = window.set_position(PhysicalPosition::new(x - dx, y - dy));
+                    }
+                    Some(_) => {}
+                    None => resize_anchored(window, view, view),
+                }
+                return;
+            }
         }
     }
     let Some(rect) = window_rect(window) else { return };
@@ -261,6 +324,13 @@ pub fn ensure_on_screen(window: &WebviewWindow) {
     if (x, y) != (rect.0, rect.1) {
         let _ = window.set_position(PhysicalPosition::new(x, y));
     }
+}
+
+/// Where a slid-out dock's visible rect goes when the window is shown: clamped into the work area
+/// it is on (unchanged when it fits, flush against the edge or not), `None` on no monitor. Its
+/// outer rect is not clamped: the invisible frame overhangs the edge it is flush against.
+fn slid_out_on_screen(visible: Rect, areas: &[Rect]) -> Option<(i32, i32)> {
+    area_for(visible, areas).map(|area| clamp_into(visible, area))
 }
 
 /// Sizes and places the window for `view` at the user's scale and card rows. Docked: the strip,
@@ -455,6 +525,52 @@ mod tests {
         assert_eq!(area_for((5000, 5000, 320, 232), &areas), None);
         assert_eq!(clamp_into((1800, 900, 320, 232), AREA), (1600, 808));
         assert_eq!(clamp_into((-50, -50, 320, 232), AREA), (0, 0));
+    }
+
+    #[test]
+    fn a_dpi_change_only_resizes_a_slid_out_dock() {
+        assert!(replace_on_scale_change(DockState::Undocked));
+        assert!(replace_on_scale_change(DockState::Strip));
+        assert!(!replace_on_scale_change(DockState::SlidOut), "being dragged: no flush snap");
+    }
+
+    #[test]
+    fn showing_a_slid_out_dock_keeps_it_where_it_is() {
+        // Flush against the right edge; the outer rect overhangs it by the invisible frame, so
+        // clamping that one would pull the widget off the edge.
+        let visible = (1600, 400, 320, 232);
+        assert_eq!(slid_out_on_screen(visible, &[AREA]), Some((1600, 400)));
+        assert_ne!(clamp_into((1593, 400, 334, 239), AREA), (1593, 400));
+        // Dragged along the edge: stays. Partly off the bottom: comes back in.
+        assert_eq!(slid_out_on_screen((1600, 90, 320, 232), &[AREA]), Some((1600, 90)));
+        assert_eq!(slid_out_on_screen((900, 950, 320, 232), &[AREA]), Some((900, 808)));
+        // On no monitor (it went away while hidden): re-snapped instead.
+        assert_eq!(slid_out_on_screen((5000, 5000, 320, 232), &[AREA]), None);
+    }
+
+    #[test]
+    fn a_visible_rect_maps_to_one_outer_rect() {
+        // 7 px invisible frame left, right and bottom, none on top.
+        assert_eq!(outer_rect((1600, 400, 320, 232), (7, 0), (14, 7)), (1593, 400, 334, 239));
+        assert_eq!(outer_rect((0, 0, 0, -5), (0, 0), (0, 0)), (0, 0, 1, 1));
+    }
+
+    #[test]
+    fn two_step_moves_never_show_a_rect_outside_the_old_or_new_one() {
+        let inside = |r: Rect, o: Rect| r.0 >= o.0 && r.1 >= o.1 && r.0 + r.2 <= o.0 + o.2 && r.1 + r.3 <= o.1 + o.3;
+        // Right-edge dock at x = 1920: expanding the strip to the card, collapsing it back, and
+        // the card growing into Settings above the taskbar.
+        let strip = (1884, 438, 36, 156);
+        let card = (1600, 400, 320, 232);
+        let settings = (1600, 192, 320, 440);
+        for (from, to) in [(strip, card), (card, strip), (card, settings), (settings, card)] {
+            let between = if resize_first((from.2, from.3), (to.2, to.3)) {
+                (from.0, from.1, to.2, to.3)
+            } else {
+                (to.0, to.1, from.2, from.3)
+            };
+            assert!(inside(between, from) || inside(between, to), "{from:?} → {to:?} shows {between:?}");
+        }
     }
 
     #[test]
