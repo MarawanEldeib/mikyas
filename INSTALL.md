@@ -1,17 +1,17 @@
-# Installing Claude Usage Widget
+# Installing SovaWatch
 
 Step-by-step install, update and uninstall guide for Windows 10/11. For what the widget does, see
 the [README](README.md); for every file it reads and writes, see [PRIVACY.md](PRIVACY.md).
 
 ## 1. Download
 
-Open the [Releases page](https://github.com/MarawanEldeib/claude-usage-widget/releases) and
-download `Claude.Usage.Widget_<version>_x64-setup.exe`.
+Open the [Releases page](https://github.com/MarawanEldeib/sovawatch/releases) and
+download `SovaWatch_<version>_x64-setup.exe`.
 
 Optional: check the download against `SHA256SUMS` from the same release. In PowerShell:
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\Claude.Usage.Widget_*_x64-setup.exe" -Algorithm SHA256
+Get-FileHash "$env:USERPROFILE\Downloads\SovaWatch_*_x64-setup.exe" -Algorithm SHA256
 ```
 
 The hash must match the line in `SHA256SUMS`.
@@ -22,7 +22,7 @@ The installer is not code-signed yet, so Windows SmartScreen may show **"Windows
 PC"**. Click **More info → Run anyway**.
 
 It installs for your Windows user only (no administrator rights) into
-`%LOCALAPPDATA%\Claude Usage Widget`, and adds a Start menu entry. The widget needs the WebView2
+`%LOCALAPPDATA%\SovaWatch`, and adds a Start menu entry. The widget needs the WebView2
 runtime, which Windows 10/11 already include; if it is missing, the installer downloads it from
 Microsoft.
 
@@ -58,7 +58,7 @@ settings, history, Claude Code connection and "Start with Windows" are all kept.
 
 ## Uninstalling
 
-**Windows Settings → Apps → Installed apps → Claude Usage Widget → Uninstall.**
+**Windows Settings → Apps → Installed apps → SovaWatch → Uninstall.**
 
 The uninstaller first restores your original Claude Code status line (the same as Disconnect) and
 removes the "Start with Windows" entry. Tick **"Delete the application data"** to also remove the
@@ -67,9 +67,25 @@ widget's data folders (history, settings, backups; the full list is in
 
 If the status line cannot be restored — for example because comments were added to
 `~/.claude/settings.json` after you connected — the uninstaller leaves that file alone and keeps
-the data folder `%LOCALAPPDATA%\ClaudeUsageWidget`, because your status line still uses the helper
-inside it. Remove the `cuw-capture.exe … |` part from `statusLine.command` by hand, or click
+the data folder `%LOCALAPPDATA%\SovaWatch`, because your status line still uses the helper
+inside it. Remove the `sovawatch-capture.exe … |` part from `statusLine.command` by hand, or click
 **Disconnect** in the widget before uninstalling.
+
+## Moving from Claude Usage Widget
+
+SovaWatch is the new name of Claude Usage Widget. To move over:
+
+1. Install SovaWatch as above (it installs next to the old app; nothing is removed).
+2. Open SovaWatch once. On its first start it copies your settings, history, alerts and
+   captures from `%LOCALAPPDATA%\ClaudeUsageWidget`, and if Claude Code's status line was
+   connected, it switches the status line to SovaWatch's own helper — only the helper's path
+   changes, and **Disconnect** still restores your original status line exactly. A notification
+   confirms the move. Do not click **Reconnect** in the old app after this.
+3. Uninstall Claude Usage Widget: **Windows Settings → Apps → Installed apps → Claude Usage
+   Widget → Uninstall.** Its uninstaller leaves SovaWatch's status line alone. Ticking "Delete the
+   application data" there removes only the old app's folders.
+
+If **Start with Windows** was on in the old app, SovaWatch switches it on for itself.
 
 ## Troubleshooting
 

@@ -86,7 +86,7 @@ export function controlLabel(control: WindowControl, s: ControlsState, close: Cl
     case "minimize":
       return s.dock === "off" ? "Minimize to pill" : "Minimize to the screen edge";
     case "close":
-      return close === "quit" ? "Quit Claude Usage" : "Hide to tray";
+      return close === "quit" ? "Quit SovaWatch" : "Hide to tray";
   }
 }
 

@@ -16,7 +16,7 @@ name: Release
 # required reviewer, a ruleset that lets only admins create `v*` tags, and immutable releases.
 #
 # Verify a downloaded installer:
-#   gh attestation verify <installer.exe> --repo MarawanEldeib/claude-usage-widget
+#   gh attestation verify <installer.exe> --repo MarawanEldeib/sovawatch
 
 on:
   workflow_dispatch:
@@ -94,7 +94,7 @@ jobs:
       # this job's GITHUB_TOKEN is read-only and checkout did not persist it.
       - run: npm ci --ignore-scripts
 
-      # Only the cuw-capture shim, copied to src-tauri/binaries/ for bundle.externalBin.
+      # Only the sovawatch-capture shim, copied to src-tauri/binaries/ for bundle.externalBin.
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
 
@@ -112,7 +112,7 @@ jobs:
           if ($files.Count -ne 1) { throw "expected one installer, found $($files.Count)" }
           $out = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dist"
           # The name GitHub would give the uploaded asset: spaces and other special characters
-          # become dots, e.g. Claude.Usage.Widget_0.1.0_x64-setup.exe. Renamed here, so
+          # become dots (e.g. "My App_1.0.0_x64-setup.exe" -> My.App_1.0.0_x64-setup.exe). Renamed here, so
           # SHA256SUMS, the attestation and the asset all use the same name.
           $name = ($files[0].Name.Trim() -replace '[^a-zA-Z0-9_.-]', '.') -replace '\.\.+', '.'
           Copy-Item -LiteralPath $files[0].FullName -Destination (Join-Path $out $name)
@@ -174,5 +174,5 @@ jobs:
             echo "Verify the build provenance: \`gh attestation verify <file> --repo $GH_REPO\`"
           } > notes.md
           gh release create "$TAG" --draft --verify-tag \
-            --title "Claude Usage Widget $TAG" --notes-file notes.md \
+            --title "SovaWatch $TAG" --notes-file notes.md \
             dist/*.exe dist/SHA256SUMS

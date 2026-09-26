@@ -1,4 +1,4 @@
-//! End-to-end tests of the `cuw-capture` binary. Every run points `CUW_DATA_DIR` at a temp dir.
+//! End-to-end tests of the `sovawatch-capture` binary. Every run points `SOVA_DATA_DIR` at a temp dir.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -10,14 +10,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-const SHIM: &str = env!("CARGO_BIN_EXE_cuw-capture");
-/// `examples/cuw-test-child.rs`, which `cargo test` builds into `<profile>/examples/`.
+const SHIM: &str = env!("CARGO_BIN_EXE_sovawatch-capture");
+/// `examples/sovawatch-test-child.rs`, which `cargo test` builds into `<profile>/examples/`.
 static CHILD: LazyLock<String> = LazyLock::new(|| {
     let path = Path::new(SHIM)
         .parent()
         .expect("shim dir")
         .join("examples")
-        .join(format!("cuw-test-child{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("sovawatch-test-child{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.is_file(),
         "{} missing: run `cargo test` without a target filter (or `cargo build --examples`) so the \
@@ -40,7 +40,7 @@ struct Outcome {
 
 fn shim(data: &Path) -> Command {
     let mut cmd = Command::new(SHIM);
-    cmd.env("CUW_DATA_DIR", data);
+    cmd.env("SOVA_DATA_DIR", data);
     cmd
 }
 
@@ -263,7 +263,7 @@ fn argv_mode_survives_a_panic_in_its_own_capture() {
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let mut cmd = shim(tmp.path());
-    cmd.env("CUW_TEST_HOOK", "panic").args(["--", CHILD.as_str(), "--sleep-ms", "300", "--exit", "7"]);
+    cmd.env("SOVA_TEST_HOOK", "panic").args(["--", CHILD.as_str(), "--sleep-ms", "300", "--exit", "7"]);
     let out = run(&mut cmd, &input);
     assert_eq!(out.code, Some(7));
     assert_eq!(out.stdout, input);
@@ -281,7 +281,7 @@ fn shim_does_not_import_the_vc_runtime_dll() {
     let needle = b"vcruntime140";
     assert!(
         !bytes.windows(needle.len()).any(|w| w == needle),
-        "cuw-capture imports VCRUNTIME140*.dll; build with -C target-feature=+crt-static"
+        "sovawatch-capture imports VCRUNTIME140*.dll; build with -C target-feature=+crt-static"
     );
 }
 
@@ -327,7 +327,7 @@ fn version_flag() {
     let tmp = tempfile::tempdir().unwrap();
     let out = run(shim(tmp.path()).arg("--version"), b"");
     assert_eq!(out.code, Some(0));
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("cuw-capture {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("sovawatch-capture {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn argv_mode_forwards_stdin_stdout_args_and_exit_code() {
 fn argv_mode_falls_back_to_default_line_when_spawn_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let input = input_with_resets(600, 7200);
-    let out = run(shim(tmp.path()).args(["--", "cuw-no-such-program-4711", "x"]), &input);
+    let out = run(shim(tmp.path()).args(["--", "sova-no-such-program-4711", "x"]), &input);
     assert_eq!(out.code, Some(0));
     let line = String::from_utf8(out.stdout).unwrap();
     assert!(line.starts_with("\x1b[38;5;213mOpus 5.5 (1M context)\x1b[0m · ctx"), "{line:?}");
@@ -361,7 +361,7 @@ fn argv_mode_falls_back_to_default_line_when_spawn_fails() {
     let log = errors_log(tmp.path());
     assert_eq!(log.lines().count(), 1, "{log}");
     assert!(log.ends_with(" argv spawn_NotFound\n"), "{log}");
-    assert!(!log.contains("cuw-no-such-program"), "{log}");
+    assert!(!log.contains("sova-no-such-program"), "{log}");
 }
 
 #[test]
@@ -388,7 +388,7 @@ fn tee_closes_stdout_before_a_slow_capture() {
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let mut child = shim(tmp.path())
-        .env("CUW_TEST_HOOK", format!("capture_delay_ms={DELAY_MS}"))
+        .env("SOVA_TEST_HOOK", format!("capture_delay_ms={DELAY_MS}"))
         .arg("--tee")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -412,7 +412,7 @@ fn tee_closes_stdout_before_a_slow_capture() {
     assert_eq!(stdout, input);
     assert!(stderr.join().unwrap().is_empty());
     // The hook sleeps before the capture; EOF must arrive before it, not at exit. Half the delay
-    // leaves room for a slow machine without depending on any timing inside cuw-core.
+    // leaves room for a slow machine without depending on any timing inside sovawatch-core.
     assert!(
         held_open_for >= Duration::from_millis(DELAY_MS / 2),
         "stdout stayed open until the shim exited ({held_open_for:?} between EOF and exit)"
@@ -475,22 +475,22 @@ fn watchdog_also_applies_in_argv_mode() {
 fn diag_appends_names_but_never_values() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = shim(tmp.path());
-    cmd.arg("--diag").env("CLAUDE_CUW_DIAG_TEST", "env-value-sentinel");
+    cmd.arg("--diag").env("CLAUDE_SOVA_DIAG_TEST", "env-value-sentinel");
     let out = run(&mut cmd, FULL.as_bytes());
     assert_eq!(out.code, Some(0));
-    assert_eq!(out.stdout, b"cuw diag ok\n");
+    assert_eq!(out.stdout, b"sovawatch diag ok\n");
     assert!(out.stderr.is_empty());
     let out2 = run(&mut cmd, b"");
-    assert_eq!(out2.stdout, b"cuw diag ok\n");
+    assert_eq!(out2.stdout, b"sovawatch diag ok\n");
 
     let log = fs::read_to_string(capture_dir(tmp.path()).join("_diag.log")).unwrap();
-    assert_eq!(log.matches("=== cuw-capture ").count(), 2, "blocks are appended: {log}");
+    assert_eq!(log.matches("=== sovawatch-capture ").count(), 2, "blocks are appended: {log}");
     assert!(log.contains("args: mode=--diag argc=1\n"), "{log}");
     assert!(!log.contains("cmdline"), "{log}");
     assert!(!log.contains(&*SHIM.to_ascii_lowercase()) && !log.contains(SHIM), "diag logged the shim's path: {log}");
     assert!(log.contains("parent: pid="), "{log}");
     assert!(log.contains("grandparent: "), "{log}");
-    assert!(log.contains("CLAUDE_CUW_DIAG_TEST"), "{log}");
+    assert!(log.contains("CLAUDE_SOVA_DIAG_TEST"), "{log}");
     assert!(log.contains(&format!("stdin_bytes: {}\n", FULL.len())), "{log}");
     assert!(log.contains("stdin_bytes: 0\n"), "{log}");
     assert!(
@@ -511,7 +511,7 @@ fn diag_appends_names_but_never_values() {
 fn diag_never_logs_argument_text() {
     let tmp = tempfile::tempdir().unwrap();
     let out = run(shim(tmp.path()).args(["--diag", r"C:\Users\tester\arg-sentinel.ps1", "-x"]), FULL.as_bytes());
-    assert_eq!(out.stdout, b"cuw diag ok\n");
+    assert_eq!(out.stdout, b"sovawatch diag ok\n");
     let log = fs::read_to_string(capture_dir(tmp.path()).join("_diag.log")).unwrap();
     assert!(log.contains("args: mode=--diag argc=3\n"), "{log}");
     assert!(!log.contains("arg-sentinel"), "diag leaked an argument: {log}");
@@ -542,15 +542,15 @@ fn argv_mode_resolves_extensionless_programs_via_path_and_pathext() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
-    fs::copy(CHILD.as_str(), bin.join("cuwchild.exe")).unwrap();
-    fs::write(bin.join("cuwwrap.cmd"), format!("@\"{}\" %*\r\n@exit /b %ERRORLEVEL%\r\n", *CHILD)).unwrap();
+    fs::copy(CHILD.as_str(), bin.join("sovachild.exe")).unwrap();
+    fs::write(bin.join("sovawrap.cmd"), format!("@\"{}\" %*\r\n@exit /b %ERRORLEVEL%\r\n", *CHILD)).unwrap();
     let path = std::env::join_paths(
         std::iter::once(bin.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
     )
     .unwrap();
     let input = fancy_input();
 
-    for (program, code) in [("cuwchild", 3), ("cuwwrap", 4), ("cuwwrap.cmd", 6)] {
+    for (program, code) in [("sovachild", 3), ("sovawrap", 4), ("sovawrap.cmd", 6)] {
         let data = tmp.path().join(format!("data-{program}"));
         let mut cmd = shim(&data);
         cmd.env("PATH", &path).args(["--", program, "--exit", &code.to_string()]);
@@ -571,7 +571,7 @@ fn cmd_pipe_form_preserves_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         let input = fancy_input();
         let mut cmd = Command::new("cmd");
-        cmd.raw_arg(format!(r#"/d /s /c ""{shim_path}" --tee | "{}"""#, *CHILD)).env("CUW_DATA_DIR", tmp.path());
+        cmd.raw_arg(format!(r#"/d /s /c ""{shim_path}" --tee | "{}"""#, *CHILD)).env("SOVA_DATA_DIR", tmp.path());
         let out = run(&mut cmd, &input);
         assert_eq!(out.code, Some(0), "{shim_path}");
         assert_eq!(out.stdout, input, "{shim_path}");
@@ -604,7 +604,7 @@ fn git_bash_pipe_form_preserves_bytes() {
     let input = fancy_input();
     let mut cmd = Command::new(bash);
     cmd.args(["-c", r#""$0" --tee | "$1""#, &SHIM.replace('\\', "/"), &CHILD.as_str().replace('\\', "/")])
-        .env("CUW_DATA_DIR", tmp.path());
+        .env("SOVA_DATA_DIR", tmp.path());
     let out = run(&mut cmd, &input);
     assert_eq!(out.code, Some(0));
     assert_eq!(out.stdout, input);

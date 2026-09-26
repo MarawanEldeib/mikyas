@@ -1,4 +1,4 @@
-//! Test helper for the `cuw-capture` integration tests; not part of the product (an example, so
+//! Test helper for the `sovawatch-capture` integration tests; not part of the product (an example, so
 //! it is never built into or installed with the shipped package).
 //!
 //! Echoes stdin to stdout byte for byte, then exits. Flags (any order):

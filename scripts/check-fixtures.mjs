@@ -6,7 +6,7 @@
 //
 // With --data-names it only checks file NAMES: any widget data file (settings backups,
 // wrap/state/alerts/... json, a backups/ dir) is rejected wherever it is, since one staged from a
-// CUW_DATA_DIR inside the repo would publish real usage data. .gitignore covers them too; this
+// SOVA_DATA_DIR inside the repo would publish real usage data. .gitignore covers them too; this
 // catches a forced add.
 import { readFileSync, existsSync } from "node:fs";
 import { basename } from "node:path";
@@ -16,7 +16,7 @@ const args = process.argv.slice(2);
 const namesOnly = args[0] === "--data-names";
 const files = (namesOnly ? args.slice(1) : args).filter((f) => existsSync(f));
 const DATA_NAME = /^(settings-.*|wrap|state|alerts|positions|watchdog|update-check)\.json$/i;
-const DATA_DIR = /(^|[\\/])(backups|\.cuw-data)[\\/]/i;
+const DATA_DIR = /(^|[\\/])(backups|\.sova-data)[\\/]/i;
 
 if (namesOnly) {
   const bad = files.filter((f) => DATA_NAME.test(basename(f)) || DATA_DIR.test(f));

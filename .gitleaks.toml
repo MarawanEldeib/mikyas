@@ -1,4 +1,4 @@
-title = "claude-usage-widget secret scan"
+title = "sovawatch secret scan"
 
 [extend]
 useDefault = true

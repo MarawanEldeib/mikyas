@@ -36,6 +36,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_LLVM_COV_VERSION: 0.9.1
   CARGO_DENY_VERSION: 0.20.2
+  CARGO_ABOUT_VERSION: 0.9.2
   # Rust line coverage floor for the whole workspace: 86.9% measured locally (2026-09), minus
   # headroom. Raise it as tests are added.
   COVERAGE_MIN_LINES: 83
@@ -125,8 +126,10 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo test --workspace
           if ($LASTEXITCODE -ne 0) { throw "cargo test failed ($LASTEXITCODE)" }
-          cargo llvm-cov report --summary-only
-          cargo llvm-cov report --lcov --output-path lcov.info --fail-under-lines $env:COVERAGE_MIN_LINES
+          # The released v0 status-line code the migration tests run is a test fixture, not app code.
+          $ignore = 'migrate[\\/]legacy_v0'
+          cargo llvm-cov report --summary-only --ignore-filename-regex $ignore
+          cargo llvm-cov report --lcov --output-path lcov.info --fail-under-lines $env:COVERAGE_MIN_LINES --ignore-filename-regex $ignore
           if ($LASTEXITCODE -ne 0) { throw "line coverage is below $env:COVERAGE_MIN_LINES%" }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
@@ -219,11 +222,11 @@ jobs:
         run: npm run build
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
-      # A debug build (the harness's CUW_BROWSER_ARGS only works with debug_assertions) that embeds
+      # A debug build (the harness's SOVA_BROWSER_ARGS only works with debug_assertions) that embeds
       # dist/: without tauri/custom-protocol a plain `cargo build` loads the devUrl
       # (http://localhost:1420), which nothing serves here, and the harness never finds its page.
       - name: Build the debug app
-        run: cargo build -p claude-usage-widget --features tauri/custom-protocol
+        run: cargo build -p sovawatch --features tauri/custom-protocol
       - name: App end-to-end tests
         run: npm run test:app-e2e
 
@@ -259,6 +262,16 @@ jobs:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - name: cargo-deny (advisories, licenses, bans, sources)
         run: cargo deny --locked check advisories licenses bans sources
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-about@${{ env.CARGO_ABOUT_VERSION }}
+      # THIRD_PARTY_NOTICES.md ships in the installer: every Rust crate of the Windows build and
+      # every npm package in the UI bundle must be listed with its license text.
+      - name: Third-party notices are up to date
+        run: |
+          npm ci --ignore-scripts
+          cargo fetch --locked
+          node scripts/gen-notices.mjs --check
 
   installer:
     name: Installer

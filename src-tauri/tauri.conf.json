@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Usage Widget",
+  "productName": "SovaWatch",
   "version": "0.1.0",
-  "identifier": "io.github.marawaneldeib.claude-usage-widget",
+  "identifier": "io.github.marawaneldeib.sovawatch",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -22,11 +22,14 @@
     "publisher": "Marawan Eldeib",
     "copyright": "Copyright (c) 2026 Marawan Eldeib. All rights reserved.",
     "licenseFile": "../TERMS.md",
-    "homepage": "https://github.com/MarawanEldeib/claude-usage-widget",
-    "shortDescription": "Floating, token-free Claude usage widget",
-    "longDescription": "Shows your Claude 5-hour and weekly usage, reset countdowns, model and context % in a small always-on-top widget. Reads only local files; never your Claude login.",
+    "homepage": "https://github.com/MarawanEldeib/sovawatch",
+    "shortDescription": "SovaWatch — usage widget for Claude Code & Claude Desktop",
+    "longDescription": "SovaWatch shows your Claude 5-hour and weekly usage, reset countdowns, model and context % from Claude Code and Claude Desktop in a small always-on-top widget. Reads only local files; never your Claude login. Independent project, not affiliated with or endorsed by Anthropic.",
     "category": "Utility",
-    "externalBin": ["binaries/cuw-capture"],
+    "externalBin": ["binaries/sovawatch-capture"],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

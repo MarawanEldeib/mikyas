@@ -3,7 +3,7 @@ import { MOCK_UPDATE, MOCK_UPDATE_ONE, createMockBackend } from "./mock";
 import type { UiState, UpdateInfo } from "./types";
 import { APP_VERSION, MAX_NOTE_CHARS, bannerText, bannerVisible, latestUrl, updateRows, updateStatus } from "./update";
 
-const page = (v: string) => `https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v${v}`;
+const page = (v: string) => `https://github.com/MarawanEldeib/sovawatch/releases/tag/v${v}`;
 const ONE: UpdateInfo = { latest: "0.2.0", count: 1, releases: [{ version: "0.2.0", url: page("0.2.0"), notes: ["a"] }], dismissed: false };
 const THREE: UpdateInfo = {
   latest: "0.4.0",

@@ -11,22 +11,22 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use cuw_core::capture::{self, CAPTURE_VERSION};
-use cuw_core::claude_settings::{self, SettingsError, Status};
-use cuw_core::cmdline::{self, CmdlineError, ShellKind, WrapMode};
-use cuw_core::engine::types::WindowKind;
-use cuw_core::history::{History, MAX_SPARK_BUCKETS};
-use cuw_core::paths::Paths;
-use cuw_core::saferead::SafeReader;
-use cuw_core::sources::desktop_usage;
-use cuw_core::sources::transcript;
-use cuw_core::time::Ms;
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
+use sovawatch_core::capture::{self, CAPTURE_VERSION};
+use sovawatch_core::claude_settings::{self, SettingsError, Status};
+use sovawatch_core::cmdline::{self, CmdlineError, ShellKind, WrapMode};
+use sovawatch_core::engine::types::WindowKind;
+use sovawatch_core::history::{History, MAX_SPARK_BUCKETS};
+use sovawatch_core::paths::Paths;
+use sovawatch_core::saferead::SafeReader;
+use sovawatch_core::sources::desktop_usage;
+use sovawatch_core::sources::transcript;
+use sovawatch_core::time::Ms;
 
 const SID: &str = "00000000-0000-4000-8000-000000000001";
 const NOW: Ms = 1_790_000_000_000;
-const SHIM: &str = "C:/Users/tester/AppData/Local/ClaudeUsageWidget/bin/cuw-capture.exe";
+const SHIM: &str = "C:/Users/tester/AppData/Local/SovaWatch/bin/sovawatch-capture.exe";
 /// Text that stands for message content, prompts and other private values: it must never come
 /// out of a parser. Contains multi-byte characters so a cut can land inside one.
 const MARKER: &str = "zqSECRETé😀zq";
@@ -226,7 +226,7 @@ proptest! {
 
 fn arb_shim_path() -> impl Strategy<Value = String> {
     prop::collection::vec("[A-Za-z0-9 ._-]{1,10}|[éøü漢字]{1,3}", 1..4)
-        .prop_map(|dirs| format!("C:/Users/tester/{}/cuw-capture.exe", dirs.join("/")))
+        .prop_map(|dirs| format!("C:/Users/tester/{}/sovawatch-capture.exe", dirs.join("/")))
 }
 
 proptest! {
@@ -625,15 +625,15 @@ fn history_append_after_a_torn_line_keeps_every_row() {
     .unwrap();
     let mut history = History::open(path.clone()).unwrap();
     assert_eq!(history.rows().len(), 1);
-    let state = cuw_core::engine::types::WindowState {
+    let state = sovawatch_core::engine::types::WindowState {
         kind: WindowKind::FiveHour,
         pct: 12.0,
-        reset: cuw_core::engine::types::ResetInfo::Unknown,
-        source: cuw_core::engine::types::Source::Cli,
+        reset: sovawatch_core::engine::types::ResetInfo::Unknown,
+        source: sovawatch_core::engine::types::Source::Cli,
         observed_at_ms: NOW + 60_000,
         stale: false,
         limit_reached: false,
-        phase: cuw_core::engine::types::Phase::Active,
+        phase: sovawatch_core::engine::types::Phase::Active,
     };
     assert!(history.record(&state).unwrap());
     let reopened = History::open(path).unwrap();

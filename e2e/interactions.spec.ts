@@ -34,7 +34,7 @@ test.describe("pill and card", () => {
   test("close=quit: the × quits", async ({ page }) => {
     const log = mockLog(page);
     await openWidget(page, { view: "pill", params: { close: "quit" } });
-    await page.getByRole("button", { name: "Quit Claude Usage" }).click();
+    await page.getByRole("button", { name: "Quit SovaWatch" }).click();
     await expect.poll(() => log).toContain("[mock] quit_app");
   });
 
@@ -270,6 +270,20 @@ test.describe("settings", () => {
     await page.getByRole("button", { name: "Check now" }).click();
     await expect(page.getByText(/Couldn't reach GitHub/)).toBeVisible();
   });
+
+  test("about: independence line and third-party licenses", async ({ page }) => {
+    const log = mockLog(page);
+    await openWidget(page, { view: "settings" });
+    await expect(page.getByText("Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.",
+      ),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Third-party licenses" }).click();
+    await expect.poll(() => log).toContain("[mock] open_third_party_notices");
+    await expect(page.getByRole("button", { name: "Quit SovaWatch" })).toBeVisible();
+  });
 });
 
 test.describe("connect Claude Code", () => {
@@ -279,7 +293,7 @@ test.describe("connect Claude Code", () => {
     await connect.click();
     await expect(page.getByText("Before", { exact: true })).toBeVisible();
     await expect(page.locator(".preview pre").first()).toHaveText("(no statusLine)");
-    await expect(page.locator(".preview pre.after")).toContainText("cuw-capture.exe");
+    await expect(page.locator(".preview pre.after")).toContainText("sovawatch-capture.exe");
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator(".preview")).toHaveCount(0);
     await connect.click();
@@ -356,7 +370,7 @@ test.describe("updates", () => {
     // Focus moves into the list.
     await expect(dialog.getByRole("button", { name: "Close the update list" })).toBeFocused();
     await dialog.getByRole("button", { name: "Update", exact: true }).click();
-    await expect.poll(() => log.join("\n")).toContain("open_url https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.4.0");
+    await expect.poll(() => log.join("\n")).toContain("open_url https://github.com/MarawanEldeib/sovawatch/releases/tag/v0.4.0");
     await expect(dialog).toHaveCount(0);
   });
 

@@ -49,23 +49,23 @@ allow = [
 # Our own crates are proprietary (LICENSE: all rights reserved) and never published. They have no
 # SPDX id, so each is clarified to a LicenseRef that only they use.
 [[licenses.clarify]]
-crate = "cuw-core"
+crate = "sovawatch-core"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 
 [[licenses.clarify]]
-crate = "cuw-capture"
+crate = "sovawatch-capture"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 
 [[licenses.clarify]]
-crate = "claude-usage-widget"
+crate = "sovawatch"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 
 [bans]
 multiple-versions = "warn"
-# Path dependencies (cuw-core) count as wildcards because the crates are not marked
+# Path dependencies (sovawatch-core) count as wildcards because the crates are not marked
 # `publish = false`; warn until they are, then switch to "deny".
 wildcards = "warn"
 allow-wildcard-paths = true

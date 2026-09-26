@@ -1,4 +1,4 @@
-//! `cuw-capture`: the statusline tee shim placed in front of the user's Claude Code statusline.
+//! `sovawatch-capture`: the statusline tee shim placed in front of the user's Claude Code statusline.
 //!
 //! Claude Code writes one JSON object to the statusline command's stdin and shows whatever the
 //! command prints. The shim must be invisible and fail-open: the user's statusline has to look
@@ -28,9 +28,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cuw_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
-use cuw_core::paths::Paths;
-use cuw_core::time::{self, Ms};
+use sovawatch_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
+use sovawatch_core::paths::Paths;
+use sovawatch_core::time::{self, Ms};
 
 /// If stdin has not closed this long after start, stop reading and go on with what arrived.
 const STDIN_WATCHDOG: Duration = Duration::from_secs(2);
@@ -80,7 +80,7 @@ fn run() -> i32 {
 fn run_mode(mode: Mode) -> i32 {
     match mode {
         Mode::Version => {
-            write_stdout(format!("cuw-capture {}\n", env!("CARGO_PKG_VERSION")).as_bytes());
+            write_stdout(format!("sovawatch-capture {}\n", env!("CARGO_PKG_VERSION")).as_bytes());
             0
         }
         Mode::Tee => {
@@ -343,14 +343,14 @@ fn diag() {
     let block = diag_block(&head, timed_out, argc);
     let _ = append_capped(&dir.join(DIAG_LOG), block.as_bytes(), DIAG_LOG_MAX);
     capture_input("diag", &head, timed_out);
-    write_stdout(b"cuw diag ok\n");
+    write_stdout(b"sovawatch diag ok\n");
 }
 
 // ---------------------------------------------------------------------------------------------
 // capture + error log
 // ---------------------------------------------------------------------------------------------
 
-/// Parses and saves the capture through cuw-core's one-call helper. Failures are logged (kind
+/// Parses and saves the capture through sovawatch-core's one-call helper. Failures are logged (kind
 /// only, never input content) and otherwise ignored.
 fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) {
     test_hook();
@@ -389,16 +389,16 @@ fn log_capture_result(dir: &Path, mode: &str, err: Option<&CaptureError>, timed_
     }
 }
 
-/// Debug builds only (release binaries never read it): `CUW_TEST_HOOK` lets the integration
+/// Debug builds only (release binaries never read it): `SOVA_TEST_HOOK` lets the integration
 /// tests make the capture panic (`panic`) or slow (`capture_delay_ms=N`) on demand.
 #[cfg(debug_assertions)]
 fn test_hook() {
-    let Some(hook) = std::env::var_os("CUW_TEST_HOOK") else {
+    let Some(hook) = std::env::var_os("SOVA_TEST_HOOK") else {
         return;
     };
     let hook = hook.to_string_lossy();
     if hook == "panic" {
-        panic!("CUW_TEST_HOOK=panic");
+        panic!("SOVA_TEST_HOOK=panic");
     }
     if let Some(ms) = hook.strip_prefix("capture_delay_ms=").and_then(|ms| ms.parse().ok()) {
         thread::sleep(Duration::from_millis(ms));
@@ -761,7 +761,7 @@ fn diag_block(stdin: &[u8], timed_out: bool, argc: usize) -> String {
         serde_json::from_slice(stdin.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(stdin)).ok();
     let (parent, grandparent) = ancestry();
     let mut s = String::new();
-    let _ = writeln!(s, "=== cuw-capture {} --diag at {} ===", env!("CARGO_PKG_VERSION"), iso_now());
+    let _ = writeln!(s, "=== sovawatch-capture {} --diag at {} ===", env!("CARGO_PKG_VERSION"), iso_now());
     let _ = writeln!(s, "args: mode=--diag argc={argc}");
     let _ = writeln!(s, "parent: {parent}");
     let _ = writeln!(s, "grandparent: {grandparent}");
@@ -862,7 +862,7 @@ fn ancestry() -> (String, String) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use cuw_core::capture::{CtxInfo, ModelInfo, RateLimit};
+    use sovawatch_core::capture::{CtxInfo, ModelInfo, RateLimit};
 
     use super::*;
 
@@ -1042,6 +1042,6 @@ mod tests {
         assert!(comspec.is_absolute() && comspec.is_file(), "{}", comspec.display());
         assert!(comspec.to_string_lossy().to_ascii_lowercase().ends_with("cmd.exe"));
         assert_eq!(resolve_program(OsStr::new("x.exe")), PathBuf::from("x.exe"));
-        assert_eq!(resolve_program(OsStr::new("cuw-no-such-program")), PathBuf::from("cuw-no-such-program"));
+        assert_eq!(resolve_program(OsStr::new("sova-no-such-program")), PathBuf::from("sova-no-such-program"));
     }
 }

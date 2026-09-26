@@ -1,0 +1,18 @@
+{{#each overview}}
+- {{{name}}} ({{id}}): {{count}} crate{{#if (gt count 1)}}s{{/if}}
+{{/each}}
+
+{{#each licenses}}
+### {{{name}}} ({{id}})
+
+Used by:
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{/if}}
+{{/each}}
+
+~~~~text
+{{{text}}}
+~~~~
+
+{{/each}}

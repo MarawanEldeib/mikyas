@@ -13,10 +13,10 @@
 use std::sync::Arc;
 
 use chrono::TimeZone;
-use cuw_core::engine::types::{SparkPoint, WindowKind};
-use cuw_core::history::{DayUsage, History, ViewRange, WindowHistory};
-use cuw_core::time::{DAY_MS, Ms, now_ms};
 use serde::Serialize;
+use sovawatch_core::engine::types::{SparkPoint, WindowKind};
+use sovawatch_core::history::{DayUsage, History, ViewRange, WindowHistory};
+use sovawatch_core::time::{DAY_MS, Ms, now_ms};
 use tauri::State;
 
 use crate::localtime::{local_day_starts, next_local_hour};
@@ -92,8 +92,8 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
 mod tests {
     use super::*;
     use chrono::Utc;
-    use cuw_core::engine::types::{Phase, ResetInfo, Source, WindowState};
-    use cuw_core::time::{HOUR_MS, MINUTE_MS};
+    use sovawatch_core::engine::types::{Phase, ResetInfo, Source, WindowState};
+    use sovawatch_core::time::{HOUR_MS, MINUTE_MS};
 
     /// 2026-09-24T10:17:00Z.
     const NOW: Ms = 1_790_208_000_000 + 10 * HOUR_MS + 17 * MINUTE_MS;

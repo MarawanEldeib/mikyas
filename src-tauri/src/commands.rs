@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use cuw_core::engine::types::Snapshot;
-use cuw_core::time::now_ms;
+use sovawatch_core::engine::types::Snapshot;
+use sovawatch_core::time::now_ms;
 use tauri::{AppHandle, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -93,6 +93,34 @@ pub fn open_data_folder(shared: Shr<'_>) -> Result<(), String> {
     let dir = shared.paths.data_root().to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::process::Command::new("explorer").arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// File name of the bundled third-party license notices (`bundle.resources` in tauri.conf.json).
+pub const NOTICES_FILE: &str = "THIRD_PARTY_NOTICES.md";
+
+/// Opens the bundled third-party license notices with the system's viewer for `.md` files,
+/// through Windows' own explorer.exe by absolute path (the helper `open_url` uses). Nothing is
+/// downloaded; only the file inside the app's resource folder can be opened.
+#[tauri::command]
+pub fn open_third_party_notices(app: AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let windows = crate::updates::windows_dir().ok_or("The Windows folder was not found")?;
+    let (exe, file) = notices_command(&resources, &windows)?;
+    std::process::Command::new(exe).arg(file).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The program and argument that open the notices: `<Windows>\explorer.exe <resources>\NOTICES_FILE`.
+/// A missing file is an error rather than an explorer window on some other path.
+pub fn notices_command(
+    resources: &std::path::Path,
+    windows: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let file = resources.join(NOTICES_FILE);
+    if !file.is_file() {
+        return Err(format!("{NOTICES_FILE} is missing from the app folder; reinstall to restore it"));
+    }
+    Ok((crate::updates::explorer_path(windows), file))
 }
 
 #[tauri::command]
@@ -255,7 +283,7 @@ pub fn quit(app: &AppHandle, shared: &Shared) {
 mod tests {
     use super::*;
     use crate::pipeline::{Dirty, PipelineState};
-    use cuw_core::paths::Paths;
+    use sovawatch_core::paths::Paths;
 
     fn shared() -> (tempfile::TempDir, Shared) {
         let tmp = tempfile::tempdir().unwrap();
@@ -263,6 +291,28 @@ mod tests {
         let out = PipelineState::new(paths.clone()).tick(1_000, &Settings::default(), &Dirty::default());
         let shared = Shared::new(paths, Settings::default(), Snapshot::clone(&out.snapshot));
         (tmp, shared)
+    }
+
+    #[test]
+    fn notices_open_only_the_bundled_file_through_explorer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let windows = std::path::Path::new(r"C:\Windows");
+        assert!(notices_command(tmp.path(), windows).unwrap_err().contains(NOTICES_FILE), "missing file");
+        std::fs::write(tmp.path().join(NOTICES_FILE), "# notices\n").unwrap();
+        let (exe, file) = notices_command(tmp.path(), windows).unwrap();
+        assert_eq!(exe, windows.join("explorer.exe"));
+        assert_eq!(file, tmp.path().join(NOTICES_FILE));
+    }
+
+    /// The installer ships the notices next to the app, where `resource_dir()` finds them, and the
+    /// file exists at the repository root.
+    #[test]
+    fn notices_are_bundled_as_a_resource() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["bundle"]["resources"]["../THIRD_PARTY_NOTICES.md"], NOTICES_FILE);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let text = std::fs::read_to_string(root.join(NOTICES_FILE)).unwrap();
+        assert!(text.contains("MPL-2.0") && text.contains("svelte"), "Rust crates and the npm runtime are covered");
     }
 
     #[test]

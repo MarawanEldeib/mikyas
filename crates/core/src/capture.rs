@@ -1,4 +1,4 @@
-//! Statusline capture: what `cuw-capture.exe` saves from Claude Code's statusline JSON.
+//! Statusline capture: what `sovawatch-capture.exe` saves from Claude Code's statusline JSON.
 //!
 //! Claude Code pipes a JSON object to the statusline command on every update. The shim forwards
 //! those bytes unchanged to the user's real statusline and then calls [`capture_from_bytes`],
