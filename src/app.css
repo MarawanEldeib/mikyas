@@ -31,6 +31,28 @@
   --on-accent: #002a3d;
   --focus: #ffffff;
 
+  /* Chrome accents (Settings → Layout); "auto" keeps the stock chrome above. In each theme an
+     accent and its hover are >= 3:1 on the surface (focus rings, toggles, sliders) and its
+     -on text is >= 4.5:1 on both (color.test.ts checks every value). */
+  --accent-blue: #7ab8ff;
+  --accent-blue-hover: #6ba6ec;
+  --accent-blue-on: #001b3f;
+  --accent-violet: #c3a6ff;
+  --accent-violet-hover: #b294f0;
+  --accent-violet-on: #25104e;
+  --accent-teal: #4fd6c4;
+  --accent-teal-hover: #46c1b0;
+  --accent-teal-on: #00302a;
+  --accent-green: #7fd494;
+  --accent-green-hover: #70c084;
+  --accent-green-on: #04321b;
+  --accent-amber: #ffc45e;
+  --accent-amber-hover: #ebb052;
+  --accent-amber-on: #3b2600;
+  --accent-rose: #ff9dba;
+  --accent-rose-hover: #ec8aa8;
+  --accent-rose-on: #4a0b24;
+
   --ok: #6ccb5f;
   --ok-fill: #6ccb5f;
   --warn: #ffb65c;
@@ -76,6 +98,25 @@
     --on-accent: #ffffff;
     --focus: #000000;
 
+    --accent-blue: #1259c3;
+    --accent-blue-hover: #2468cc;
+    --accent-blue-on: #ffffff;
+    --accent-violet: #6b40d1;
+    --accent-violet-hover: #7850d6;
+    --accent-violet-on: #ffffff;
+    --accent-teal: #00756a;
+    --accent-teal-hover: #0b8175;
+    --accent-teal-on: #ffffff;
+    --accent-green: #1b7a35;
+    --accent-green-hover: #248540;
+    --accent-green-on: #ffffff;
+    --accent-amber: #955600;
+    --accent-amber-hover: #a15f00;
+    --accent-amber-on: #ffffff;
+    --accent-rose: #c0275d;
+    --accent-rose-hover: #c7386b;
+    --accent-rose-on: #ffffff;
+
     --ok: #0b6b0b;
     --ok-fill: #10930f;
     --warn: #8a4b00;
@@ -100,6 +141,23 @@
 :root[data-effect="none"],
 :root:not(.mock)[data-effect="auto"] { --surface-a: 0.97; }
 
+/* A named accent recolours the chrome only: focus rings, toggles, sliders, selected segments,
+   hover fills and the sparkline. The usage colours (--ok/--warn/--crit) keep their meaning. */
+:root[data-accent="blue"] { --accent: var(--accent-blue); --accent-hover: var(--accent-blue-hover); --on-accent: var(--accent-blue-on); }
+:root[data-accent="violet"] { --accent: var(--accent-violet); --accent-hover: var(--accent-violet-hover); --on-accent: var(--accent-violet-on); }
+:root[data-accent="teal"] { --accent: var(--accent-teal); --accent-hover: var(--accent-teal-hover); --on-accent: var(--accent-teal-on); }
+:root[data-accent="green"] { --accent: var(--accent-green); --accent-hover: var(--accent-green-hover); --on-accent: var(--accent-green-on); }
+:root[data-accent="amber"] { --accent: var(--accent-amber); --accent-hover: var(--accent-amber-hover); --on-accent: var(--accent-amber-on); }
+:root[data-accent="rose"] { --accent: var(--accent-rose); --accent-hover: var(--accent-rose-hover); --on-accent: var(--accent-rose-on); }
+
+:root[data-accent]:not([data-accent="auto"]) {
+  --focus: var(--accent);
+  --spark: var(--accent);
+  --fill-hover: color-mix(in srgb, var(--accent) 14%, transparent);
+  --fill-press: color-mix(in srgb, var(--accent) 8%, transparent);
+  --fill-control-hover: color-mix(in srgb, var(--accent) 16%, var(--fill-control));
+}
+
 *,
 *::before,
 *::after {
@@ -123,9 +181,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* UI size (Settings → Layout) scales the whole widget; Rust scales the window to match. */
 #app {
   position: fixed;
   inset: 0;
+  zoom: var(--ui-scale, 1);
 }
 
 button,
@@ -216,9 +276,18 @@ html.mock #app {
     0 2px 6px rgb(0 0 0 / 0.2);
 }
 
+/* Window sizes at scale 1 (window.rs; the zoom above scales the stage like Rust scales the
+   window). The card loses 36px without burn lines and 30px without the session header. */
 html.mock[data-view="pill"] { --mock-w: 240px; --mock-h: 72px; }
-html.mock[data-view="card"] { --mock-w: 320px; --mock-h: 232px; }
+html.mock[data-view="card"] { --mock-w: 320px; --mock-h: calc(232px - var(--cut-burn, 0px) - var(--cut-session, 0px)); }
 html.mock[data-view="settings"] { --mock-w: 320px; --mock-h: 440px; }
+html.mock[data-view="sessions"] { --mock-w: 320px; --mock-h: 300px; }
+html.mock[data-view="history"] { --mock-w: 360px; --mock-h: 380px; }
+html.mock:has(.card[data-no-burn]) { --cut-burn: 36px; }
+html.mock:has(.card[data-no-session]) { --cut-session: 30px; }
+/* The collapsed dock strip (dock.rs); DockBar marks <html> while it is shown. */
+html.mock[data-dock-collapsed]:is([data-dock="left"], [data-dock="right"]) { --mock-w: 36px; --mock-h: 156px; }
+html.mock[data-dock-collapsed][data-dock="top"] { --mock-w: 232px; --mock-h: 34px; }
 
 /* Stand-ins for the OS backdrop Rust applies behind the real window. */
 html.mock[data-effect="auto"] #app,

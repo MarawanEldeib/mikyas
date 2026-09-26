@@ -1,14 +1,27 @@
 <script lang="ts">
+  import { clampPct, fillColor } from "../color";
+  import { startDock } from "../dock";
   import { ctxLabel, estimateTooltip, formatAge, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
+  import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
+  import Icon from "./Icon.svelte";
   import Ring from "./Ring.svelte";
 
   const snap = $derived(app.snapshot);
   const shown = $derived(pickWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
   const warn = $derived(notices(snap));
   const session = $derived(snap?.session ?? null);
+  const bars = $derived(app.settings?.gauge_style === "bar");
+
+  // Slides the widget back into its strip when the pointer leaves (edge dock).
+  startDock(app, api.setDockExpanded);
+
+  /** Bar colour: neutral while stale or waiting for the first reading after a reset. */
+  function barColor(w: WindowView): string {
+    return w.stale || w.phase === "reset_awaiting_data" ? "var(--fg-3)" : fillColor(w.pct);
+  }
 
   function pickWindows(ws: WindowView[]): WindowView[] {
     const main = ["five_hour", "seven_day"]
@@ -39,6 +52,20 @@
     <div class="empty">
       <span class="empty-title">No usage data yet</span>
       <span class="empty-sub">Double-click to set up</span>
+    </div>
+  {:else if bars}
+    <!-- One grid for both rows so the bars line up whatever the labels and countdowns say. -->
+    <div class="bars">
+      {#each shown as w (w.kind)}
+        <div class="brow" role="img" aria-label={describe(w)}>
+          <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
+          <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={barColor(w)}></span></span>
+          <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
+            {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{/if}
+          </span>
+          <span class="count bcount" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
+        </div>
+      {/each}
     </div>
   {:else}
     {#each shown as w, i (w.kind)}
@@ -150,6 +177,71 @@
     flex-direction: column;
     gap: 2px;
     padding-left: 2px;
+  }
+  /* Bars: label · bar · % · countdown, two rows. Fixed number columns keep the bars from
+     twitching as the countdown text changes; the widest countdown "~23h 59m" fits in 56px. */
+  .bars {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 36px 56px;
+    column-gap: 8px;
+    row-gap: 10px;
+    padding: 0 2px;
+  }
+  .brow {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: center;
+    min-width: 0;
+  }
+  .track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--track);
+    overflow: hidden;
+  }
+  .bfill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    transition:
+      width var(--dur) var(--ease),
+      background-color var(--dur) ease-out;
+  }
+  .bpct {
+    display: flex;
+    justify-content: flex-end;
+    align-items: baseline;
+    font-family: var(--font-display);
+    font-size: 14px;
+    line-height: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  .bpct .u {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg-2);
+    margin-left: 0.5px;
+  }
+  .bpct.muted {
+    color: var(--fg-2);
+  }
+  .bpct.crit {
+    align-self: center;
+    color: var(--crit);
+  }
+  .bcount {
+    justify-self: end;
+    max-width: 100%;
+    font-size: 12.5px;
+    line-height: 18px;
+  }
+  .bcount .u {
+    font-size: 10.5px;
   }
   .empty-title {
     font-weight: 600;

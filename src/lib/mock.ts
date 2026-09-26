@@ -2,8 +2,10 @@
 // URL params (?scenario=…&view=…&effect=…&ghost=1&conn=…). Loaded lazily by ipc.ts only when
 // not running inside Tauri. All data here is synthetic.
 
+import { ACCENTS } from "./color";
 import { DAY, HOUR, MIN, SEC } from "./format";
 import type { Backend, EventName, Unlisten } from "./ipc";
+import { parseCardRows } from "./layout";
 import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
 import type {
   Burn,
@@ -396,11 +398,13 @@ export function createMockBackend(params: URLSearchParams): Backend {
     toggle_hotkey: "Ctrl+Alt+H",
     auto_hide_fullscreen: true,
     check_updates: false,
-    accent: "auto",
-    gauge_style: "ring",
-    ui_scale: 1,
-    card_rows: { sparklines: true, burn: true, session: true, sources: true },
-    dock: "off",
+    // Appearance: ?accent=teal &gauge=bar &scale=1.15 &dock=left|right|top &rows=sparklines,sources
+    // (rows lists the card rows to show; "none" hides them all).
+    accent: pick(params.get("accent"), ACCENTS, "auto"),
+    gauge_style: pick(params.get("gauge"), ["ring", "bar"] as const, "ring"),
+    ui_scale: Math.min(1.3, Math.max(0.85, Number(params.get("scale")) || 1)),
+    card_rows: parseCardRows(params.get("rows")),
+    dock: pick(params.get("dock"), ["off", "left", "right", "top"] as const, "off"),
   };
   let ui: UiState = {
     view,
