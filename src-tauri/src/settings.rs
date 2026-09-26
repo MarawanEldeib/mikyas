@@ -1,13 +1,18 @@
 //! User settings, persisted as `<data_root>/settings.json`. Field names and defaults mirror the
-//! `Settings` interface in `src/lib/types.ts`; unknown or missing fields fall back to defaults so
-//! an older or hand-edited file never prevents the app from starting.
+//! `Settings` interface in `src/lib/types.ts`; unknown, missing or invalid fields fall back to
+//! their defaults one by one, so an older or hand-edited file never prevents the app from
+//! starting and never loses its other fields. A file that is not JSON at all is renamed to
+//! `settings.json.bad-<ms>` before the defaults can overwrite it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::write_atomic;
+use cuw_core::time::{MINUTE_MS, Ms, now_ms};
+
+use crate::diag::log;
+use crate::state::save_json;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -228,8 +233,8 @@ impl Settings {
         self
     }
 
-    pub fn stale_after_ms(&self) -> i64 {
-        i64::from(self.stale_min) * 60_000
+    pub fn stale_after_ms(&self) -> Ms {
+        Ms::from(self.stale_min) * MINUTE_MS
     }
 }
 
@@ -237,22 +242,62 @@ fn clamp_or(v: f32, lo: f32, hi: f32, fallback: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { fallback }
 }
 
-/// Loads settings; a missing or unreadable file yields the defaults.
+/// Loads settings (see the module docs); a missing or unreadable file yields the defaults.
 pub fn load(path: &Path) -> Settings {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| {
-            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes).to_vec();
-            serde_json::from_slice::<Settings>(&bytes).ok()
-        })
-        .unwrap_or_default()
-        .sanitized()
+    let Ok(bytes) = std::fs::read(path) else {
+        return Settings::default().sanitized();
+    };
+    let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    match serde_json::from_slice::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(file)) => merge_fields(&file),
+        _ => {
+            set_aside(path);
+            Settings::default()
+        }
+    }
+    .sanitized()
+}
+
+/// The defaults with every field of `file` that deserialises on its own applied.
+fn merge_fields(file: &serde_json::Map<String, serde_json::Value>) -> Settings {
+    let defaults = Settings::default();
+    let whole = || -> Option<Settings> {
+        let mut value = serde_json::to_value(&defaults).ok()?;
+        let obj = value.as_object_mut()?;
+        for (k, v) in file {
+            obj.insert(k.clone(), v.clone());
+        }
+        serde_json::from_value(value).ok()
+    };
+    if let Some(settings) = whole() {
+        return settings;
+    }
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(&defaults) else {
+        return defaults;
+    };
+    for (k, v) in file {
+        let Some(default) = merged.get(k).cloned() else { continue };
+        merged.insert(k.clone(), v.clone());
+        if serde_json::from_value::<Settings>(serde_json::Value::Object(merged.clone())).is_err() {
+            log(&format!("settings.json: invalid `{k}`, using its default"));
+            merged.insert(k.clone(), default);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or(defaults)
+}
+
+/// Renames an unparsable settings file so the next save does not overwrite it.
+fn set_aside(path: &Path) {
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".bad-{}", now_ms()));
+    match std::fs::rename(path, &aside) {
+        Ok(()) => log("settings.json is not valid JSON; kept it as settings.json.bad-<ms> and using defaults"),
+        Err(e) => log(&format!("settings.json is not valid JSON and could not be set aside: {e}")),
+    }
 }
 
 pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    let mut bytes = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
-    bytes.push(b'\n');
-    write_atomic(path, &bytes)
+    save_json(path, settings)
 }
 
 /// Applies a partial update (`Partial<Settings>` from the UI). Unknown and internal keys are
@@ -395,8 +440,39 @@ mod tests {
         assert_eq!(s.view, ViewMode::Pill);
         assert_eq!(s.opacity, 1.0);
         assert_eq!(s.hotkey, "Ctrl+Alt+U");
+    }
+
+    #[test]
+    fn one_invalid_field_keeps_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        std::fs::write(
+            &p,
+            br#"{"view":"pill","opacity":"loud","hotkey":"Ctrl+Alt+K","hide_hint_shown":true,"card_rows":{"burn":false}}"#,
+        )
+        .unwrap();
+        let s = load(&p);
+        assert_eq!(s.view, ViewMode::Pill);
+        assert_eq!(s.opacity, 1.0, "the bad field falls back alone");
+        assert_eq!(s.hotkey, "Ctrl+Alt+K");
+        assert!(s.hide_hint_shown, "internal fields load too");
+        assert!(!s.card_rows.burn && s.card_rows.sparklines);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1, "a readable file is kept as is");
+    }
+
+    #[test]
+    fn an_unparsable_file_is_set_aside_before_it_can_be_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
         std::fs::write(&p, b"{not json").unwrap();
         assert_eq!(load(&p), Settings::default());
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].starts_with("settings.json.bad-"), "{names:?}");
+        assert_eq!(std::fs::read(tmp.path().join(&names[0])).unwrap(), b"{not json");
     }
 
     #[test]

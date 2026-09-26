@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cuw_core::ctx_alerts::CtxAlertState;
@@ -96,7 +96,8 @@ pub struct Shared {
     pub paths: Paths,
     pub settings: Mutex<Settings>,
     pub ui: Mutex<UiState>,
-    pub snapshot: Mutex<Snapshot>,
+    /// The latest snapshot, shared with the pipeline (which replaces it) without copying.
+    pub snapshot: Mutex<Arc<Snapshot>>,
     pub pipeline: Mutex<Option<Sender<Msg>>>,
     /// Set once the user chose Quit, so exit requests are no longer prevented.
     pub quitting: AtomicBool,
@@ -121,7 +122,7 @@ impl Shared {
             paths,
             settings: Mutex::new(settings),
             ui: Mutex::new(ui),
-            snapshot: Mutex::new(snapshot),
+            snapshot: Mutex::new(Arc::new(snapshot)),
             pipeline: Mutex::new(None),
             quitting: AtomicBool::new(false),
             connect_lock: Mutex::new(()),
@@ -148,12 +149,14 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Reads a JSON file; missing or malformed → `T::default()`.
+/// Reads a JSON file; missing or malformed → `T::default()` (a malformed one is logged by name).
 pub fn load_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> T {
-    fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let Ok(bytes) = fs::read(path) else { return T::default() };
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        crate::diag::log(&format!("{name} is not valid; using defaults"));
+        T::default()
+    })
 }
 
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {

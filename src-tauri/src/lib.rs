@@ -5,16 +5,18 @@ mod cli;
 mod commands;
 mod connect;
 mod context_menu;
+mod diag;
 mod display_positions;
 mod dock;
 mod fullscreen;
 mod history_view;
 mod hotkey;
-mod notify;
+mod localtime;
 mod pipeline;
 mod platform;
 mod settings;
 mod state;
+mod toast;
 mod tray;
 mod tray_icon;
 mod updates;
@@ -22,6 +24,9 @@ mod visibility;
 mod watchdog;
 mod watcher;
 mod window;
+
+/// The toast module's former name, kept until every caller says `crate::toast`.
+use toast as notify;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -33,8 +38,14 @@ use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_window_state::StateFlags;
 
-use crate::pipeline::{Dirty, Engine};
+use crate::pipeline::{Dirty, PipelineState};
 use crate::state::Shared;
+
+/// Process hardening that must run before anything loads a DLL: `main` calls it first.
+///
+/// Forwards to the platform layer's DLL search-order restriction once that exists; until then
+/// it does nothing (merge note: call `platform::restrict_dll_search()` here).
+pub fn restrict_dll_search() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,16 +54,15 @@ pub fn run() {
     }
 
     let paths = Paths::detect();
+    diag::init(paths.data_root());
     let settings = settings::load(&paths.settings_file());
-
-    // The first snapshot is computed before the window exists, so the UI never starts empty.
-    let mut engine = Engine::new(paths.clone());
-    let first = engine.tick(now_ms(), &settings, &Dirty::all());
-    let shared = Arc::new(Shared::new(paths, settings, first.snapshot.clone()));
-    let startup_alerts = first.alerts;
+    // Reads only: a second launch exits in the single-instance plugin before anything is written.
+    let mut pipeline_state = PipelineState::new(paths.clone());
+    let shared = Arc::new(Shared::new(paths, settings, pipeline_state.preview(now_ms())));
 
     let app = tauri::Builder::default()
-        // Must be registered first: a second launch just surfaces the running widget.
+        // Must be registered first: a second launch just surfaces the running widget (and exits
+        // while the plugins are set up, before the `setup` below runs).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let shared = app.state::<Arc<Shared>>().inner().clone();
             visibility::apply(app, &shared, visibility::Event::UserShow);
@@ -98,6 +108,9 @@ pub fn run() {
                 shared.settings().start_with_windows = enabled;
             }
             let settings = shared.settings().clone();
+            // The first full tick runs before the window exists, so the UI never starts empty.
+            let first = pipeline_state.tick(now_ms(), &settings, &Dirty::all());
+            *state::lock(&shared.snapshot) = first.snapshot.clone();
             tray::create(&handle, &shared)?;
             window::create(&handle, &settings)?;
             hotkey::register_all(&handle, &shared);
@@ -112,8 +125,8 @@ pub fn run() {
             let thread_handle = handle.clone();
             std::thread::Builder::new()
                 .name("cuw-pipeline".into())
-                .spawn(move || pipeline::run(thread_handle, thread_shared, engine, rx))?;
-            for event in &startup_alerts {
+                .spawn(move || pipeline::run(thread_handle, thread_shared, pipeline_state, rx))?;
+            for event in &first.alerts {
                 notify::show_alert(&handle, event);
             }
             Ok(())

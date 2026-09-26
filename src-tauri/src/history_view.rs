@@ -1,7 +1,7 @@
 //! `get_history` command: aggregates the local history into the History view.
 //! Shapes mirror `HistoryData` in `src/lib/types.ts`.
 //!
-//! - The command is synchronous (Tauri runs it on the main thread) and only reads: it opens its
+//! - The command runs on a blocking worker (never the main thread) and only reads: it opens its
 //!   own copy of `history.jsonl` (the pipeline may append meanwhile; a torn last line is skipped)
 //!   and aggregates each window with `History::view`.
 //! - Range: `to_ms` is now rounded up to the next local hour, `from_ms = to_ms - days × 24 h`
@@ -12,13 +12,14 @@
 
 use std::sync::Arc;
 
-use chrono::{NaiveDate, Offset, TimeZone};
+use chrono::TimeZone;
 use cuw_core::engine::types::{SparkPoint, WindowKind};
 use cuw_core::history::{DayUsage, History, ViewRange, WindowHistory};
-use cuw_core::time::{DAY_MS, HOUR_MS, Ms, now_ms};
+use cuw_core::time::{DAY_MS, Ms, now_ms};
 use serde::Serialize;
 use tauri::State;
 
+use crate::localtime::{local_day_starts, next_local_hour};
 use crate::state::Shared;
 
 /// Longest range the view asks for (the history keeps 14 days).
@@ -71,10 +72,14 @@ impl From<WindowHistory> for HistoryWindow {
 }
 
 #[tauri::command]
-pub fn get_history(shared: State<'_, Arc<Shared>>, days: u32) -> Result<HistoryData, String> {
-    let history = History::open(shared.paths.history_file())
-        .map_err(|e| format!("Couldn't read the usage history: {e}"))?;
-    Ok(build(&history, days, now_ms(), &chrono::Local))
+pub async fn get_history(shared: State<'_, Arc<Shared>>, days: u32) -> Result<HistoryData, String> {
+    let path = shared.paths.history_file();
+    tauri::async_runtime::spawn_blocking(move || {
+        let history = History::open(path).map_err(|e| format!("Couldn't read the usage history: {e}"))?;
+        Ok(build(&history, days, now_ms(), &chrono::Local))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The view data for the last `days` days as seen at `now_ms` in time zone `tz`.
@@ -82,7 +87,7 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
     let days = days.clamp(1, MAX_DAYS);
     let to_ms = next_local_hour(now_ms, tz);
     let from_ms = to_ms - i64::from(days) * DAY_MS;
-    let day_starts = local_day_starts(from_ms, to_ms - 1, tz);
+    let day_starts = local_day_starts(from_ms, to_ms - 1, MAX_DAYS as usize, tz);
     let range = ViewRange {
         from_ms,
         to_ms,
@@ -101,46 +106,12 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
     }
 }
 
-/// The next full hour of the local clock after `now_ms` (half-hour zones included).
-fn next_local_hour<Tz: TimeZone>(now_ms: Ms, tz: &Tz) -> Ms {
-    let offset_ms = tz
-        .timestamp_millis_opt(now_ms)
-        .single()
-        .map_or(0, |dt| i64::from(dt.offset().fix().local_minus_utc()) * 1_000);
-    (now_ms + offset_ms).div_euclid(HOUR_MS).saturating_add(1) * HOUR_MS - offset_ms
-}
-
-/// Local midnights of every calendar day from the one containing `from_ms` to the one containing
-/// `last_ms`, ascending.
-pub(crate) fn local_day_starts<Tz: TimeZone>(from_ms: Ms, last_ms: Ms, tz: &Tz) -> Vec<Ms> {
-    let date_of = |t: Ms| tz.timestamp_millis_opt(t).single().map(|dt| dt.date_naive());
-    let (Some(mut day), Some(last)) = (date_of(from_ms), date_of(last_ms)) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    // Bounded: a day more than the widest range covers guards against a bogus clock.
-    while day <= last && out.len() <= MAX_DAYS as usize + 1 {
-        out.extend(local_midnight(tz, day));
-        let Some(next) = day.succ_opt() else { break };
-        day = next;
-    }
-    out
-}
-
-/// First instant of a local calendar day. Where midnight does not exist (zones that switch to
-/// daylight time at 00:00), the day starts at the first valid hour after it.
-fn local_midnight<Tz: TimeZone>(tz: &Tz, day: NaiveDate) -> Option<Ms> {
-    (0..=2)
-        .find_map(|hour| tz.from_local_datetime(&day.and_hms_opt(hour, 0, 0)?).earliest())
-        .map(|dt| dt.timestamp_millis())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{FixedOffset, Local, Timelike, Utc};
+    use chrono::Utc;
     use cuw_core::engine::types::{Phase, ResetInfo, Source, WindowState};
-    use cuw_core::time::MINUTE_MS;
+    use cuw_core::time::{HOUR_MS, MINUTE_MS};
 
     /// 2026-09-24T10:17:00Z.
     const NOW: Ms = 1_790_208_000_000 + 10 * HOUR_MS + 17 * MINUTE_MS;
@@ -180,15 +151,6 @@ mod tests {
     }
 
     #[test]
-    fn half_hour_zones_align_to_the_local_hour() {
-        let india = FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
-        assert_eq!(next_local_hour(NOW, &india), 1_790_208_000_000 + 10 * HOUR_MS + 30 * MINUTE_MS);
-        // 2026-09-24 00:00 in +05:30 is 2026-09-23T18:30Z.
-        let starts = local_day_starts(NOW - HOUR_MS, NOW, &india);
-        assert_eq!(starts, vec![1_790_208_000_000 - 5 * HOUR_MS - 30 * MINUTE_MS]);
-    }
-
-    #[test]
     fn days_cover_every_local_date_in_the_range() {
         let (_dir, h) = history_with(&[
             (NOW - 30 * HOUR_MS, WindowKind::SevenDay, 40.0),
@@ -216,24 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn local_day_starts_are_midnights() {
-        let starts = local_day_starts(NOW - 14 * DAY_MS, NOW, &Local);
-        assert_eq!(starts.len(), 15);
-        for w in starts.windows(2) {
-            let len = w[1] - w[0];
-            assert!((23 * HOUR_MS..=25 * HOUR_MS).contains(&len), "{len}");
-        }
-        for s in &starts {
-            let dt = Local.timestamp_millis_opt(*s).single().unwrap();
-            assert_eq!((dt.minute(), dt.second()), (0, 0));
-            assert!(dt.hour() <= 2, "midnight, or the first hour after a DST gap");
-        }
-        assert!(starts[0] <= NOW - 14 * DAY_MS);
-    }
-
-    #[test]
-    fn get_history_reads_many_rows_quickly_enough() {
-        // About two weeks of busy use; the command runs on the UI thread.
+    fn get_history_reads_many_rows() {
+        // About two weeks of busy use.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.jsonl");
         let mut text = String::new();
@@ -252,7 +198,11 @@ mod tests {
         assert_eq!(h.rows().len(), 20_000);
         assert_eq!(d.windows.len(), 2);
         assert_eq!(d.windows[0].points.len(), 14 * 24);
-        // Generous for unoptimised test builds; release builds take a fraction of this.
-        assert!(elapsed.as_millis() < 1_000, "{elapsed:?}");
+        assert_eq!(d.windows[0].days.len(), 15);
+        // Timing only means something in optimised builds (and even then only as a smoke check:
+        // a busy CI machine can be slow).
+        if !cfg!(debug_assertions) {
+            assert!(elapsed.as_secs() < 10, "{elapsed:?}");
+        }
     }
 }

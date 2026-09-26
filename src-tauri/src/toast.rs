@@ -221,7 +221,7 @@ pub fn hide_hint_text(toggle_hotkey: &str) -> (String, String) {
 
 pub fn show(app: &AppHandle, title: &str, body: &str) {
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        crate::pipeline::log(&format!("notification failed: {e}"));
+        crate::diag::log(&format!("notification failed: {e}"));
     }
 }
 
