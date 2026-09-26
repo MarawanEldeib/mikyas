@@ -94,7 +94,8 @@ pub fn quit_app(app: AppHandle, shared: Shr<'_>) {
 // ---- shared actions ----
 
 pub fn apply_view(app: &AppHandle, shared: &Shared, view: ViewMode) {
-    crate::window::set_view(app, view);
+    let from = shared.ui().view;
+    crate::window::set_view(app, from, view);
     shared.ui().view = view;
     if view != ViewMode::Settings {
         let mut s = shared.settings();

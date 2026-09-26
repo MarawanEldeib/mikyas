@@ -10,3 +10,11 @@ pub fn after_create(window: &tauri::WebviewWindow) {
     #[cfg(not(windows))]
     let _ = window;
 }
+
+/// WebView2 memory target (no-op elsewhere).
+pub fn set_memory_low(window: &tauri::WebviewWindow, low: bool) {
+    #[cfg(windows)]
+    windows::set_memory_low(window, low);
+    #[cfg(not(windows))]
+    let _ = (window, low);
+}

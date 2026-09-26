@@ -25,7 +25,12 @@ pub fn register(app: &AppHandle, shared: &Shared, accel: &str) {
         None
     } else {
         match accel.parse::<Shortcut>() {
-            Err(e) => Some(format!("\"{accel}\" is not a valid shortcut ({e})")),
+            Err(e) => {
+                // The parser's message ends with a "please report" link; keep the first clause.
+                let detail = e.to_string();
+                let detail = detail.split(", if you").next().unwrap_or_default().to_owned();
+                Some(format!("\"{accel}\" is not a valid shortcut ({detail})"))
+            }
             Ok(shortcut) => gs
                 .register(shortcut)
                 .err()

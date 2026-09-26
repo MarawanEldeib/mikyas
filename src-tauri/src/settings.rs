@@ -56,7 +56,7 @@ impl Default for Settings {
             pinned: true,
             opacity: 1.0,
             ghost_opacity: 0.45,
-            // Mica/Acrylic look flat while the (non-activating) widget is unfocused; see docs/spikes.
+            // Mica/Acrylic look flat while the (non-activating) widget is unfocused (M0 effect spike).
             effect: EffectName::None,
             thresholds: vec![80, 95],
             notify_reset: true,

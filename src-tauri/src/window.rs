@@ -48,6 +48,9 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
         .on_page_load(|window, payload| {
             if payload.event() == PageLoadEvent::Finished {
                 let _ = window.show();
+                if std::env::var_os("CUW_MEMORY_NORMAL").is_none() {
+                    crate::platform::set_memory_low(&window, true);
+                }
             }
         });
     if let Some((x, y)) = default_position(app, w, h) {
@@ -70,7 +73,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
     window.on_window_event(move |event| {
         if let WindowEvent::ScaleFactorChanged { .. } = event {
             let view = handle.state::<std::sync::Arc<Shared>>().ui().view;
-            resize_anchored(&handle, view);
+            resize_anchored(&handle, view, view);
         }
     });
     Ok(window)
@@ -135,9 +138,22 @@ fn clamp_into(rect: Rect, area: Rect) -> (i32, i32) {
 }
 
 /// New position for a size change that keeps the corner nearest to the screen edges fixed.
-fn anchored_position(rect: Rect, new_w: i32, new_h: i32, area: Rect) -> (i32, i32) {
-    let right = rect.0 + rect.2 / 2 > area.0 + area.2 / 2;
-    let bottom = rect.1 + rect.3 / 2 > area.1 + area.3 / 2;
+/// Which corner stays fixed: (right, bottom).
+type Anchor = (bool, bool);
+
+/// The corner nearest to the screen edges.
+fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
+    (
+        rect.0 + rect.2 / 2 > area.0 + area.2 / 2,
+        rect.1 + rect.3 / 2 > area.1 + area.3 / 2,
+    )
+}
+
+/// The anchor chosen when Settings was opened: the tall Settings view would otherwise pick a
+/// different corner and the card would not return to where it was.
+static SETTINGS_ANCHOR: std::sync::Mutex<Option<Anchor>> = std::sync::Mutex::new(None);
+
+fn anchored_position_with(rect: Rect, new_w: i32, new_h: i32, area: Rect, (right, bottom): Anchor) -> (i32, i32) {
     let x = if right { rect.0 + rect.2 - new_w } else { rect.0 };
     let y = if bottom { rect.1 + rect.3 - new_h } else { rect.1 };
     clamp_into((x, y, new_w, new_h), area)
@@ -164,7 +180,8 @@ pub fn ensure_on_screen(window: &WebviewWindow) {
 }
 
 /// Resizes to the view's size, anchored to the nearest corner, and keeps it on-screen.
-pub fn resize_anchored(window: &WebviewWindow, view: ViewMode) {
+/// `from` is the view being left (the anchor chosen on entering Settings is reused on leaving).
+pub fn resize_anchored(window: &WebviewWindow, from: ViewMode, view: ViewMode) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (lw, lh) = logical_size(view);
     let (w, h) = ((lw * scale).round() as i32, (lh * scale).round() as i32);
@@ -172,9 +189,23 @@ pub fn resize_anchored(window: &WebviewWindow, view: ViewMode) {
         let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
         return;
     };
+    // `set_size` sets the inner size; the outer rect also holds the invisible shadow frame.
+    let (frame_w, frame_h) = window
+        .inner_size()
+        .map(|inner| (rect.2 - inner.width as i32, rect.3 - inner.height as i32))
+        .unwrap_or((0, 0));
     let areas = work_areas(window);
     let (x, y) = match area_for(rect, &areas) {
-        Some(area) => anchored_position(rect, w, h, area),
+        Some(area) => {
+            let mut saved = crate::state::lock(&SETTINGS_ANCHOR);
+            let anchor = match (from, view) {
+                (ViewMode::Settings, ViewMode::Settings) => saved.unwrap_or_else(|| nearest_anchor(rect, area)),
+                (ViewMode::Settings, _) => saved.take().unwrap_or_else(|| nearest_anchor(rect, area)),
+                (_, ViewMode::Settings) => *saved.insert(nearest_anchor(rect, area)),
+                _ => nearest_anchor(rect, area),
+            };
+            anchored_position_with(rect, w + frame_w, h + frame_h, area, anchor)
+        }
         None => (rect.0, rect.1),
     };
     let _ = window.set_position(PhysicalPosition::new(x, y));
@@ -182,9 +213,9 @@ pub fn resize_anchored(window: &WebviewWindow, view: ViewMode) {
 }
 
 /// Switches view: size, focusability (only Settings takes keyboard focus).
-pub fn set_view(app: &AppHandle, view: ViewMode) {
+pub fn set_view(app: &AppHandle, from: ViewMode, view: ViewMode) {
     let Some(window) = get(app) else { return };
-    resize_anchored(&window, view);
+    resize_anchored(&window, from, view);
     let settings_view = view == ViewMode::Settings;
     let _ = window.set_focusable(settings_view);
     if settings_view {
@@ -256,6 +287,10 @@ pub fn emit_ui(app: &AppHandle, shared: &Shared) {
 mod tests {
     use super::*;
 
+    fn anchored_position(rect: Rect, new_w: i32, new_h: i32, area: Rect) -> (i32, i32) {
+        anchored_position_with(rect, new_w, new_h, area, nearest_anchor(rect, area))
+    }
+
     const AREA: Rect = (0, 0, 1920, 1040);
 
     #[test]
@@ -267,6 +302,21 @@ mod tests {
         assert_eq!(anchored_position((10, 10, 320, 232), 240, 72, AREA), (10, 10));
         // Growing near the bottom edge stays inside the work area.
         assert_eq!(anchored_position((1600, 960, 240, 72), 320, 440, AREA), (1520, 592));
+    }
+
+    #[test]
+    fn settings_reuses_the_anchor_it_was_opened_with() {
+        // A card at the bottom right opens Settings (bottom-right anchor)…
+        let card = (1350, 480, 418, 300);
+        let anchor = nearest_anchor(card, AREA);
+        assert_eq!(anchor, (true, true));
+        let (x, y) = anchored_position_with(card, 418, 560, AREA, anchor);
+        assert_eq!((x, y), (1350, 220));
+        // …whose own centre is in the upper half, so the nearest corner would be the top one…
+        let settings = (x, y, 418, 560);
+        assert_eq!(nearest_anchor(settings, AREA), (true, false));
+        // …but leaving Settings with the saved anchor returns the card to where it was.
+        assert_eq!(anchored_position_with(settings, 418, 300, AREA, anchor), (1350, 480));
     }
 
     #[test]
