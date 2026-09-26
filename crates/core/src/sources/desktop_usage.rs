@@ -14,7 +14,8 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde_json::{Map, Value};
 
@@ -51,18 +52,29 @@ pub struct DesktopUsage {
 struct RawSample<'a> {
     t_ms: Ms,
     org: Option<&'a str>,
-    usage: &'a Map<String, Value>,
+    /// `None` unless `u` is valid.
+    usage: Option<&'a Map<String, Value>>,
+}
+
+/// [`parse_until`] without a time limit.
+pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
+    parse_until(bytes, MAX_SAMPLE_MS)
 }
 
 /// Parses the file. `version != 2` → `Err(SourceError::SchemaChanged(v))`; missing/invalid
 /// structure → `Err(SourceError::Parse(..))`. Truncated JSON (Desktop mid-write) is a Parse
-/// error — callers keep their previous good value. Samples with a missing/invalid `t` or `u` are
-/// skipped individually. Samples without `org` are kept only if the newest sample also has none.
+/// error — callers keep their previous good value. Samples with a missing/invalid `t`, or one
+/// after `max_t_ms` (written while the clock ran ahead), are skipped individually.
+///
+/// The owning account is the org of the newest sample that names an org or has a valid `u`, so
+/// an account switch counts from the new account's first sample even before it reports values.
+/// Only the owner's samples with a valid `u` are kept; samples without `org` only if the owner
+/// has none either.
 ///
 /// A `u` counts as valid when it holds at least one numeric value under a plausible key. Of
 /// several samples with the same `t`, the one written last wins. Error messages never quote the
 /// document, so they cannot leak the org.
-pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
+pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
     // A UTF-8 BOM (added by some Windows editors) is not JSON whitespace to serde_json.
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let doc: Value = serde_json::from_slice(bytes).map_err(json_error)?;
@@ -81,21 +93,23 @@ pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
         .and_then(Value::as_array)
         .ok_or_else(|| parse_error("missing samples array"))?;
 
-    let raw: Vec<RawSample<'_>> = entries.iter().filter_map(raw_sample).collect();
+    let raw: Vec<RawSample<'_>> = entries
+        .iter()
+        .filter_map(|e| raw_sample(e, max_t_ms))
+        .collect();
     // `max_by_key` returns the last of equal maxima, i.e. the later entry of an append-only file.
-    let Some(newest) = raw.iter().max_by_key(|s| s.t_ms) else {
-        return Ok(DesktopUsage {
-            version,
-            series: BTreeMap::new(),
-            last_sample_ms: None,
-        });
-    };
-    let owner = newest.org;
-    let last_sample_ms = Some(newest.t_ms);
+    let owner = raw
+        .iter()
+        .filter(|s| s.org.is_some() || s.usage.is_some())
+        .max_by_key(|s| s.t_ms)
+        .map(|s| s.org);
 
     let mut series: BTreeMap<WindowKind, Vec<Sample>> = BTreeMap::new();
-    for sample in raw.iter().filter(|s| s.org == owner) {
-        for (key, value) in sample.usage {
+    let mut last_sample_ms = None;
+    for sample in raw.iter().filter(|s| Some(s.org) == owner) {
+        let Some(usage) = sample.usage else { continue };
+        last_sample_ms = last_sample_ms.max(Some(sample.t_ms));
+        for (key, value) in usage {
             if let Some(pct) = usable_pct(key, value) {
                 series
                     .entry(WindowKind::from_key(key))
@@ -135,27 +149,42 @@ pub fn latest_observations(usage: &DesktopUsage) -> Vec<Observation> {
         .collect()
 }
 
-/// Loads every existing `plan-usage-history.json` (see [`Paths::desktop_usage_files`]) and returns
-/// the one with the newest `last_sample_ms`. `Ok(None)` if no file exists. If every existing file
-/// fails, returns the first error (SchemaChanged takes precedence over Parse).
+/// Loads every existing `plan-usage-history.json` (see [`Paths::desktop_usage_files`]) with
+/// [`parse_until`] and returns the one with the newest `last_sample_ms`. `Ok(None)` if no file
+/// exists. If every existing file fails, returns the first error (SchemaChanged takes precedence
+/// over Parse).
 ///
 /// Ties on `last_sample_ms` go to the earlier (more specific) root. A file that disappears
-/// between listing and reading counts as absent.
-pub fn load(reader: &SafeReader, paths: &Paths) -> Result<Option<DesktopUsage>, SourceError> {
-    let mut best: Option<DesktopUsage> = None;
+/// between listing and reading counts as absent. A SchemaChanged file modified after the chosen
+/// file's newest sample (after its mtime if it has none) is the one the running Desktop writes,
+/// the chosen one a stale copy in another root: its error is returned instead.
+pub fn load(
+    reader: &SafeReader,
+    paths: &Paths,
+    max_t_ms: Ms,
+) -> Result<Option<DesktopUsage>, SourceError> {
+    let mut best: Option<(DesktopUsage, PathBuf)> = None;
     let mut error: Option<SourceError> = None;
+    // Newest mtime among the SchemaChanged files, with that file's version.
+    let mut newer_schema: Option<(Ms, u32)> = None;
     for path in paths.desktop_usage_files() {
-        match read_file(reader, &path) {
+        match read_file(reader, &path, max_t_ms) {
             Ok(usage) => {
                 if best
                     .as_ref()
-                    .is_none_or(|b| usage.last_sample_ms > b.last_sample_ms)
+                    .is_none_or(|(b, _)| usage.last_sample_ms > b.last_sample_ms)
                 {
-                    best = Some(usage);
+                    best = Some((usage, path));
                 }
             }
             Err(SourceError::Read(ReadError::Io(e))) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => {
+                if let SourceError::SchemaChanged(version) = e {
+                    let mtime = modified_ms(&path);
+                    if let Some(m) = mtime.filter(|&m| newer_schema.is_none_or(|(n, _)| m > n)) {
+                        newer_schema = Some((m, version));
+                    }
+                }
                 let replace = match (&error, &e) {
                     (None, _) => true,
                     (Some(SourceError::SchemaChanged(_)), _) => false,
@@ -169,15 +198,29 @@ pub fn load(reader: &SafeReader, paths: &Paths) -> Result<Option<DesktopUsage>, 
         }
     }
     match (best, error) {
-        (Some(usage), _) => Ok(Some(usage)),
+        (Some((usage, path)), _) => {
+            let written = usage.last_sample_ms.or_else(|| modified_ms(&path));
+            match newer_schema {
+                Some((mtime, version)) if written.is_some_and(|w| mtime > w) => {
+                    Err(SourceError::SchemaChanged(version))
+                }
+                _ => Ok(Some(usage)),
+            }
+        }
         (None, Some(e)) => Err(e),
         (None, None) => Ok(None),
     }
 }
 
-fn read_file(reader: &SafeReader, path: &Path) -> Result<DesktopUsage, SourceError> {
+fn read_file(reader: &SafeReader, path: &Path, max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
     let bytes = reader.read(path, MAX_FILE_BYTES)?;
-    parse(&bytes)
+    parse_until(&bytes, max_t_ms)
+}
+
+/// The file's mtime in epoch ms, if the file system reports one.
+fn modified_ms(path: &Path) -> Option<Ms> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Ms::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
 fn parse_error(msg: &str) -> SourceError {
@@ -204,16 +247,16 @@ fn as_version(v: &Value) -> Option<u32> {
     u32::try_from(n).ok()
 }
 
-fn raw_sample(entry: &Value) -> Option<RawSample<'_>> {
+fn raw_sample(entry: &Value, max_t_ms: Ms) -> Option<RawSample<'_>> {
     let obj = entry.as_object()?;
     let t_ms = obj
         .get("t")
         .and_then(json_time_to_ms)
-        .filter(|t| *t <= MAX_SAMPLE_MS)?;
-    let usage = obj.get("u")?.as_object()?;
-    if !usage.iter().any(|(k, v)| usable_pct(k, v).is_some()) {
-        return None;
-    }
+        .filter(|t| *t <= max_t_ms.min(MAX_SAMPLE_MS))?;
+    let usage = obj
+        .get("u")
+        .and_then(Value::as_object)
+        .filter(|u| u.iter().any(|(k, v)| usable_pct(k, v).is_some()));
     let org = obj
         .get("org")
         .and_then(Value::as_str)
@@ -335,7 +378,19 @@ pub(crate) mod synth {
         minute >= 8 * 60 && !asleep
     }
 
+    /// Bursts of 0.5–1.2 %/min.
     pub(crate) fn realistic() -> Synth {
+        generate(10.0)
+    }
+
+    /// The same days with a tenth of the usage (bursts of 0.05–0.12 %/min): Desktop's integers
+    /// stay at 0 for up to ten minutes after a window starts.
+    pub(crate) fn light() -> Synth {
+        generate(100.0)
+    }
+
+    /// Burst rates are `5..=12 / rate_divisor` %/min (the scripted bursts scale alike).
+    fn generate(rate_divisor: f32) -> Synth {
         let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
         let end = START_MS + DAYS * DAY_MS;
         let heavy_burst = START_MS + DAY_MS + 9 * HOUR_MS;
@@ -359,15 +414,22 @@ pub(crate) mod synth {
             }
 
             if t == heavy_burst {
-                // Guarantees a 100 % plateau.
-                (burst_until, rate, next_burst) = (t + 150 * MINUTE_MS, 1.0, t + 240 * MINUTE_MS);
+                // Guarantees a 100 % plateau (at the realistic rates).
+                (burst_until, rate, next_burst) = (
+                    t + 150 * MINUTE_MS,
+                    10.0 / rate_divisor,
+                    t + 240 * MINUTE_MS,
+                );
             } else if t == phone_burst {
                 // Usage on another device during the night gap: starts a window Desktop never saw.
-                (burst_until, rate, next_burst) =
-                    (t + 30 * MINUTE_MS, 0.6, t + 3 * HOUR_MS + 20 * MINUTE_MS);
+                (burst_until, rate, next_burst) = (
+                    t + 30 * MINUTE_MS,
+                    6.0 / rate_divisor,
+                    t + 3 * HOUR_MS + 20 * MINUTE_MS,
+                );
             } else if t >= next_burst && t >= burst_until && awake(t) {
                 burst_until = t + rng.range(20, 110) * MINUTE_MS;
-                rate = rng.range(5, 12) as f32 / 10.0;
+                rate = rng.range(5, 12) as f32 / rate_divisor;
                 next_burst = burst_until + rng.range(20, 200) * MINUTE_MS;
             }
             let phone = (phone_burst..phone_burst + 30 * MINUTE_MS).contains(&t);
@@ -429,9 +491,11 @@ pub(crate) mod synth {
 mod tests {
     use pretty_assertions::assert_eq;
 
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::synth::{ORG_A, ORG_B, START_MS};
     use super::*;
-    use crate::time::{FIVE_HOURS_MS, MINUTE_MS};
+    use crate::time::{DAY_MS, FIVE_HOURS_MS, MINUTE_MS};
 
     const EDGE: &str = include_str!("../../tests/fixtures/desktop_usage/edge_cases.json");
 
@@ -674,6 +738,82 @@ mod tests {
     }
 
     #[test]
+    fn owner_is_decided_before_unusable_values_are_dropped() {
+        // Account switch: the new account's first samples carry no usable value yet. Showing the
+        // previous account's usage as current would be wrong.
+        let switched = |extra: &str| {
+            let doc = format!(
+                r#"{{"version":2,"samples":[
+                    {{"t":1790208000000,"org":"{ORG_A}","u":{{"fh":70}}}},
+                    {{"t":1790208900000,"org":"{ORG_B}","u":{{"fh":"x"}}}},
+                    {{"t":1790209800000,"org":"{ORG_B}","u":{{}}}}{extra}
+                ]}}"#
+            );
+            parse(doc.as_bytes()).unwrap()
+        };
+        let u = switched("");
+        assert!(u.series.is_empty(), "{u:?}");
+        assert_eq!(u.last_sample_ms, None);
+        // A sample without any `u` names its account too.
+        let u = switched(&format!(r#",{{"t":1790210700000,"org":"{ORG_B}"}}"#));
+        assert!(u.series.is_empty(), "{u:?}");
+        // Once the new account reports values, only those are kept.
+        let u = switched(&format!(
+            r#",{{"t":1790210700000,"org":"{ORG_B}","u":{{"fh":10}}}}"#
+        ));
+        assert_eq!(series(&u, "fh"), [s(1_790_210_700_000, 10.0)]);
+        assert_eq!(u.last_sample_ms, Some(1_790_210_700_000));
+        // A newer valueless sample of the same account keeps its older values.
+        let doc = format!(
+            r#"{{"version":2,"samples":[
+                {{"t":1790208000000,"org":"{ORG_A}","u":{{"fh":70}}}},
+                {{"t":1790208900000,"org":"{ORG_A}","u":{{}}}}
+            ]}}"#
+        );
+        let u = parse(doc.as_bytes()).unwrap();
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 70.0)]);
+        assert_eq!(u.last_sample_ms, Some(1_790_208_000_000));
+        // A sample with neither an org nor values decides nothing.
+        let doc = format!(
+            r#"{{"version":2,"samples":[
+                {{"t":1790208000000,"org":"{ORG_A}","u":{{"fh":70}}}},
+                {{"t":1790208900000}},
+                {{"t":1790209800000,"org":7,"u":{{"fh":"x"}}}}
+            ]}}"#
+        );
+        let u = parse(doc.as_bytes()).unwrap();
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 70.0)]);
+    }
+
+    #[test]
+    fn samples_after_max_t_are_ignored() {
+        // A clock jump wrote a sample three days ahead, here for another account: it must neither
+        // pick the account nor become the newest sample.
+        let doc = format!(
+            r#"{{"version":2,"samples":[
+                {{"t":1790208000000,"org":"{ORG_A}","u":{{"fh":10}}}},
+                {{"t":1790208900000,"org":"{ORG_A}","u":{{"fh":12}}}},
+                {{"t":1790467200000,"org":"{ORG_B}","u":{{"fh":90}}}}
+            ]}}"#
+        );
+        let u = parse_until(doc.as_bytes(), 1_790_209_200_000).unwrap();
+        assert_eq!(
+            series(&u, "fh"),
+            [s(1_790_208_000_000, 10.0), s(1_790_208_900_000, 12.0)]
+        );
+        assert_eq!(u.last_sample_ms, Some(1_790_208_900_000));
+        assert_eq!(latest_observations(&u)[0].observed_at_ms, 1_790_208_900_000);
+        // The limit is inclusive.
+        let u = parse_until(doc.as_bytes(), 1_790_208_900_000).unwrap();
+        assert_eq!(u.last_sample_ms, Some(1_790_208_900_000));
+        // Without a limit the future sample decides.
+        assert_eq!(
+            series(&parse(doc.as_bytes()).unwrap(), "fh"),
+            [s(1_790_467_200_000, 90.0)]
+        );
+    }
+
+    #[test]
     fn org_never_leaves_parse() {
         let synth = synth::realistic();
         let docs = [EDGE.to_owned(), synth.json.clone()];
@@ -815,8 +955,19 @@ mod tests {
             let path = self.paths.desktop_roots()[root].join("plan-usage-history.json");
             std::fs::write(path, content).unwrap();
         }
+        /// Writes like [`Env::write`] and sets the file's mtime.
+        fn write_at(&self, root: usize, content: &str, mtime_ms: Ms) {
+            self.write(root, content);
+            let path = self.paths.desktop_roots()[root].join("plan-usage-history.json");
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            let mtime = UNIX_EPOCH + Duration::from_millis(u64::try_from(mtime_ms).unwrap());
+            file.set_modified(mtime).unwrap();
+        }
         fn load(&self) -> Result<Option<DesktopUsage>, SourceError> {
-            load(&SafeReader::new(&self.paths), &self.paths)
+            self.load_until(MAX_SAMPLE_MS)
+        }
+        fn load_until(&self, max_t_ms: Ms) -> Result<Option<DesktopUsage>, SourceError> {
+            load(&SafeReader::new(&self.paths), &self.paths, max_t_ms)
         }
     }
 
@@ -862,8 +1013,51 @@ mod tests {
         env.write(1, &doc(T, 10));
         assert_eq!(env.load().unwrap().unwrap().last_sample_ms, Some(T));
         env.write(0, &doc(T, 10));
-        env.write(1, V3);
+        // A v3 file last written before the v2 file's newest sample is a leftover.
+        env.write_at(1, V3, T - DAY_MS);
         assert_eq!(env.load().unwrap().unwrap().last_sample_ms, Some(T));
+    }
+
+    #[test]
+    fn newer_schema_change_beats_a_stale_copy_in_another_root() {
+        let env = Env::new();
+        // The v2 copy was last sampled two days ago; the running Desktop writes v3 in root 1.
+        env.write_at(0, &doc(T - 2 * DAY_MS, 10), T - 2 * DAY_MS);
+        env.write_at(1, V3, T);
+        assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))));
+        // Order of the roots does not matter.
+        env.write_at(0, V3, T);
+        env.write_at(1, &doc(T - 2 * DAY_MS, 10), T - 2 * DAY_MS);
+        assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))));
+        // The newest sample is the reference, not the v2 file's own (e.g. restored) mtime.
+        env.write_at(1, &doc(T - 2 * DAY_MS, 10), T + DAY_MS);
+        assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))));
+        // Without samples the v2 file's mtime is the reference.
+        env.write_at(1, r#"{"version":2,"samples":[]}"#, T - MINUTE_MS);
+        assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))));
+        env.write_at(1, r#"{"version":2,"samples":[]}"#, T + MINUTE_MS);
+        assert_eq!(env.load().unwrap().unwrap().last_sample_ms, None);
+    }
+
+    #[test]
+    fn load_ignores_samples_after_max_t() {
+        let env = Env::new();
+        // Root 0 holds a sample from a clock three days ahead; root 1 is really the newer one.
+        env.write(
+            0,
+            &format!(
+                r#"{{"version":2,"samples":[{{"t":{T},"org":"{ORG_A}","u":{{"fh":10}}}},{{"t":{},"org":"{ORG_A}","u":{{"fh":50}}}}]}}"#,
+                T + 3 * DAY_MS
+            ),
+        );
+        env.write(1, &doc(T + 10 * MINUTE_MS, 20));
+        let u = env.load_until(T + 20 * MINUTE_MS).unwrap().unwrap();
+        assert_eq!(u.last_sample_ms, Some(T + 10 * MINUTE_MS));
+        assert_eq!(series(&u, "fh").last().map(|s| s.pct), Some(20.0));
+        assert_eq!(
+            env.load().unwrap().unwrap().last_sample_ms,
+            Some(T + 3 * DAY_MS)
+        );
     }
 
     #[test]

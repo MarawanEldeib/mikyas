@@ -154,7 +154,12 @@
         <section class="days" aria-labelledby="days-h">
           <div class="head">
             <h2 id="days-h">Weekly budget used per day</h2>
-            <span class="scale" class:picked={detail}>{detail ?? `scale ${scale}%`}</span>
+            <span
+              class="scale"
+              class:picked={detail}
+              title={detail ? undefined : `Bar heights are scaled: a full bar is ${scale}% of the weekly limit`}
+              >{detail ?? `full bar = ${scale}%`}</span
+            >
           </div>
           <ol class="bars" class:narrow={bars.length > 7}>
             {#each bars as b (b.start)}
@@ -163,6 +168,7 @@
                   type="button"
                   class="day"
                   class:today={b.today}
+                  class:nodata={!b.hasData}
                   style:--p={(b.value / scale) * 100}
                   aria-label={b.full}
                   title={b.full}
@@ -173,8 +179,8 @@
                   onmouseleave={() => (picked = null)}
                 >
                   <span class="col">
-                    {#if b.value >= 0.5}
-                      <span class="fill"></span>
+                    {#if b.hasData}
+                      {#if b.value >= 0.5}<span class="fill"></span>{/if}
                       <span class="val">{formatPct(b.value)}</span>
                     {/if}
                   </span>
@@ -194,7 +200,14 @@
           {:else}
             <span>{label} peak <b>{formatPct(summary.peak)}%</b></span>
             <span aria-hidden="true">·</span>
-            {#if summary.resets > 0}<span class="tick" aria-hidden="true" title="Reset marks under the charts"></span>{/if}
+            {#if summary.resets > 0}
+              <!-- Legend: the chart's baseline with a reset mark under it. -->
+              <svg class="legend" width="11" height="10" viewBox="0 0 11 10" aria-hidden="true">
+                <title>Reset marks under the charts</title>
+                <line class="legend-base" x1="0" x2="11" y1="1.5" y2="1.5" />
+                <line class="legend-tick" x1="5.5" x2="5.5" y1="4" y2="8" />
+              </svg>
+            {/if}
             <span>{resetsText(summary.resets)}</span>
           {/if}
           <span aria-hidden="true">·</span>
@@ -375,6 +388,14 @@
     color: var(--fg);
     font-weight: 600;
   }
+  /* No rows that day: a dashed baseline instead of a 0% one. */
+  .nodata .col {
+    box-shadow: none;
+    background: linear-gradient(to right, var(--divider) 50%, transparent 0) bottom / 4px 1px repeat-x;
+  }
+  .nodata .dl {
+    color: var(--fg-3);
+  }
   .summary {
     display: flex;
     align-items: center;
@@ -389,13 +410,20 @@
     color: var(--fg);
     font-weight: 600;
   }
-  /* Legend for the reset ticks under the charts. */
-  .tick {
-    width: 1.5px;
-    height: 5px;
-    margin-right: -1px;
-    border-radius: 1px;
-    background: var(--fg-2);
+  /* Legend for the reset marks under the charts, drawn like them (HistoryChart .base/.reset). */
+  .legend {
+    flex: none;
+    overflow: visible;
+  }
+  .legend-base {
+    stroke: var(--fg-3);
+    stroke-width: 1;
+    opacity: 0.6;
+  }
+  .legend-tick {
+    stroke: var(--fg-2);
+    stroke-width: 1.5;
+    stroke-linecap: round;
   }
   .stale-note {
     margin: 0;

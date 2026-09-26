@@ -3,7 +3,9 @@
 //! the app persists [`CtxAlertState`] in `state.json` so a restart never re-fires.
 //!
 //! Per session (keyed by the opaque [`SessionView::key`]):
-//! - Sessions with `ctx_pct: None` (or an empty key) are ignored.
+//! - Sessions with `ctx_pct: None` (or an empty key) are ignored, and so is a % estimated over
+//!   the 200K default size (`ctx_basis: Default` with `ctx_is_estimate`): a 1M session not yet
+//!   recognised as one would look five times fuller than it is.
 //! - Re-arm: once `ctx_pct` falls at least [`REARM_DROP_PCT`] points below the LOWEST fired
 //!   threshold (e.g. after `/compact`), the session's fired set is cleared.
 //! - Thresholds: for the highest threshold `t` with `pct >= t` that has not fired yet, emit ONE
@@ -22,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::types::SessionView;
+use crate::engine::types::{CtxBasis, SessionView};
 use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
 
 /// A drop of at least this many points below the lowest fired threshold re-arms a session.
@@ -75,7 +77,12 @@ impl CtxAlertState {
             {
                 entry.last_seen_ms = now_ms;
             }
-            let Some(pct) = session.ctx_pct.filter(|p| !p.is_nan()).map(|p| p.clamp(0.0, 100.0)) else {
+            let guessed = session.ctx_basis == CtxBasis::Default && session.ctx_is_estimate;
+            let Some(pct) = session
+                .ctx_pct
+                .filter(|p| !p.is_nan() && !guessed)
+                .map(|p| p.clamp(0.0, 100.0))
+            else {
                 continue;
             };
             let rearm = self
@@ -117,7 +124,7 @@ impl CtxAlertState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::types::{CtxBasis, Entrypoint};
+    use crate::engine::types::Entrypoint;
     use pretty_assertions::assert_eq;
 
     const NOW: Ms = 1_790_000_000_000;
@@ -221,6 +228,35 @@ mod tests {
         assert_eq!(events[0].project.as_deref(), Some("demo-app"));
         assert_eq!(s.sessions.keys().collect::<Vec<_>>(), vec!["b"]);
         assert_eq!(s.evaluate(&[session("a", Some(81.0))], T, NOW).len(), 1);
+    }
+
+    #[test]
+    fn estimates_over_the_default_size_never_fire() {
+        // A 1M session not yet recognised as one looks five times fuller than it is.
+        let mut s = CtxAlertState::default();
+        let mut guess = session("a", Some(92.0));
+        guess.ctx_basis = CtxBasis::Default;
+        guess.ctx_is_estimate = true;
+        assert_eq!(s.evaluate(std::slice::from_ref(&guess), T, NOW), vec![]);
+        assert!(s.sessions.is_empty());
+        // The statusline's own % over the default size is no guess.
+        let mut reported = guess.clone();
+        reported.ctx_is_estimate = false;
+        assert_eq!(s.evaluate(std::slice::from_ref(&reported), T, NOW).len(), 1);
+        // A guess neither re-arms nor keeps the session from being remembered.
+        guess.ctx_pct = Some(5.0);
+        for h in 1..=30 {
+            assert_eq!(s.evaluate(std::slice::from_ref(&guess), T, NOW + h * HOUR_MS), vec![]);
+        }
+        assert_eq!(fired(&s, "a"), vec![80, 90]);
+        // Estimates over a known size fire as before.
+        for basis in [CtxBasis::Heuristic, CtxBasis::Override, CtxBasis::Identity] {
+            let mut known = session("b", Some(85.0));
+            known.ctx_basis = basis;
+            known.ctx_is_estimate = true;
+            let mut fresh = CtxAlertState::default();
+            assert_eq!(fresh.evaluate(&[known], T, NOW).len(), 1, "{basis:?}");
+        }
     }
 
     #[test]

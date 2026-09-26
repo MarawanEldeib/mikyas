@@ -18,11 +18,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::types::{Phase, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState};
 use crate::sources::desktop_usage::DesktopUsage;
-use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
+use crate::time::{DAY_MS, FIVE_HOURS_MS, HOUR_MS, MINUTE_MS, Ms};
 
 pub const RETAIN_MS: Ms = 14 * DAY_MS;
-/// A drop of at least this many points between consecutive rows of a window is a reset.
-pub const RESET_DROP_PCT: f32 = 1.0;
+/// A drop of at least this many points between consecutive rows of a window is a reset. Rows mix
+/// CLI values (one decimal) with Desktop integers that can lag a little, so 79.4 then 78 is still
+/// one window. The burn fit, which sees the same mix, uses it too.
+pub const MIXED_SOURCE_DROP_PCT: f32 = 2.0;
 /// Reset marks closer than this (inclusive) are one reset in [`History::view`].
 pub const RESET_DEDUP_MS: Ms = 30 * MINUTE_MS;
 /// A sparkline bucket with no sample carries the previous value forward only if that value is
@@ -78,6 +80,8 @@ pub struct DayUsage {
     pub peak_pct: f32,
     /// Share of the limit used that day: the sum of rises (see [`History::view`]).
     pub consumed_pct: f32,
+    /// Rows that day; 0 means no data, unlike a day at 0%.
+    pub samples: u32,
 }
 
 /// One window's history over a [`ViewRange`].
@@ -279,16 +283,21 @@ impl History {
     /// - `points`: [`History::spark`] with one bucket per hour of the range (max per hour, gaps
     ///   after [`SPARK_MAX_CARRY_MS`] without rows).
     /// - Rows are walked in order, rows before `from_ms` seeding the state. A row starts a new
-    ///   window instance when its pct is at least [`RESET_DROP_PCT`] below the previous row, or
-    ///   when the latest exact reset time known (`r` of a row with `e: false`) passed since the
-    ///   previous row. A reset time superseded before it passed (re-estimated or moved) is not one.
+    ///   window instance when its pct is at least [`MIXED_SOURCE_DROP_PCT`] below the previous
+    ///   row, when the latest exact reset time known (`r` of a row with `e: false`) passed since
+    ///   the previous row, or (five_hour only) when it comes more than five hours after the
+    ///   previous row: that window has ended by then. A reset time superseded before it passed
+    ///   (re-estimated or moved) is not one.
     /// - `resets_ms`: exact reset times that passed within `[from_ms, min(to_ms, now_ms)]`, plus
-    ///   the time of each in-range row that shows a drop not explained by an exact reset; sorted,
-    ///   and a mark within [`RESET_DEDUP_MS`] of the previous kept one is dropped.
-    /// - Days: `peak_pct` is the highest row that day. `consumed_pct` adds, for each row of the
-    ///   day, its rise over the instance's high-water mark (dips below one point of noise, e.g.
-    ///   Desktop's integer values, are not counted twice), or its whole value when it starts a new
-    ///   instance (the rise from 0 after a reset). The first row ever adds nothing.
+    ///   one in-range mark per new instance no exact reset explains: five hours after the previous
+    ///   row for a gap (none if that row was at 0: no window was running), else the row showing
+    ///   the drop; sorted, and a mark within [`RESET_DEDUP_MS`] of the previous kept one is
+    ///   dropped.
+    /// - Days: `peak_pct` is the highest row that day, `samples` the number of rows.
+    ///   `consumed_pct` adds, for each row of the day, its rise over the instance's high-water mark
+    ///   (smaller dips, e.g. Desktop's integer values, are not counted twice), or its whole value
+    ///   when it starts a new instance (the rise from 0 after a reset). The first row ever adds
+    ///   nothing.
     pub fn view(&self, kind: &WindowKind, range: &ViewRange<'_>) -> WindowHistory {
         let span = range.to_ms.saturating_sub(range.from_ms).max(0);
         let hours = span / HOUR_MS + i64::from(span % HOUR_MS != 0);
@@ -304,22 +313,29 @@ impl History {
                 day_start_ms,
                 peak_pct: 0.0,
                 consumed_pct: 0.0,
+                samples: 0,
             })
             .collect();
         let mut marks: Vec<Ms> = Vec::new();
         let mut known_reset: Option<Ms> = None;
         let mut prev: Option<&HistoryRow> = None;
         let mut high = 0.0_f32;
+        let five_hour = *kind == WindowKind::FiveHour;
 
         for row in self.rows.iter().filter(|r| r.t <= range.to_ms && r.is_kind(kind)) {
             let exact_reset = prev
                 .zip(known_reset)
                 .is_some_and(|(p, r)| p.t < r && r <= row.t);
-            let dropped = prev.is_some_and(|p| p.p - row.p >= RESET_DROP_PCT);
-            if dropped && !exact_reset && in_range(row.t) {
-                marks.push(row.t);
+            let dropped = prev.is_some_and(|p| p.p - row.p >= MIXED_SOURCE_DROP_PCT);
+            let expired = prev.filter(|p| five_hour && row.t.saturating_sub(p.t) > FIVE_HOURS_MS);
+            if !exact_reset {
+                let mark = match expired {
+                    Some(p) => (p.p > 0.0).then(|| p.t.saturating_add(FIVE_HOURS_MS).min(row.t)),
+                    None => dropped.then_some(row.t),
+                };
+                marks.extend(mark.filter(|&t| in_range(t)));
             }
-            let new_instance = prev.is_none() || exact_reset || dropped;
+            let new_instance = prev.is_none() || exact_reset || dropped || expired.is_some();
             let consumed = match prev {
                 None => 0.0,
                 Some(_) if new_instance => row.p,
@@ -331,6 +347,7 @@ impl History {
             if let Some(day) = day.and_then(|i| days.get_mut(i)) {
                 day.consumed_pct += consumed;
                 day.peak_pct = day.peak_pct.max(row.p);
+                day.samples += 1;
             }
 
             if let Some(r) = row.r.filter(|_| !row.e) {
@@ -1149,7 +1166,8 @@ mod tests {
         let days = [d0, d1];
         let v = h.view(&WindowKind::FiveHour, &range(d0, d1 + DAY_MS, d1 + DAY_MS, &days));
         assert_eq!(day_values(&v), vec![(50.3, 10.3), (30.0, 30.0)]);
-        assert_eq!(v.resets_ms, vec![d1 + HOUR_MS]);
+        // 21 h without rows: the window seen last at d0 + 4h ended five hours later at the latest.
+        assert_eq!(v.resets_ms, vec![d0 + 9 * HOUR_MS]);
     }
 
     #[test]
@@ -1173,6 +1191,96 @@ mod tests {
         let v = est.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 4 * HOUR_MS, &days));
         assert_eq!(day_values(&v), vec![(25.0, 15.0)]);
         assert!(v.resets_ms.is_empty());
+    }
+
+    #[test]
+    fn view_ignores_small_dips_between_cli_and_desktop_rows() {
+        // CLI rows carry one decimal, Desktop rows integers that may lag a little: 79.4 then 78 is
+        // one window, not a reset followed by 78 points of fresh usage.
+        let m = MINUTE_MS;
+        let desktop = |t: Ms, p: f32| HistoryRow { s: Source::Desktop, ..row(t, "5h", p) };
+        let (_dir, h) = with_rows(vec![
+            row(H0, "5h", 75.0),
+            row(H0 + 10 * m, "5h", 79.4),
+            desktop(H0 + 15 * m, 78.0),
+            row(H0 + 20 * m, "5h", 80.2),
+            desktop(H0 + 30 * m, 80.0),
+            row(H0 + 40 * m, "5h", 84.0),
+            desktop(H0 + 45 * m, 41.0), // a real reset
+            row(H0 + 50 * m, "5h", 43.5),
+        ]);
+        let days = [H0];
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + HOUR_MS, &days));
+        assert_eq!(v.resets_ms, vec![H0 + 45 * m]);
+        // 75 → 84 is 9 points, then 43.5 in the new window.
+        assert_eq!(day_values(&v), vec![(84.0, 52.5)]);
+        // A dip smaller than two points still starts a new window when an exact reset explains it.
+        let (_dir, h) = with_rows(vec![
+            exact(H0, 3.0, H0 + HOUR_MS),
+            exact(H0 + 2 * HOUR_MS, 1.5, H0 + 6 * HOUR_MS),
+        ]);
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 3 * HOUR_MS, &days));
+        assert_eq!(v.resets_ms, vec![H0 + HOUR_MS]);
+        assert_eq!(day_values(&v), vec![(3.0, 1.5)]);
+    }
+
+    #[test]
+    fn view_infers_a_five_hour_reset_from_a_long_gap() {
+        // 40% at H0 and 60% eight hours later: that window ended by H0 + 5h, so the 60% is new.
+        let days = [H0];
+        let r = |from: Ms| range(from, H0 + DAY_MS, H0 + DAY_MS, &days);
+        let (_dir, h) = with_rows(vec![row(H0, "5h", 40.0), row(H0 + 8 * HOUR_MS, "5h", 60.0)]);
+        let v = h.view(&WindowKind::FiveHour, &r(H0));
+        assert_eq!(v.resets_ms, vec![H0 + 5 * HOUR_MS]);
+        assert_eq!(day_values(&v), vec![(60.0, 60.0)]);
+        // Exactly five hours apart is still one window.
+        let (_dir, h) = with_rows(vec![row(H0, "5h", 40.0), row(H0 + 5 * HOUR_MS, "5h", 60.0)]);
+        let v = h.view(&WindowKind::FiveHour, &r(H0));
+        assert!(v.resets_ms.is_empty());
+        assert_eq!(day_values(&v), vec![(60.0, 20.0)]);
+        // A drop across the gap is one reset, marked when the old window ended at the latest.
+        let (_dir, h) = with_rows(vec![row(H0, "5h", 70.0), row(H0 + 8 * HOUR_MS, "5h", 20.0)]);
+        assert_eq!(h.view(&WindowKind::FiveHour, &r(H0)).resets_ms, vec![H0 + 5 * HOUR_MS]);
+        // An exact reset inside the gap is marked at its own time only.
+        let (_dir, h) = with_rows(vec![
+            exact(H0, 30.0, H0 + 2 * HOUR_MS),
+            exact(H0 + 8 * HOUR_MS, 50.0, H0 + 13 * HOUR_MS),
+        ]);
+        let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 9 * HOUR_MS, &days));
+        assert_eq!(v.resets_ms, vec![H0 + 2 * HOUR_MS]);
+        assert_eq!(day_values(&v), vec![(50.0, 50.0)]);
+        // No window was running at 0%: nothing to mark, the new one counts in full.
+        let (_dir, h) = with_rows(vec![row(H0, "5h", 0.0), row(H0 + 8 * HOUR_MS, "5h", 30.0)]);
+        let v = h.view(&WindowKind::FiveHour, &r(H0));
+        assert!(v.resets_ms.is_empty());
+        assert_eq!(day_values(&v), vec![(30.0, 30.0)]);
+        // Only in range: the gap mark of a window that ended before `from_ms` is dropped.
+        let (_dir, h) = with_rows(vec![row(H0, "5h", 40.0), row(H0 + 8 * HOUR_MS, "5h", 60.0)]);
+        assert!(h.view(&WindowKind::FiveHour, &r(H0 + 6 * HOUR_MS)).resets_ms.is_empty());
+        // Weekly windows follow their own schedule: a long gap alone is no reset.
+        let (_dir, h) = with_rows(vec![row(H0, "7d", 40.0), row(H0 + 8 * HOUR_MS, "7d", 60.0)]);
+        let v = h.view(&WindowKind::SevenDay, &r(H0));
+        assert!(v.resets_ms.is_empty());
+        assert_eq!(day_values(&v), vec![(60.0, 20.0)]);
+    }
+
+    #[test]
+    fn view_counts_rows_per_day() {
+        let d0 = H0;
+        let d1 = d0 + DAY_MS;
+        let d2 = d1 + DAY_MS;
+        let (_dir, h) = with_rows(vec![
+            row(d0 - HOUR_MS, "7d", 10.0), // before the range: seeds the walk only
+            row(d0 + HOUR_MS, "7d", 10.0),
+            row(d0 + 2 * HOUR_MS, "7d", 10.0), // unchanged value: a real 0% day so far
+            row(d0 + 3 * HOUR_MS, "5h", 50.0), // other windows are not counted
+            row(d2 + HOUR_MS, "7d", 12.0),
+        ]);
+        let days = [d0, d1, d2];
+        let v = h.view(&WindowKind::SevenDay, &range(d0, d2 + DAY_MS, d2 + DAY_MS, &days));
+        let samples: Vec<u32> = v.days.iter().map(|d| d.samples).collect();
+        assert_eq!(samples, vec![2, 0, 1]);
+        assert_eq!(day_values(&v), vec![(10.0, 0.0), (0.0, 0.0), (12.0, 2.0)]);
     }
 
     #[test]

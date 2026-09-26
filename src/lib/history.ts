@@ -249,10 +249,12 @@ export interface DayBar {
   /** Share of the limit used that day (0..100). */
   value: number;
   peak: number;
+  /** False for a day without any recorded row (unlike a day at 0%). */
+  hasData: boolean;
   today: boolean;
   /** Short axis label ("Mon", or "M" when narrow). */
   label: string;
-  /** Compact detail line, e.g. "Thu, Sep 24 · 21%". */
+  /** Compact detail line, e.g. "Thu, Sep 24 · 21%" or "Thu, Sep 24 · no data". */
   detail: string;
   /** Accessible description. */
   full: string;
@@ -267,14 +269,17 @@ export function dayBars(days: readonly HistoryDay[], count: number, now: number,
     const next = shown[i + 1]?.day_start_ms ?? addLocalDays(day.day_start_ms, 1);
     const value = clampPct(day.consumed_pct);
     const peak = clampPct(day.peak_pct);
-    const used = value >= 0.5 ? `${formatPct(value)}% of the weekly limit used` : "no weekly usage";
+    const hasData = day.samples > 0;
+    const amount = hasData ? `${formatPct(value)}%` : "no data";
+    const used = hasData ? `${amount} of the weekly limit used` : amount;
     return {
       start: day.day_start_ms,
       value,
       peak,
+      hasData,
       today: now >= day.day_start_ms && now < next,
       label: label.format(day.day_start_ms),
-      detail: `${long.format(day.day_start_ms)} · ${formatPct(value)}%`,
+      detail: `${long.format(day.day_start_ms)} · ${amount}`,
       full: `${long.format(day.day_start_ms)}: ${used}${peak > 0 ? ` (peak ${formatPct(peak)}%)` : ""}`,
     };
   });

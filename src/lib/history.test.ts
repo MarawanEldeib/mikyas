@@ -202,6 +202,7 @@ describe("dayBars", () => {
     day_start_ms: local(10 + i),
     peak_pct: 40 + i,
     consumed_pct: i === 3 ? 0 : i * 1.5,
+    samples: 4,
   }));
 
   it("takes the last days and marks today", () => {
@@ -209,7 +210,7 @@ describe("dayBars", () => {
     expect(bars).toHaveLength(7);
     expect(bars.map((b) => b.label)).toEqual(["Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"]);
     expect(bars.map((b) => b.today)).toEqual([false, false, false, false, false, false, true]);
-    expect(bars[6]).toMatchObject({ value: 21, peak: 54 });
+    expect(bars[6]).toMatchObject({ value: 21, peak: 54, hasData: true });
     expect(bars[6].full).toBe("Thu, Sep 24: 21% of the weekly limit used (peak 54%)");
     expect(bars[6].detail).toBe("Thu, Sep 24 · 21%");
     expect(bars.every((b, i) => b.start === local(18 + i))).toBe(true);
@@ -219,8 +220,12 @@ describe("dayBars", () => {
     const bars = dayBars(days, 14, NOW, { locale: "en-US" });
     expect(bars).toHaveLength(14);
     expect(bars[0].label).toBe("F");
-    const empty = dayBars([{ day_start_ms: local(24), peak_pct: 0, consumed_pct: 0 }], 7, NOW, { locale: "en-US" });
-    expect(empty[0].full).toBe("Thu, Sep 24: no weekly usage");
+    // No rows at all is "no data"; rows without any rise are a real 0%.
+    const empty = dayBars([{ day_start_ms: local(24), peak_pct: 0, consumed_pct: 0, samples: 0 }], 7, NOW, { locale: "en-US" });
+    expect(empty[0]).toMatchObject({ hasData: false, detail: "Thu, Sep 24 · no data", full: "Thu, Sep 24: no data" });
+    const idle = dayBars([{ day_start_ms: local(24), peak_pct: 12, consumed_pct: 0.2, samples: 3 }], 7, NOW, { locale: "en-US" });
+    expect(idle[0]).toMatchObject({ hasData: true, detail: "Thu, Sep 24 · 0%" });
+    expect(idle[0].full).toBe("Thu, Sep 24: 0% of the weekly limit used (peak 12%)");
     expect(dayBars(days, 7, local(30), {}).some((b) => b.today)).toBe(false);
     expect(dayBars([], 7, NOW)).toEqual([]);
   });

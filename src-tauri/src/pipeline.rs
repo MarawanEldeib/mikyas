@@ -166,7 +166,7 @@ impl Engine {
             self.update_transcript(path, now);
         }
         if dirty.desktop {
-            self.poll_desktop();
+            self.poll_desktop(now);
         }
         if dirty.sessions {
             self.desktop_sessions =
@@ -342,7 +342,8 @@ impl Engine {
     }
 
     /// Reloads the Desktop usage file when any candidate's mtime or length changed.
-    fn poll_desktop(&mut self) {
+    /// Samples dated more than `FUTURE_SLACK_MS` after `now` (a clock that ran ahead) are ignored.
+    fn poll_desktop(&mut self, now: Ms) {
         let stamp: Vec<(PathBuf, Option<SystemTime>, u64)> = self
             .paths
             .desktop_usage_files()
@@ -358,7 +359,8 @@ impl Engine {
             return;
         }
         self.desktop_stamp = stamp;
-        match desktop_usage::load(&self.reader, &self.paths) {
+        let max_t_ms = now.saturating_add(snapshot::FUTURE_SLACK_MS);
+        match desktop_usage::load(&self.reader, &self.paths, max_t_ms) {
             Ok(Some(usage)) => {
                 self.desktop_health = DesktopHealth::Ok {
                     last_sample_ms: usage.last_sample_ms,
@@ -654,8 +656,8 @@ mod tests {
     fn context_alerts_fire_once_and_survive_restarts() {
         let (_t, paths) = setup();
         let now = now_ms();
-        // 180K of the default 200K window: 90%.
-        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 179_990);
+        // 900K tokens: a 1M window (more than 200K were seen), 90% full.
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 899_990);
         let settings = Settings::default();
         let mut engine = Engine::new(paths.clone());
         let out = engine.tick(now, &settings, &Dirty::all());
@@ -672,7 +674,7 @@ mod tests {
         assert!(restarted.tick(now + 2, &settings, &Dirty::all()).alerts.is_empty(), "no re-fire");
 
         // Turned off: a second session at 90% stays quiet.
-        write_transcript_ctx(&paths, "s2", &chrono_like(now), 179_990);
+        write_transcript_ctx(&paths, "s2", &chrono_like(now), 899_990);
         let off = Settings {
             ctx_alerts: false,
             ..Settings::default()
@@ -688,10 +690,55 @@ mod tests {
     }
 
     #[test]
+    fn context_alerts_skip_guesses_over_the_default_size() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        // 180K tokens and no capture: 90% of the 200K default, but it may well be a 1M session.
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 179_990);
+        let mut engine = Engine::new(paths.clone());
+        let out = engine.tick(now, &Settings::default(), &Dirty::all());
+        assert!(out.snapshot.sessions[0].ctx_pct.is_some_and(|p| p >= 89.9));
+        assert!(context_alerts(&out).is_empty(), "{:?}", out.alerts);
+        // Once a statusline capture confirms the 200K size, the same estimate alerts.
+        std::fs::create_dir_all(paths.capture_dir()).unwrap();
+        let capture = format!(
+            r#"{{"v":1,"session_id":"s1","written_at_ms":{now},"changed_at_ms":{now},"fingerprint":1,
+            "context":{{"context_window_size":200000}}}}"#
+        );
+        std::fs::write(paths.capture_dir().join("s1.json"), capture).unwrap();
+        let dirty = Dirty {
+            captures: true,
+            ..Dirty::default()
+        };
+        let out = engine.tick(now + 1, &Settings::default(), &dirty);
+        assert_eq!(context_alerts(&out).iter().map(|e| e.threshold).collect::<Vec<_>>(), vec![90]);
+    }
+
+    #[test]
+    fn desktop_samples_from_the_future_are_ignored() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        // The last sample was written while the clock ran three days ahead.
+        write_desktop(
+            &paths,
+            &[(now - 20 * MINUTE_MS, 30, 60), (now - 5 * MINUTE_MS, 31, 61), (now + 3 * DAY_MS, 99, 99)],
+        );
+        let mut engine = Engine::new(paths.clone());
+        let out = engine.tick(now, &Settings::default(), &Dirty::all());
+        assert_eq!(out.snapshot.windows[0].state.pct, 31.0);
+        assert_eq!(
+            out.snapshot.health.desktop,
+            DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS) }
+        );
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.desktop_watermark_ms, now - 5 * MINUTE_MS);
+    }
+
+    #[test]
     fn context_thresholds_come_from_settings() {
         let (_t, paths) = setup();
         let now = now_ms();
-        write_transcript(&paths, "s1", &chrono_like(now - 1_000)); // 50%
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 499_990); // 50% of 1M
         let mut engine = Engine::new(paths.clone());
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).alerts.is_empty());
         let low = Settings {
