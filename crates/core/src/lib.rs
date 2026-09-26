@@ -11,8 +11,11 @@
 //!   `wrap.json`, `bin/cuw-capture.exe` (to skip identical copies), `backups/` (listed for
 //!   rotation) and the shim's `capture/_*.log` files.
 //!
-//! [`paths::Paths::detect`] also lists the entry names in `%LOCALAPPDATA%\Packages` to find
-//! MSIX copies of Claude Desktop; it opens no file there.
+//! Outside the data root, Connect reads the shim sidecar next to the app executable (the copy it
+//! installs into `bin/`), and on Unix the shim's `--diag` reads `/proc/<pid>/comm` and `stat` for
+//! process names. [`paths::Paths::detect`] lists the entry names in `%LOCALAPPDATA%\Packages` to
+//! find MSIX copies of Claude Desktop, and the app stats watched Claude files (size, mtime) with
+//! `std::fs::metadata`; neither opens their contents.
 
 pub mod alerts;
 pub mod capture;
