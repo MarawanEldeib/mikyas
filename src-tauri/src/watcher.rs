@@ -35,7 +35,8 @@ impl Watcher {
                 Ok(event) if !event.need_rescan() => event,
                 other => {
                     if let Err(e) = other {
-                        log(&format!("file watcher error ({e}); rescanning"));
+                        // The kind only: the error's display lists the paths involved.
+                        log(&format!("file watcher error ({:?}); rescanning", e.kind));
                     }
                     flag.store(true, Ordering::SeqCst);
                     shared.send(Msg::Rescan);

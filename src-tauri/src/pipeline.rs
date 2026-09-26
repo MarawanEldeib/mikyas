@@ -217,8 +217,8 @@ impl PipelineState {
 
     /// A snapshot of what is loaded so far (the history only, before the first tick); reads and
     /// writes nothing.
-    pub fn preview(&self, now: Ms) -> Snapshot {
-        self.build(now, &Settings::default())
+    pub fn preview(&self, now: Ms, settings: &Settings) -> Snapshot {
+        self.build(now, settings)
     }
 
     /// Reloads what `dirty` names, rebuilds the snapshot, records history and evaluates alerts.
@@ -385,7 +385,8 @@ impl PipelineState {
         let weekly_reset = rows
             .iter()
             .rev()
-            .filter(|r| WindowKind::from_short(&r.w) == WindowKind::SevenDay)
+            // As the recap: only exact reset times count, never estimated ones.
+            .filter(|r| !r.e && WindowKind::from_short(&r.w) == WindowKind::SevenDay)
             .find_map(|r| r.r)
             .map(|r| (r, r <= now));
         RecapKey {
@@ -615,10 +616,10 @@ fn stamp_of(files: Vec<PathBuf>) -> Stamp {
 /// `local_*.json` files below `dir` (the files `desktop_sessions::load_all` reads), without
 /// following links; only names and metadata are looked at here.
 fn session_files(reader: &SafeReader, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > SESSIONS_MAX_DEPTH || !reader.allows_dir(dir) {
+    if depth > SESSIONS_MAX_DEPTH {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = reader.read_dir(dir) else { return };
     for entry in entries.flatten() {
         let Ok(kind) = entry.file_type() else { continue };
         let path = entry.path();
@@ -1466,5 +1467,34 @@ mod pace_recap_tests {
         assert_eq!(persisted.recap.last_recapped_end_ms, Some(end));
         let mut restarted = PipelineState::new(paths.clone());
         assert_eq!(recaps(&restarted.tick(now + 3, &settings, &Dirty::all())), 0);
+    }
+
+    #[test]
+    fn weekly_recap_fires_when_the_exact_reset_passes_after_an_estimated_row() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let end = now + HOUR_MS;
+        let mut text = String::new();
+        for i in 0..8_i64 {
+            let t = end - 7 * DAY_MS + HOUR_MS + i * 20 * HOUR_MS;
+            text.push_str(&format!(
+                "{{\"t\":{t},\"w\":\"7d\",\"p\":{},\"r\":{end},\"s\":\"cli\",\"e\":false}}\n",
+                10 * (i + 1)
+            ));
+        }
+        // The newest row carries only an estimated reset, which the recap ignores.
+        let estimated = end + 7 * DAY_MS;
+        text.push_str(&format!(
+            "{{\"t\":{},\"w\":\"7d\",\"p\":85,\"r\":{estimated},\"s\":\"desktop\",\"e\":true}}\n",
+            end - 2 * HOUR_MS
+        ));
+        std::fs::create_dir_all(paths.history_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.history_file(), text).unwrap();
+
+        let settings = Settings::default();
+        let mut engine = PipelineState::new(paths.clone());
+        assert_eq!(recaps(&engine.tick(now, &settings, &Dirty::default())), 0, "not reset yet");
+        // No new rows: only the exact reset time passing can make the recap due.
+        assert_eq!(recaps(&engine.tick(end + 1, &settings, &Dirty::default())), 1);
     }
 }

@@ -58,7 +58,8 @@ pub fn run() {
     let settings = settings::load(&paths.settings_file());
     // Reads only: a second launch exits in the single-instance plugin before anything is written.
     let mut pipeline_state = PipelineState::new(paths.clone());
-    let shared = Arc::new(Shared::new(paths, settings, pipeline_state.preview(now_ms())));
+    let preview = pipeline_state.preview(now_ms(), &settings);
+    let shared = Arc::new(Shared::new(paths, settings, preview));
 
     let app = tauri::Builder::default()
         // Must be registered first: a second launch just surfaces the running widget (and exits

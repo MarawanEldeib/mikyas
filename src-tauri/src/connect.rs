@@ -489,8 +489,11 @@ fn next_secret(s: &str) -> Option<(usize, usize)> {
             continue;
         }
         let start = i + 1 + (after.len() - after.trim_start().len());
-        consider(start, value_len(&s[start..]));
-        break;
+        let len = value_len(&s[start..]);
+        if len > 0 {
+            consider(start, len);
+            break;
+        }
     }
     best
 }
@@ -886,6 +889,11 @@ mod tests {
         );
         assert_eq!(mask_secrets("run sk-ant-PLACEHOLDER end"), format!("run sk-ant-{MASK} end"));
         assert_eq!(mask_secrets("VERSION=2 line"), "VERSION=2 line");
+        assert_eq!(
+            mask_secrets("A_KEY=;MY_TOKEN=PLACEHOLDER line"),
+            format!("A_KEY=;MY_TOKEN={MASK} line"),
+            "an empty value does not end the search"
+        );
         let (_t, env) = setup(Some(
             r#"{"statusLine":{"type":"command","command":"SECRET=PLACEHOLDER my-line"}}"#,
         ));

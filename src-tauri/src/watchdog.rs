@@ -429,6 +429,45 @@ mod tests {
     }
 
     #[test]
+    fn a_real_connect_reads_back_as_connected_in_every_shell() {
+        use cuw_core::cmdline::ShellKind;
+        let originals = [None, Some("my-line --flag"), Some(r#""C:/Program Files/x/line.exe" a"#)];
+        for kind in [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            for original in originals {
+                let tmp = tempfile::tempdir().unwrap();
+                let paths = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("data"));
+                std::fs::create_dir_all(paths.claude_home()).unwrap();
+                if let Some(cmd) = original {
+                    let json = serde_json::json!({"statusLine": {"type": "command", "command": cmd}});
+                    std::fs::write(paths.claude_settings(), json.to_string()).unwrap();
+                }
+                let sidecar = tmp.path().join("sidecar").join(cuw_core::cmdline::SHIM_EXE_NAME);
+                std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+                std::fs::write(&sidecar, b"fake shim").unwrap();
+                let env = connect::ConnectEnv {
+                    paths: paths.clone(),
+                    shell: connect::Shell {
+                        kind,
+                        exe: PathBuf::from("shell.exe"),
+                    },
+                    shim_source: Some(sidecar),
+                    selftest: false,
+                };
+                if connect::connect(&env, 1_000).is_err() {
+                    // Commands this shell cannot wrap safely are refused; nothing to observe.
+                    assert!(original.is_some(), "{kind:?}");
+                    assert_eq!(observe_paths(&paths), Observed::NotWrapped, "{kind:?} {original:?}");
+                    continue;
+                }
+                assert_eq!(observe_paths(&paths), Observed::Connected, "{kind:?} {original:?}");
+                // Connecting again (already ours) keeps it that way.
+                connect::connect(&env, 2_000).unwrap();
+                assert_eq!(observe_paths(&paths), Observed::Connected, "again: {kind:?} {original:?}");
+            }
+        }
+    }
+
+    #[test]
     fn watch_is_dropped_and_polling_stops_while_off() {
         assert_eq!(wait_for(true), Some(RECHECK));
         assert_eq!(wait_for(false), None, "only a wake (setting change) or shutdown");
