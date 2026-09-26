@@ -56,7 +56,8 @@ pub fn run() {
 
     let paths = Paths::detect();
     diag::init(paths.data_root());
-    // Once, before anything reads the data folder: the move from Claude Usage Widget.
+    // Once, before anything reads the data folder: the move from Claude Usage Widget. It runs
+    // before the single-instance check; a second launch at that moment finds nothing left to switch.
     let migrated =
         migrate::run(&paths, migrate::legacy_root().as_deref(), connect::find_sidecar().as_deref(), now_ms());
     let settings = settings::load(&paths.settings_file());

@@ -33,7 +33,7 @@ listed here cannot be opened.
 | `%APPDATA%\Claude\claude-code-sessions\**\local_*.json` (Desktop Code tab) | only `cliSessionId`, `model`, `lastFocusedAt`, `lastActivityAt`. The account/org folder names are not stored. |
 | `~/.claude/projects/**/*.jsonl` (Claude Code transcripts; `CLAUDE_CONFIG_DIR` is honoured) | the last 256 KiB (1 MiB if needed) and the first 64 KiB (512 KiB if needed) of recent files. Only these fields of assistant lines: `type`, `isSidechain`, `sessionId`, `entrypoint`, `timestamp`, `cwd` (folder name only, shown only if you enable "Show project name"), `message.model` and `message.usage` token counts; plus the 1M-context marker of the model identity line. **Message content is never parsed or kept.** Files under `subagents` folders are ignored. |
 | `%APPDATA%\Claude\local-agent-mode-sessions\**\.claude\projects\**\*.jsonl` (Cowork transcripts) | same as above. Other files in that tree — e.g. a session's `.claude\history.jsonl` prompt history — are not readable. |
-| `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`). |
+| `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`), and once on the first start after moving from Claude Usage Widget, when only the old helper's path in `statusLine.command` is replaced with SovaWatch's (a backup is kept first). |
 | `%LOCALAPPDATA%\SovaWatch\**` | the widget's own data (below). |
 | `%LOCALAPPDATA%\ClaudeUsageWidget\` | only once, on the first start after moving from Claude Usage Widget (the app's former name): its settings, state, history, alerts, window positions, connection record (`wrap.json`) and captures are copied into `%LOCALAPPDATA%\SovaWatch\`. The old folder is not deleted; its `wrap.json` is renamed `wrap.json.migrated` once the status line points at the new helper. |
 
@@ -55,7 +55,7 @@ listed here cannot be opened.
 | `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
 | `bin\sovawatch-capture.exe` | the capture helper your status-line command points to. |
-| `migrated.json` | after moving from Claude Usage Widget: when the move happened and whether the status line was switched to the new helper, so the move runs and is announced only once. |
+| `migrated.json` | after moving from Claude Usage Widget: when the move happened and whether the status line was switched to the new helper (if not, the error message), so the move runs and is announced only once. |
 
 The installer puts the app itself (`sovawatch.exe`, `sovawatch-capture.exe`, `THIRD_PARTY_NOTICES.md`, `uninstall.exe`) in the same `%LOCALAPPDATA%\SovaWatch\` folder.
 

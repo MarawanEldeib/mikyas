@@ -1,7 +1,8 @@
 //! Connect / Disconnect Claude Code: file handling around `sovawatch_core::claude_settings`.
 //!
 //! Every path comes from a [`Paths`] value, so the whole flow is tested against temp dirs; the
-//! real `~/.claude/settings.json` is only touched when the user clicks Connect in the app.
+//! real `~/.claude/settings.json` is only touched when the user clicks Connect or Disconnect in the
+//! app (and once by the move from Claude Usage Widget, `crate::migrate`).
 //!
 //! Connect (real run):
 //! 1. copy the shim sidecar into `<data_root>/bin/` (only when its bytes differ),

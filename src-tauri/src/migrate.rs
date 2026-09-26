@@ -18,7 +18,8 @@
 //! 3. [`MARKER_FILE`] records the move, so it runs, and is announced, only once.
 //!
 //! A failed switch leaves the status line on the old helper: SovaWatch still recognises that
-//! command (status, Disconnect, Reconnect), and the notice asks the user to Connect again.
+//! command (status, Disconnect, Reconnect), and the notice asks the user to Disconnect and
+//! Connect again (Settings shows that command as connected, so it offers only Disconnect).
 //! Nothing here runs while `SOVA_DATA_DIR` overrides the data folder (tests, development).
 
 use std::fs;
@@ -222,7 +223,8 @@ pub fn notice(outcome: &Outcome) -> Option<(String, String)> {
         }
         StatusLineMove::Failed(_) => {
             "Settings and history were copied, but Claude Code's status line still uses Claude Usage \
-             Widget's helper. Open Settings → Claude Code and Connect before uninstalling the old app."
+             Widget's helper. In SovaWatch, open Settings → Claude Code, click Disconnect, then Connect \
+             again before uninstalling the old app."
         }
     };
     Some((title, body.to_owned()))
@@ -415,9 +417,25 @@ mod tests {
         assert!(reason.contains("helper"), "{reason}");
         assert_eq!(w.settings(), before);
         assert!(w.legacy.join("wrap.json").is_file(), "the old uninstaller can still restore it");
-        assert!(notice(&outcome).unwrap().1.contains("Connect"));
+        // Settings shows the old helper's command as Connected and offers only Disconnect there,
+        // so the notice must ask for Disconnect, then Connect.
+        assert!(matches!(connect::status(&w.paths), ConnectionStatus::Connected { .. }));
+        let body = notice(&outcome).unwrap().1;
+        assert!(body.contains("Disconnect") && body.contains("Connect again"), "{body}");
         // SovaWatch can still undo it exactly with the copied record.
         connect::disconnect(&w.paths, 2_000).unwrap();
+        assert_eq!(w.settings(), ORIGINAL);
+        // ...and the Connect that follows wraps with SovaWatch's own helper.
+        let env = ConnectEnv {
+            paths: w.paths.clone(),
+            shell: Shell { kind: ShellKind::Pwsh, exe: PathBuf::from("pwsh.exe") },
+            shim_source: Some(w.sidecar.clone()),
+            selftest: false,
+        };
+        connect::connect(&env, 3_000).unwrap();
+        let text = w.settings();
+        assert!(!text.contains(LEGACY_SHIM_EXE_NAME) && text.matches(SHIM_EXE_NAME).count() == 1, "{text}");
+        connect::disconnect(&w.paths, 4_000).unwrap();
         assert_eq!(w.settings(), ORIGINAL);
     }
 
