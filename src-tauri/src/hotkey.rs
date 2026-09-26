@@ -1,7 +1,7 @@
 //! Global hotkeys: `settings.hotkey` (default Ctrl+Alt+U) toggles click-through and
 //! `settings.toggle_hotkey` (default Ctrl+Alt+H, "" = none) shows / hides the widget. A failed
-//! registration (bad accelerator, or another app owns it) is reported separately in
-//! `UiState.hotkey_error` / `UiState.toggle_hotkey_error`.
+//! registration (bad accelerator, another app owns it, or the other shortcut already is it) is
+//! reported separately in `UiState.hotkey_error` / `UiState.toggle_hotkey_error`.
 
 use std::sync::{Arc, Mutex};
 
@@ -69,30 +69,42 @@ pub fn parse(accel: &str) -> Result<Option<Shortcut>, String> {
     })
 }
 
-/// The show/hide shortcut may not repeat the click-through one (the second registration would
-/// fail with a confusing "already registered").
-pub fn duplicate_error(click_through: Option<&Shortcut>, show_hide: Option<&Shortcut>, accel: &str) -> Option<String> {
-    (show_hide.is_some() && show_hide == click_through)
-        .then(|| format!("{} is already the click-through shortcut", accel.trim()))
+/// The two shortcuts may not be the same (the second registration would fail with a confusing
+/// "already registered"). The one the user just changed (`edited`) is refused, so the error
+/// shows under the field they edited, and the other keeps working; at startup (`None`) the
+/// show/hide one gives way. Returns the (click-through, show/hide) errors; `accels` are the
+/// settings' (click-through, show/hide) strings.
+pub fn duplicate_errors(
+    click_through: Option<&Shortcut>,
+    show_hide: Option<&Shortcut>,
+    edited: Option<Action>,
+    (click_accel, toggle_accel): (&str, &str),
+) -> (Option<String>, Option<String>) {
+    if show_hide.is_none() || show_hide != click_through {
+        return (None, None);
+    }
+    match edited {
+        Some(Action::ClickThrough) => (Some(format!("{} is already the show/hide shortcut", click_accel.trim())), None),
+        Some(Action::ShowHide) | None => (None, Some(format!("{} is already the click-through shortcut", toggle_accel.trim()))),
+    }
 }
 
-/// Registers the click-through shortcut `accel` (just saved in the settings) together with the
-/// saved show/hide shortcut; updates both errors and emits `ui-state`.
-pub fn register(app: &AppHandle, shared: &Shared, accel: &str) {
-    let toggle = shared.settings().toggle_hotkey.clone();
-    register_both(app, shared, accel, &toggle);
+/// Registers both saved shortcuts after the user changed `edited` in the settings.
+pub fn register_edited(app: &AppHandle, shared: &Shared, edited: Action) {
+    register_both(app, shared, Some(edited));
 }
 
-/// Registers both saved shortcuts (startup, or the show/hide shortcut changed).
+/// Registers both saved shortcuts (startup).
 pub fn register_all(app: &AppHandle, shared: &Shared) {
-    let (click, toggle) = {
+    register_both(app, shared, None);
+}
+
+/// Updates both errors and emits `ui-state`.
+fn register_both(app: &AppHandle, shared: &Shared, edited: Option<Action>) {
+    let (click_accel, toggle_accel) = {
         let s = shared.settings();
         (s.hotkey.clone(), s.toggle_hotkey.clone())
     };
-    register_both(app, shared, &click, &toggle);
-}
-
-fn register_both(app: &AppHandle, shared: &Shared, click_accel: &str, toggle_accel: &str) {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     let mut registered = Registered::default();
@@ -102,16 +114,23 @@ fn register_both(app: &AppHandle, shared: &Shared, click_accel: &str, toggle_acc
             .map_err(|e| format!("{} could not be registered (already used by another app?): {e}", accel.trim()))
     };
 
-    let click = parse(click_accel);
-    let click_shortcut = click.as_ref().ok().copied().flatten();
+    let click = parse(&click_accel);
+    let toggle = parse(&toggle_accel);
+    let (click_duplicate, toggle_duplicate) = duplicate_errors(
+        click.as_ref().ok().and_then(Option::as_ref),
+        toggle.as_ref().ok().and_then(Option::as_ref),
+        edited,
+        (&click_accel, &toggle_accel),
+    );
     let click_error = match click {
-        Ok(Some(s)) => try_register(click_accel, s).map(|s| registered.click_through = Some(s)).err(),
+        Ok(Some(s)) => click_duplicate
+            .or_else(|| try_register(&click_accel, s).map(|s| registered.click_through = Some(s)).err()),
         Ok(None) => None,
         Err(e) => Some(e),
     };
-    let toggle_error = match parse(toggle_accel) {
-        Ok(Some(s)) => duplicate_error(click_shortcut.as_ref(), Some(&s), toggle_accel)
-            .or_else(|| try_register(toggle_accel, s).map(|s| registered.show_hide = Some(s)).err()),
+    let toggle_error = match toggle {
+        Ok(Some(s)) => toggle_duplicate
+            .or_else(|| try_register(&toggle_accel, s).map(|s| registered.show_hide = Some(s)).err()),
         Ok(None) => None,
         Err(e) => Some(e),
     };
@@ -156,14 +175,23 @@ mod tests {
     }
 
     #[test]
-    fn show_hide_may_not_repeat_click_through() {
-        let u = sc("Ctrl+Alt+U");
+    fn a_clash_is_reported_under_the_field_just_edited() {
+        let h = sc("Ctrl+Alt+H");
+        let accels = ("Control+Alt+H", " Ctrl+Alt+H ");
+        // The click-through shortcut was changed to the show/hide one: refused under its own field.
         assert_eq!(
-            duplicate_error(Some(&u), Some(&sc("Control+Alt+U")), "Control+Alt+U").as_deref(),
-            Some("Control+Alt+U is already the click-through shortcut")
+            duplicate_errors(Some(&h), Some(&h), Some(Action::ClickThrough), accels),
+            (Some("Control+Alt+H is already the show/hide shortcut".to_owned()), None)
         );
-        assert_eq!(duplicate_error(Some(&u), Some(&sc("Ctrl+Alt+H")), "Ctrl+Alt+H"), None);
-        assert_eq!(duplicate_error(None, Some(&u), "Ctrl+Alt+U"), None);
-        assert_eq!(duplicate_error(None, None, ""), None);
+        // The show/hide shortcut was changed to the click-through one.
+        let show_hide_refused = (None, Some("Ctrl+Alt+H is already the click-through shortcut".to_owned()));
+        assert_eq!(duplicate_errors(Some(&h), Some(&h), Some(Action::ShowHide), accels), show_hide_refused);
+        // At startup (a hand-edited settings file) the show/hide shortcut gives way.
+        assert_eq!(duplicate_errors(Some(&h), Some(&h), None, accels), show_hide_refused);
+        // No clash.
+        let u = sc("Ctrl+Alt+U");
+        assert_eq!(duplicate_errors(Some(&u), Some(&h), Some(Action::ClickThrough), accels), (None, None));
+        assert_eq!(duplicate_errors(None, Some(&h), Some(Action::ShowHide), accels), (None, None));
+        assert_eq!(duplicate_errors(None, None, Some(Action::ClickThrough), ("", "")), (None, None));
     }
 }

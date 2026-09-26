@@ -156,7 +156,7 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
         crate::window::set_click_through(app, ghost, new.effect);
     }
     if new.hotkey != old.hotkey {
-        crate::hotkey::register(app, shared, &new.hotkey);
+        crate::hotkey::register_edited(app, shared, crate::hotkey::Action::ClickThrough);
     }
     // [stream B] appearance hooks (ui_scale, card_rows, dock) go here.
     crate::window::on_settings_changed(app, shared, &old, &new);
@@ -164,7 +164,7 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
     // [stream C] system hooks (toggle_hotkey, auto_hide_fullscreen, check_updates) go here.
     // (A changed `hotkey` above already re-registered both shortcuts.)
     if new.toggle_hotkey != old.toggle_hotkey && new.hotkey == old.hotkey {
-        crate::hotkey::register_all(app, shared);
+        crate::hotkey::register_edited(app, shared, crate::hotkey::Action::ShowHide);
     }
     if new.auto_hide_fullscreen != old.auto_hide_fullscreen {
         crate::fullscreen::wake(app);
@@ -199,6 +199,7 @@ fn save(shared: &Shared, settings: &Settings) {
 
 pub fn quit(app: &AppHandle, shared: &Shared) {
     shared.quitting.store(true, Ordering::SeqCst);
+    crate::dock::collapse_before_save(app, shared);
     let _ = app.save_window_state(StateFlags::POSITION);
     shared.send(Msg::Shutdown);
     app.exit(0);

@@ -25,6 +25,9 @@ pub const POLL_OFF: Duration = Duration::from_secs(30);
 /// Consecutive agreeing samples before the widget hides or returns, so Alt+Tab or Task View
 /// passing through the foreground does not make it flicker.
 pub const STABLE_SAMPLES: u8 = 2;
+/// How far (px) a fullscreen window's edges may stray from its monitor's. A maximized window's
+/// frame overhangs every edge by its thickness (8–9 px at 100–125 %), so it never matches.
+pub const EDGE_SLACK: i32 = 1;
 
 /// Screen rectangle in physical pixels (`right`/`bottom` exclusive, like Win32 `RECT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,9 +39,16 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// `self` covers all of `other`.
-    pub fn covers(&self, other: &Rect) -> bool {
-        self.left <= other.left && self.top <= other.top && self.right >= other.right && self.bottom >= other.bottom
+    /// Every edge of `self` is within [`EDGE_SLACK`] px of the same edge of `other`.
+    pub fn matches(&self, other: &Rect) -> bool {
+        [
+            self.left - other.left,
+            self.top - other.top,
+            self.right - other.right,
+            self.bottom - other.bottom,
+        ]
+        .iter()
+        .all(|d| d.abs() <= EDGE_SLACK)
     }
 }
 
@@ -97,9 +107,10 @@ pub fn is_shell_class(class: &str) -> bool {
 
 /// Does a fullscreen app own the foreground on the widget's monitor (`widget_monitor`)?
 ///
-/// A maximized window is not fullscreen: it stops at the taskbar, and where it does cover the
-/// whole monitor (auto-hidden taskbar) the shell does not report it as busy — so outside the
-/// shell's busy states only a window exactly the size of its monitor counts.
+/// Exclusive Direct3D and presentation mode say so outright. Otherwise the window must match its
+/// monitor (within [`EDGE_SLACK`]), even when the shell reports busy: a maximized window stops
+/// at the taskbar, and under an auto-hidden taskbar its frame overhangs every edge (the shell may
+/// then call it busy). A fullscreen window, even one that also reports maximized, does not.
 pub fn is_fullscreen(fg: Option<&Foreground>, quns: Quns, widget_monitor: Option<isize>) -> bool {
     let Some(fg) = fg else {
         return quns == Quns::PresentationMode;
@@ -113,11 +124,7 @@ pub fn is_fullscreen(fg: Option<&Foreground>, quns: Quns, widget_monitor: Option
     if is_shell_class(&fg.class) || widget_monitor.is_some_and(|m| m != fg.monitor_id) {
         return false;
     }
-    match quns {
-        Quns::D3dFullScreen => true,
-        Quns::Busy => fg.rect.covers(&fg.monitor),
-        Quns::PresentationMode | Quns::Other => fg.rect == fg.monitor,
-    }
+    quns == Quns::D3dFullScreen || fg.rect.matches(&fg.monitor)
 }
 
 /// Turns raw samples into state changes once [`STABLE_SAMPLES`] of them agree.
@@ -274,12 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn coverage() {
-        assert!(MONITOR.covers(&MONITOR));
-        assert!(rect(-8, -8, 1928, 1088).covers(&MONITOR));
-        assert!(!rect(-8, -8, 1928, 1040).covers(&MONITOR), "maximized above the taskbar");
-        assert!(!rect(0, 0, 1920, 1079).covers(&MONITOR));
-        assert!(!rect(1, 0, 1920, 1080).covers(&MONITOR));
+    fn matching_the_monitor() {
+        assert!(MONITOR.matches(&MONITOR));
+        assert!(rect(-1, 1, 1921, 1079).matches(&MONITOR), "within a pixel on every edge");
+        assert!(!rect(-8, -8, 1928, 1088).matches(&MONITOR), "a maximized frame overhangs");
+        assert!(!rect(-8, -8, 1928, 1040).matches(&MONITOR), "maximized above the taskbar");
+        assert!(!rect(0, 0, 1920, 1078).matches(&MONITOR));
+        assert!(!rect(2, 0, 1920, 1080).matches(&MONITOR));
     }
 
     #[test]
@@ -299,7 +307,7 @@ mod tests {
         assert!(is_fullscreen(Some(&game), Quns::Other, Some(1)), "exact monitor size");
         let exclusive = fg("RiotWindowClass", rect(0, 0, 1280, 720));
         assert!(is_fullscreen(Some(&exclusive), Quns::D3dFullScreen, Some(1)));
-        // Busy with a window that overshoots the monitor on every side still counts.
+        // A window that overshoots the monitor by a pixel on every side still counts.
         assert!(is_fullscreen(Some(&fg("SDL_app", rect(-1, -1, 1921, 1081))), Quns::Busy, None));
     }
 
@@ -308,9 +316,22 @@ mod tests {
         let maximized = fg("Chrome_WidgetWin_1", rect(-8, -8, 1928, 1040));
         assert!(!is_fullscreen(Some(&maximized), Quns::Other, Some(1)));
         assert!(!is_fullscreen(Some(&maximized), Quns::Busy, Some(1)));
-        // Auto-hidden taskbar: covers the monitor, but the shell does not call it busy.
-        let over = fg("Notepad", rect(-8, -8, 1928, 1088));
-        assert!(!is_fullscreen(Some(&over), Quns::Other, Some(1)));
+        // Auto-hidden taskbar: the frame overhangs every edge of the monitor. Even when the shell
+        // calls that busy, the overhang tells it from a fullscreen window.
+        for over in [rect(-8, -8, 1928, 1088), rect(-9, -9, 1929, 1089)] {
+            let over = fg("Notepad", over);
+            assert!(!is_fullscreen(Some(&over), Quns::Other, Some(1)));
+            assert!(!is_fullscreen(Some(&over), Quns::Busy, Some(1)), "{:?}", over.rect);
+        }
+    }
+
+    #[test]
+    fn fullscreen_means_the_monitor_rect_within_a_pixel() {
+        // A browser in fullscreen (also maximized: IsZoomed is true) or a borderless game.
+        assert!(is_fullscreen(Some(&fg("Chrome_WidgetWin_1", MONITOR)), Quns::Busy, Some(1)));
+        assert!(is_fullscreen(Some(&fg("SDL_app", rect(1, 0, 1920, 1081))), Quns::Other, Some(1)));
+        assert!(!is_fullscreen(Some(&fg("SDL_app", rect(-2, 0, 1920, 1080))), Quns::Busy, Some(1)));
+        assert!(!is_fullscreen(Some(&fg("SDL_app", rect(0, 0, 1920, 1078))), Quns::Busy, Some(1)));
     }
 
     #[test]

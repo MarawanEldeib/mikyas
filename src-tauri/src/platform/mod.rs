@@ -27,6 +27,18 @@ pub fn show_without_activating(window: &tauri::WebviewWindow) {
     let _ = window;
 }
 
+/// Moves and sizes the window in one call (outer rect, physical px); `false` where that is not
+/// available, and the caller moves and resizes separately.
+pub fn set_outer_rect(window: &tauri::WebviewWindow, rect: (i32, i32, i32, i32)) -> bool {
+    #[cfg(windows)]
+    return windows::set_outer_rect(window, rect);
+    #[cfg(not(windows))]
+    {
+        let _ = (window, rect);
+        false
+    }
+}
+
 /// The native window handle as an integer.
 pub fn window_id(window: &tauri::WebviewWindow) -> Option<isize> {
     #[cfg(windows)]

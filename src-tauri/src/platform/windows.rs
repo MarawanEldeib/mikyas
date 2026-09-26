@@ -1,6 +1,7 @@
 //! Windows specifics: DWM rounded corners on the frameless window, WebView2's low memory target
 //! (the widget's page is tiny and mostly idle, so trimming caches costs nothing visible), showing
-//! without activation, and the window queries behind fullscreen auto-hide.
+//! without activation, moving and resizing in one step, and the window queries behind
+//! fullscreen auto-hide.
 //! (Non-activation uses `set_focusable(false)`, which Tauri implements with `WS_EX_NOACTIVATE`.)
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -12,7 +13,8 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_R
 use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromWindow};
 use windows_sys::Win32::UI::Shell::{QUERY_USER_NOTIFICATION_STATE, SHQueryUserNotificationState};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowRect, SW_SHOWNOACTIVATE, ShowWindow,
+    GetClassNameW, GetForegroundWindow, GetWindowRect, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+    ShowWindow,
 };
 
 use crate::fullscreen::{Foreground, Quns, Rect};
@@ -66,6 +68,14 @@ pub fn show_without_activating(window: &tauri::WebviewWindow) {
     unsafe {
         ShowWindow(hwnd as HWND, SW_SHOWNOACTIVATE);
     }
+}
+
+/// Moves and sizes the window in one `SetWindowPos` (outer rect, physical px); `false` if that
+/// failed.
+pub fn set_outer_rect(window: &tauri::WebviewWindow, (x, y, w, h): (i32, i32, i32, i32)) -> bool {
+    let Some(hwnd) = window_id(window) else { return false };
+    // SAFETY: a top-level window of this process; SetWindowPos has no memory arguments.
+    unsafe { SetWindowPos(hwnd as HWND, std::ptr::null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) != 0 }
 }
 
 // Fullscreen detection. Window queries only (no process handles, memory reads, injection or
