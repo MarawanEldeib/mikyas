@@ -79,17 +79,14 @@ pub fn entries(ui: &UiState, settings: &Settings) -> Vec<Entry> {
     ]
 }
 
-/// Builds the native menu. A shortcut Windows can't draw leaves its item without the text rather
-/// than failing the menu.
+/// Builds the native menu. Tauri drops a shortcut it can't parse, so such an item simply has no
+/// shortcut text.
 fn build(app: &AppHandle, entries: &[Entry]) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
     for entry in entries {
         match entry {
             Entry::Item { id, label, accelerator } => {
-                let item = |accel: Option<&str>| MenuItem::with_id(app, *id, *label, true, accel);
-                if menu.append(&item(accelerator.as_deref())?).is_err() {
-                    menu.append(&item(None)?)?;
-                }
+                menu.append(&MenuItem::with_id(app, *id, *label, true, accelerator.as_deref())?)?;
             }
             Entry::Check {
                 id,
@@ -97,10 +94,7 @@ fn build(app: &AppHandle, entries: &[Entry]) -> tauri::Result<Menu<Wry>> {
                 checked,
                 accelerator,
             } => {
-                let item = |accel: Option<&str>| CheckMenuItem::with_id(app, *id, *label, true, *checked, accel);
-                if menu.append(&item(accelerator.as_deref())?).is_err() {
-                    menu.append(&item(None)?)?;
-                }
+                menu.append(&CheckMenuItem::with_id(app, *id, *label, true, *checked, accelerator.as_deref())?)?;
             }
             Entry::Separator => menu.append(&PredefinedMenuItem::separator(app)?)?,
         }

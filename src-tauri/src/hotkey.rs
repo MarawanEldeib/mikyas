@@ -24,10 +24,8 @@ struct Registered {
     show_hide: Option<Shortcut>,
 }
 
-static REGISTERED: Mutex<Registered> = Mutex::new(Registered {
-    click_through: None,
-    show_hide: None,
-});
+/// Managed state holding the [`Registered`] shortcuts.
+struct RegisteredState(Mutex<Registered>);
 
 impl Registered {
     fn action_for(&self, pressed: &Shortcut) -> Option<Action> {
@@ -46,7 +44,8 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     if event.state() != ShortcutState::Pressed {
         return;
     }
-    let action = lock(&REGISTERED).action_for(shortcut);
+    let Some(registered) = app.try_state::<RegisteredState>() else { return };
+    let action = lock(&registered.0).action_for(shortcut);
     let shared = app.state::<Arc<Shared>>().inner().clone();
     match action {
         Some(Action::ClickThrough) => crate::commands::apply_click_through_toggle(app, &shared),
@@ -134,7 +133,12 @@ fn register_both(app: &AppHandle, shared: &Shared, edited: Option<Action>) {
         Ok(None) => None,
         Err(e) => Some(e),
     };
-    *lock(&REGISTERED) = registered;
+    match app.try_state::<RegisteredState>() {
+        Some(state) => *lock(&state.0) = registered,
+        None => {
+            app.manage(RegisteredState(Mutex::new(registered)));
+        }
+    }
     {
         let mut ui = shared.ui();
         ui.hotkey_error = click_error;

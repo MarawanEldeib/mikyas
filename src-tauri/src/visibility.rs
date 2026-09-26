@@ -84,10 +84,12 @@ pub fn apply(app: &AppHandle, shared: &Shared, event: Event) {
             let _ = window.hide();
         }
         Action::Show => {
+            // On-screen first (its monitor may have gone while it was hidden), so it never
+            // appears at the old place and then jumps.
+            crate::window::ensure_on_screen(&window);
             crate::platform::show_without_activating(&window);
-            // Also keeps the window layer's own visibility state in sync (a no-op show now) and
-            // brings the widget back on-screen if its monitor went away while it was hidden.
-            crate::window::show(app);
+            // Keeps the window layer's own visibility state in sync (a no-op show now).
+            let _ = window.show();
         }
     }
     if changed || action != Action::Nothing {

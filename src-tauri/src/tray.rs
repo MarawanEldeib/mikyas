@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cuw_core::engine::types::{Phase, Snapshot, WindowKind};
+use cuw_core::engine::types::Snapshot;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -13,7 +13,8 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::settings::{TrayNumber, ViewMode};
 use crate::state::{HiddenReason, Shared};
-use crate::tray_icon::Style;
+pub use crate::tray_icon::Level;
+use crate::tray_icon::{Style, tray_values};
 use crate::visibility::{self, Event};
 
 pub const TRAY_ID: &str = "main";
@@ -23,14 +24,6 @@ const ICON_ORANGE: &[u8] = include_bytes!("../icons/tray-orange.png");
 const ICON_RED: &[u8] = include_bytes!("../icons/tray-red.png");
 const ICON_GREY: &[u8] = include_bytes!("../icons/tray-grey.png");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Level {
-    Green,
-    Orange,
-    Red,
-    Grey,
-}
-
 /// Handles to menu items whose state mirrors the app.
 pub struct TrayItems {
     show_hide: MenuItem<Wry>,
@@ -38,45 +31,24 @@ pub struct TrayItems {
     click_through: CheckMenuItem<Wry>,
     compact: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
+    /// What the icon was last drawn with (the number's mode and style).
+    drawn: Mutex<Option<(TrayNumber, Style)>>,
 }
 
 /// Highest usage among fresh five-hour / weekly windows → colour (statusline thresholds:
 /// green < 40, orange 40–69, red ≥ 70). No fresh data → grey.
 pub fn level(snapshot: &Snapshot) -> Level {
-    let max = snapshot
-        .windows
-        .iter()
-        .filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay))
-        .filter(|w| !w.state.stale)
-        .map(|w| if w.state.phase == Phase::ResetAwaitingData { 0.0 } else { w.state.pct })
-        .fold(None, |m: Option<f32>, p| Some(m.map_or(p, |m| m.max(p))));
-    max.map_or(Level::Grey, Level::for_pct)
-}
-
-impl Level {
-    /// Statusline thresholds: green < 40, orange 40–69, red ≥ 70.
-    pub fn for_pct(pct: f32) -> Self {
-        if pct >= 70.0 {
-            Self::Red
-        } else if pct >= 40.0 {
-            Self::Orange
-        } else {
-            Self::Green
-        }
-    }
+    tray_values(snapshot)
+        .filter(|v| !v.stale)
+        .map(|v| v.pct)
+        .max()
+        .map_or(Level::Grey, |pct| Level::for_pct(f32::from(pct)))
 }
 
 /// "5h 22% · 7d 61%" (stale values marked with a trailing "?").
 pub fn tooltip(snapshot: &Snapshot) -> String {
-    let parts: Vec<String> = snapshot
-        .windows
-        .iter()
-        .filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay))
-        .map(|w| {
-            let pct = if w.state.phase == Phase::ResetAwaitingData { 0.0 } else { w.state.pct };
-            let stale = if w.state.stale { "?" } else { "" };
-            format!("{} {:.0}%{stale}", w.state.kind.short(), pct)
-        })
+    let parts: Vec<String> = tray_values(snapshot)
+        .map(|v| format!("{} {}%{}", v.kind.short(), v.pct, if v.stale { "?" } else { "" }))
         .collect();
     if parts.is_empty() {
         "Claude Usage — no data yet".into()
@@ -136,6 +108,15 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
     }
     menu.append_items(&[&sep()?, &quit])?;
 
+    app.manage(TrayItems {
+        show_hide,
+        pin,
+        click_through,
+        compact,
+        autostart,
+        drawn: Mutex::new(None),
+    });
+
     let snapshot = crate::state::lock(&shared.snapshot).clone();
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(tooltip(&snapshot))
@@ -158,13 +139,6 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
         builder = builder.icon(img);
     }
     builder.build(app)?;
-    app.manage(TrayItems {
-        show_hide,
-        pin,
-        click_through,
-        compact,
-        autostart,
-    });
     Ok(())
 }
 
@@ -226,13 +200,12 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// What the icon was last drawn with (the number's mode and style).
-static DRAWN: Mutex<Option<(TrayNumber, Style)>> = Mutex::new(None);
-
 /// The number icon (`settings.tray_number`), or the coloured dot when it is off or there is no data.
 fn tray_image(app: &AppHandle, snapshot: &Snapshot, mode: TrayNumber) -> Option<Image<'static>> {
     let style = Style::current(app);
-    *crate::state::lock(&DRAWN) = Some((mode, style));
+    if let Some(items) = app.try_state::<TrayItems>() {
+        *crate::state::lock(&items.drawn) = Some((mode, style));
+    }
     crate::tray_icon::number_icon(snapshot, mode, style).or_else(|| icon(level(snapshot)))
 }
 
@@ -252,7 +225,10 @@ pub fn update(app: &AppHandle, snapshot: &Snapshot) {
 /// since it was drawn (called from the settings hook and the display poll).
 pub fn refresh_style(app: &AppHandle) {
     let now = (mode(app), Style::current(app));
-    if *crate::state::lock(&DRAWN) == Some(now) {
+    let unchanged = app
+        .try_state::<TrayItems>()
+        .is_some_and(|items| *crate::state::lock(&items.drawn) == Some(now));
+    if unchanged {
         return;
     }
     let Some(shared) = app.try_state::<Arc<Shared>>() else { return };
@@ -275,7 +251,9 @@ pub fn sync_checks(app: &AppHandle, shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuw_core::engine::types::{DesktopHealth, ResetInfo, Source, SourceHealth, WindowState, WindowView};
+    use cuw_core::engine::types::{
+        DesktopHealth, Phase, ResetInfo, Source, SourceHealth, WindowKind, WindowState, WindowView,
+    };
 
     fn snap(values: &[(WindowKind, f32, bool)]) -> Snapshot {
         Snapshot {
@@ -326,6 +304,25 @@ mod tests {
         for l in [Level::Green, Level::Orange, Level::Red, Level::Grey] {
             assert!(icon(l).is_some());
         }
+    }
+
+    #[test]
+    fn dot_tooltip_and_number_agree_on_a_reached_limit() {
+        let mut s = snap(&[(WindowKind::FiveHour, 95.0, false), (WindowKind::SevenDay, 20.0, false)]);
+        s.windows[0].state.limit_reached = true;
+        s.windows[1].state.pct = 20.4;
+        assert_eq!(level(&s), Level::Red);
+        assert_eq!(tooltip(&s), "5h 100% · 7d 20%");
+        let r = crate::tray_icon::reading(&s, TrayNumber::Worst).unwrap();
+        assert_eq!((r.pct, r.level), (100, Level::Red));
+        // Out-of-range values are clamped the same way everywhere.
+        let over = snap(&[(WindowKind::FiveHour, 130.0, false)]);
+        assert_eq!(tooltip(&over), "5h 100%");
+        let under = snap(&[(WindowKind::FiveHour, -4.0, false)]);
+        assert_eq!(tooltip(&under), "5h 0%");
+        assert_eq!(level(&under), Level::Green);
+        // The dot follows the number shown: 39.6 shows as 40, orange.
+        assert_eq!(level(&snap(&[(WindowKind::FiveHour, 39.6, false)])), Level::Orange);
     }
 
     #[test]

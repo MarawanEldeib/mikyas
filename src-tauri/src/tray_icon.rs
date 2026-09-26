@@ -6,12 +6,70 @@
 //!   DPI 100–200 %, coloured by level (the statusline thresholds in [`Level::for_pct`]) in shades
 //!   readable on a light or dark taskbar (registry `SystemUsesLightTheme`). 100 % is a lock, not
 //!   "100"; stale values are grey. No data at all → `None` (the grey dot).
+//! - [`tray_values`] is the one reading of the snapshot behind the dot's level, the tooltip and
+//!   the number, so all three apply the same reset, limit-reached and clamp rules.
 
 use cuw_core::engine::types::{Phase, Snapshot, WindowKind};
 use tauri::image::Image;
 
 use crate::settings::TrayNumber;
-use crate::tray::Level;
+
+/// Tray colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Green,
+    Orange,
+    Red,
+    Grey,
+}
+
+impl Level {
+    /// Statusline thresholds: green < 40, orange 40–69, red ≥ 70.
+    pub fn for_pct(pct: f32) -> Self {
+        if pct >= 70.0 {
+            Self::Red
+        } else if pct >= 40.0 {
+            Self::Orange
+        } else {
+            Self::Green
+        }
+    }
+}
+
+/// One five-hour or weekly window as the tray shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayValue {
+    pub kind: WindowKind,
+    /// Rounded %, 0–100: 0 while a reset awaits data, 100 once the limit is reached.
+    pub pct: u8,
+    pub stale: bool,
+}
+
+impl TrayValue {
+    /// The colour for this value (stale → grey).
+    pub fn level(&self) -> Level {
+        if self.stale { Level::Grey } else { Level::for_pct(f32::from(self.pct)) }
+    }
+}
+
+/// The snapshot's five-hour and weekly windows with the tray's rules applied.
+pub fn tray_values(snapshot: &Snapshot) -> impl Iterator<Item = TrayValue> + '_ {
+    snapshot
+        .windows
+        .iter()
+        .filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay))
+        .map(|w| {
+            let awaiting = w.state.phase == Phase::ResetAwaitingData;
+            let pct = if awaiting { 0.0 } else { w.state.pct };
+            let reached = w.state.limit_reached && !awaiting;
+            let rounded = pct.clamp(0.0, 100.0).round() as u8;
+            TrayValue {
+                kind: w.state.kind.clone(),
+                pct: if reached { 100 } else { rounded },
+                stale: w.state.stale,
+            }
+        })
+}
 
 /// Taskbar colour scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,28 +124,19 @@ pub struct Reading {
 /// Only stale values → the highest of them, grey. Nothing → `None`.
 pub fn reading(snapshot: &Snapshot, mode: TrayNumber) -> Option<Reading> {
     let wanted = |k: &WindowKind| match mode {
-        TrayNumber::Worst => matches!(k, WindowKind::FiveHour | WindowKind::SevenDay),
+        TrayNumber::Worst => true,
         TrayNumber::FiveHour => *k == WindowKind::FiveHour,
         TrayNumber::SevenDay => *k == WindowKind::SevenDay,
         TrayNumber::Off => false,
     };
-    let values: Vec<(f32, bool, bool)> = snapshot
-        .windows
-        .iter()
-        .filter(|w| wanted(&w.state.kind))
-        .map(|w| {
-            let awaiting = w.state.phase == Phase::ResetAwaitingData;
-            let pct = if awaiting { 0.0 } else { w.state.pct };
-            (pct, w.state.stale, w.state.limit_reached && !awaiting)
-        })
-        .collect();
-    let fresh: Vec<_> = values.iter().filter(|v| !v.1).collect();
+    let values: Vec<TrayValue> = tray_values(snapshot).filter(|v| wanted(&v.kind)).collect();
+    let fresh: Vec<&TrayValue> = values.iter().filter(|v| !v.stale).collect();
     let pool = if fresh.is_empty() { values.iter().collect() } else { fresh };
-    let &(pct, stale, reached) = pool.into_iter().max_by(|a, b| a.0.total_cmp(&b.0))?;
-    let rounded = pct.clamp(0.0, 100.0).round() as u8;
-    let pct = if reached || rounded >= 100 { 100 } else { rounded };
-    let level = if stale { Level::Grey } else { Level::for_pct(f32::from(pct)) };
-    Some(Reading { pct, level })
+    let v = pool.into_iter().max_by_key(|v| v.pct)?;
+    Some(Reading {
+        pct: v.pct,
+        level: v.level(),
+    })
 }
 
 /// The number icon for `snapshot`, or `None` for the dot icons.
@@ -249,51 +298,7 @@ pub fn render(r: Reading, style: Style) -> Vec<u8> {
 /// The taskbar theme (`SystemUsesLightTheme`, which is the taskbar's; `AppsUseLightTheme` is the
 /// apps'). Unreadable → dark, Windows' default.
 pub fn taskbar_theme() -> Theme {
-    if system_uses_light_theme() == Some(true) { Theme::Light } else { Theme::Dark }
-}
-
-#[cfg(windows)]
-fn system_uses_light_theme() -> Option<bool> {
-    use std::ffi::c_void;
-
-    #[link(name = "advapi32")]
-    unsafe extern "system" {
-        fn RegGetValueW(
-            hkey: isize,
-            sub_key: *const u16,
-            value: *const u16,
-            flags: u32,
-            kind: *mut u32,
-            data: *mut c_void,
-            len: *mut u32,
-        ) -> i32;
-    }
-    const HKEY_CURRENT_USER: isize = -2_147_483_647; // 0x80000001, sign-extended like Win32's HKEY
-    const RRF_RT_REG_DWORD: u32 = 0x10;
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-    let name = wide("SystemUsesLightTheme");
-    let mut value: u32 = 0;
-    let mut len = std::mem::size_of::<u32>() as u32;
-    // SAFETY: both strings are NUL-terminated and live across the call; `value` and `len`
-    // describe a writable 4-byte buffer, which RRF_RT_REG_DWORD never overruns.
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            key.as_ptr(),
-            name.as_ptr(),
-            RRF_RT_REG_DWORD,
-            std::ptr::null_mut(),
-            (&raw mut value).cast(),
-            &raw mut len,
-        )
-    };
-    (status == 0).then_some(value != 0)
-}
-
-#[cfg(not(windows))]
-fn system_uses_light_theme() -> Option<bool> {
-    None
+    if crate::platform::system_uses_light_theme() == Some(true) { Theme::Light } else { Theme::Dark }
 }
 
 #[cfg(test)]

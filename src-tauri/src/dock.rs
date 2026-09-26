@@ -18,13 +18,13 @@
 //! - Nothing extra is persisted: the window-state plugin saves the strip's position on quit (a
 //!   slid-out widget slides in first).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use crate::settings::{DockEdge, Settings, ViewMode};
 use crate::state::{Shared, lock};
-use crate::window::{Rect, area_for, physical, set_visible_rect, view_size, visible_rect, work_areas};
+use crate::window::{Rect, WindowState, area_for, physical, set_visible_rect, view_size, visible_rect, work_areas};
 
 /// The edge a docked widget sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,8 +162,6 @@ pub struct Placement {
     placed: Rect,
 }
 
-static LAST: Mutex<Option<Placement>> = Mutex::new(None);
-
 /// The strip to collapse to or expand from: the remembered one while the window is still
 /// where the dock put it (so expand → collapse round-trips even where clamping moved the
 /// view), else one derived from where the user moved it.
@@ -175,8 +173,10 @@ pub fn current_strip(last: Option<Placement>, side: Side, area: Rect, size: (i32
 }
 
 /// Forgets the remembered strip (the dock edge changed or docking was turned off).
-pub fn forget() {
-    *lock(&LAST) = None;
+pub fn forget(window: &WebviewWindow) {
+    if let Some(state) = window.try_state::<WindowState>() {
+        *lock(&state.last_placement) = None;
+    }
 }
 
 /// Sizes and places the window for the dock state: the strip, or `view` slid out.
@@ -185,23 +185,27 @@ pub fn place(window: &WebviewWindow, side: Side, settings: &Settings, view: View
     let areas = work_areas(window);
     let Some(area) = area_for(visible, &areas).or_else(|| areas.first().copied()) else { return };
     let dpi = window.scale_factor().unwrap_or(1.0);
-    let mut last = lock(&LAST);
-    let strip = current_strip(*last, side, area, strip_size(side, settings.ui_scale, dpi), visible);
+    // Window queries first: they wait for the main thread, so no lock is held across them.
+    let cursor = if expanded {
+        window.cursor_position().ok().map(|p| (p.x.round() as i32, p.y.round() as i32))
+    } else {
+        None
+    };
+    let state = window.try_state::<WindowState>();
+    let last = state.as_ref().and_then(|s| *lock(&s.last_placement));
+    let strip = current_strip(last, side, area, strip_size(side, settings.ui_scale, dpi), visible);
     let target = if expanded {
-        let cursor = window
-            .cursor_position()
-            .ok()
-            .map(|p| (p.x.round() as i32, p.y.round() as i32));
         expanded_rect(side, area, physical(view_size(view, settings), dpi), strip, visible, cursor)
     } else {
         strip
     };
-    *last = Some(Placement {
-        side,
-        strip,
-        placed: target,
-    });
-    drop(last);
+    if let Some(state) = &state {
+        *lock(&state.last_placement) = Some(Placement {
+            side,
+            strip,
+            placed: target,
+        });
+    }
     set_visible_rect(window, target, inset);
 }
 
