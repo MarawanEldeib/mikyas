@@ -1,5 +1,7 @@
-//! File-read allowlist. Every source parser reads through [`SafeReader`], so the widget can
-//! only ever open the handful of files it documents in PRIVACY.md. Credential, cookie and
+//! File-read allowlist. Every read of Claude Code's or Claude Desktop's files goes through
+//! [`SafeReader`], so of those the widget can only ever open the handful it documents in
+//! PRIVACY.md. The widget's own data root is allowed too (the capture loader reads through it),
+//! but its own files may also be read directly (see the crate docs). Credential, cookie and
 //! browser-storage files are hard-denied even if they sit inside an allowed tree.
 
 use std::fs::File;
