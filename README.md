@@ -175,6 +175,10 @@ Development overrides: `CUW_DATA_DIR`, `CLAUDE_CONFIG_DIR`, `CUW_X` / `CUW_Y`,
   Claude usage limits.
 - **Design & development:** Eng. Marawan Eldeib — built and maintains the widget.
 
+## Terms
+
+Using the app means you accept the [Terms of Use](TERMS.md) (also shown by the installer).
+
 ## License
 
 Copyright © 2026 Marawan Eldeib. **All rights reserved** — see [LICENSE](LICENSE).

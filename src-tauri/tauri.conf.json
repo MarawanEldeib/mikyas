@@ -19,7 +19,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "MarawanEldeib",
+    "publisher": "Marawan Eldeib",
+    "copyright": "Copyright (c) 2026 Marawan Eldeib. All rights reserved.",
+    "licenseFile": "../TERMS.md",
     "homepage": "https://github.com/MarawanEldeib/claude-usage-widget",
     "shortDescription": "Floating, token-free Claude usage widget",
     "longDescription": "Shows your Claude 5-hour and weekly usage, reset countdowns, model and context % in a small always-on-top widget. Reads only local files; never your Claude login.",
