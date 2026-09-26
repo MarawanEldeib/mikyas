@@ -911,3 +911,117 @@ mod tests {
         (if m <= 2 { y + 1 } else { y }, m, d)
     }
 }
+
+// ---- [A] helpers
+
+#[cfg(test)]
+mod pace_recap_tests {
+    use super::*;
+    use cuw_core::engine::types::WindowKind;
+    use cuw_core::pace_alerts::PaceAlertEvent;
+    use cuw_core::time::HOUR_MS;
+
+    fn setup() -> (tempfile::TempDir, Paths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::with_roots(
+            tmp.path().join(".claude"),
+            vec![tmp.path().join("Roaming").join("Claude")],
+            tmp.path().join("data"),
+        );
+        (tmp, paths)
+    }
+
+    /// A statusline capture for one session with a five-hour value and exact reset.
+    fn write_capture(paths: &Paths, at: Ms, fh: f32, reset_ms: Ms) {
+        std::fs::create_dir_all(paths.capture_dir()).unwrap();
+        let json = format!(
+            r#"{{"v":1,"session_id":"s1","written_at_ms":{at},"changed_at_ms":{at},"fingerprint":1,
+            "rate_limits":{{"five_hour":{{"used_percentage":{fh},"resets_at":{}}}}}}}"#,
+            reset_ms / 1000
+        );
+        std::fs::write(paths.capture_dir().join("s1.json"), json).unwrap();
+    }
+
+    fn pace(out: &TickOutput) -> Vec<&PaceAlertEvent> {
+        out.alerts
+            .iter()
+            .filter_map(|a| match a {
+                Alert::Pace(e) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn recaps(out: &TickOutput) -> usize {
+        out.alerts.iter().filter(|a| matches!(a, Alert::Recap(_))).count()
+    }
+
+    #[test]
+    fn heads_up_fires_once_and_survives_a_restart() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let reset = (now + 5 * MINUTE_MS) / 1000 * 1000;
+        write_capture(&paths, now - 1_000, 100.0, reset);
+        let off = Settings {
+            reset_heads_up: false,
+            ..Settings::default()
+        };
+        let mut engine = Engine::new(paths.clone());
+        assert!(pace(&engine.tick(now, &off, &Dirty::all())).is_empty(), "turned off");
+
+        let settings = Settings::default();
+        let out = engine.tick(now + 1, &settings, &Dirty::default());
+        let expected = PaceAlertEvent::HeadsUp {
+            kind: WindowKind::FiveHour,
+            reset_at_ms: reset,
+        };
+        assert_eq!(pace(&out), vec![&expected]);
+        assert!(pace(&engine.tick(now + 2, &settings, &Dirty::default())).is_empty(), "once");
+
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert!(persisted.pace_alerts.kinds["five_hour"].heads_up_fired_for.is_some());
+        let mut restarted = Engine::new(paths.clone());
+        assert!(pace(&restarted.tick(now + 3, &settings, &Dirty::all())).is_empty(), "no re-fire");
+    }
+
+    #[test]
+    fn weekly_recap_fires_once_when_on() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let end = now - HOUR_MS;
+        let mut text = String::new();
+        for i in 0..8_i64 {
+            let t = end - 7 * DAY_MS + HOUR_MS + i * 20 * HOUR_MS;
+            text.push_str(&format!(
+                "{{\"t\":{t},\"w\":\"7d\",\"p\":{},\"r\":{end},\"s\":\"cli\",\"e\":false}}\n",
+                10 * (i + 1)
+            ));
+        }
+        std::fs::create_dir_all(paths.history_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.history_file(), text).unwrap();
+
+        let off = Settings {
+            weekly_recap: false,
+            ..Settings::default()
+        };
+        let mut engine = Engine::new(paths.clone());
+        assert_eq!(recaps(&engine.tick(now, &off, &Dirty::all())), 0);
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.recap.last_recapped_end_ms, None, "off: state untouched");
+
+        let settings = Settings::default();
+        let out = engine.tick(now + 1, &settings, &Dirty::default());
+        let recap = out.alerts.iter().find_map(|a| match a {
+            Alert::Recap(r) => Some(r),
+            _ => None,
+        });
+        assert_eq!(recap.map(|r| (r.window_end_ms, r.used_pct)), Some((end, 80.0)));
+        assert!(recap.is_some_and(|r| r.busiest_day.is_some()), "local days reach the start");
+        assert_eq!(recaps(&engine.tick(now + 2, &settings, &Dirty::default())), 0);
+
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.recap.last_recapped_end_ms, Some(end));
+        let mut restarted = Engine::new(paths.clone());
+        assert_eq!(recaps(&restarted.tick(now + 3, &settings, &Dirty::all())), 0);
+    }
+}
