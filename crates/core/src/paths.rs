@@ -1,10 +1,13 @@
 //! The only module that knows where things live on disk. Every other module receives
 //! paths from a [`Paths`] value so tests can point everything at a temp directory.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Directory name of the widget's own data under the OS local-data dir.
 pub const APP_DIR_NAME: &str = "ClaudeUsageWidget";
+/// Directory under the data root where the shim writes statusline captures.
+const CAPTURE_DIR_NAME: &str = "capture";
 /// Env var that overrides the widget data root (tests, dev builds).
 pub const DATA_DIR_ENV: &str = "CUW_DATA_DIR";
 /// Claude Code's own override for `~/.claude`.
@@ -20,24 +23,21 @@ pub struct Paths {
 impl Paths {
     /// Resolves real locations for the current user.
     pub fn detect() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let claude_home = std::env::var_os(CLAUDE_CONFIG_DIR_ENV)
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| home.join(".claude"));
-        let data_root = std::env::var_os(DATA_DIR_ENV)
-            .map(PathBuf::from)
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| {
-                dirs::data_local_dir()
-                    .unwrap_or_else(|| home.join(".local").join("share"))
-                    .join(APP_DIR_NAME)
-            });
+            .unwrap_or_else(|| home_dir().join(".claude"));
         Self {
             claude_home,
             desktop_roots: detect_desktop_roots(),
-            data_root,
+            data_root: detect_data_root(),
         }
+    }
+
+    /// Only [`Self::capture_dir`], for the capture shim: it runs on every statusline update and
+    /// needs nothing else, while [`Self::detect`] also lists `%LOCALAPPDATA%\Packages`.
+    pub fn detect_capture_dir() -> PathBuf {
+        detect_data_root().join(CAPTURE_DIR_NAME)
     }
 
     /// Explicit locations, for tests.
@@ -91,7 +91,7 @@ impl Paths {
         &self.data_root
     }
     pub fn capture_dir(&self) -> PathBuf {
-        self.data_root.join("capture")
+        self.data_root.join(CAPTURE_DIR_NAME)
     }
     pub fn bin_dir(&self) -> PathBuf {
         self.data_root.join("bin")
@@ -117,6 +117,24 @@ impl Paths {
     pub fn settings_file(&self) -> PathBuf {
         self.data_root.join("settings.json")
     }
+}
+
+fn home_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn detect_data_root() -> PathBuf {
+    data_root_from(std::env::var_os(DATA_DIR_ENV), || {
+        dirs::data_local_dir().unwrap_or_else(|| home_dir().join(".local").join("share"))
+    })
+}
+
+/// The [`DATA_DIR_ENV`] value unless unset or empty, else `<local data dir>/ClaudeUsageWidget`.
+fn data_root_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> PathBuf) -> PathBuf {
+    env_value
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| local_dir().join(APP_DIR_NAME))
 }
 
 /// `<config_dir>/Claude` on every OS (`%APPDATA%\Claude`, `~/Library/Application Support/Claude`,
@@ -153,6 +171,23 @@ mod tests {
         assert_eq!(p.capture_dir(), PathBuf::from("/data/cuw/capture"));
         assert_eq!(p.history_file(), PathBuf::from("/data/cuw/history.jsonl"));
         assert!(p.desktop_usage_files().is_empty(), "non-existent roots are filtered");
+    }
+
+    #[test]
+    fn data_root_honours_the_env_override_unless_empty() {
+        let local = || PathBuf::from("/local");
+        let default = PathBuf::from("/local/ClaudeUsageWidget");
+        assert_eq!(
+            data_root_from(Some("/override".into()), || unreachable!("override wins")),
+            PathBuf::from("/override")
+        );
+        assert_eq!(data_root_from(Some(OsString::new()), local), default);
+        assert_eq!(data_root_from(None, local), default);
+    }
+
+    #[test]
+    fn fast_capture_dir_matches_the_full_detection() {
+        assert_eq!(Paths::detect_capture_dir(), Paths::detect().capture_dir());
     }
 
     #[test]

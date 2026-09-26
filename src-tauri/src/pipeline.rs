@@ -157,7 +157,7 @@ impl Engine {
     pub fn tick(&mut self, now: Ms, settings: &Settings, dirty: &Dirty) -> TickOutput {
         let before = self.persisted.clone();
         if dirty.captures {
-            self.reload_captures();
+            self.reload_captures(now);
         }
         if dirty.full_scan {
             self.full_transcript_scan(now);
@@ -256,8 +256,8 @@ impl Engine {
         snapshot::build_snapshot(&inputs, now)
     }
 
-    fn reload_captures(&mut self) {
-        self.captures = statusline::load_captures(&self.reader, &self.paths.capture_dir());
+    fn reload_captures(&mut self, now: Ms) {
+        self.captures = statusline::load_captures(&self.reader, &self.paths.capture_dir(), now);
         let mut exact = self.persisted.exact_resets();
         if snapshot::learn_exact_resets(&mut exact, &self.captures) {
             self.persisted.set_exact_resets(&exact);

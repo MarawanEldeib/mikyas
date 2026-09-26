@@ -231,7 +231,7 @@ fn argv(command: &[OsString]) -> i32 {
 
     let Some((program, args)) = command.split_first() else {
         capture_and_print_line("argv", &head, timed_out);
-        log_failure(&Paths::detect().capture_dir(), "argv", "no_program");
+        log_failure(&Paths::detect_capture_dir(), "argv", "no_program");
         return 0;
     };
 
@@ -253,7 +253,7 @@ fn argv(command: &[OsString]) -> i32 {
             // The user's statusline was replaced by the fallback line: record why (kind only;
             // the program name could be a private path).
             log_failure(
-                &Paths::detect().capture_dir(),
+                &Paths::detect_capture_dir(),
                 "argv",
                 &format!("spawn_{:?}", e.kind()),
             );
@@ -300,7 +300,7 @@ fn argv(command: &[OsString]) -> i32 {
 
 fn diag() {
     let (head, timed_out) = read_all_stdin();
-    let dir = Paths::detect().capture_dir();
+    let dir = Paths::detect_capture_dir();
     let block = diag_block(&head, timed_out);
     let _ = append_capped(&dir.join(DIAG_LOG), block.as_bytes(), DIAG_LOG_MAX);
     capture_input("diag", &head, timed_out);
@@ -314,7 +314,7 @@ fn diag() {
 /// Parses and saves the capture. Failures are logged (kind only, never input content) and
 /// otherwise ignored. Returns the record for rendering the `--default` line.
 fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) -> Option<CaptureRecord> {
-    let dir = Paths::detect().capture_dir();
+    let dir = Paths::detect_capture_dir();
     let result = capture::record_from_bytes(bytes, time::now_ms()).and_then(|rec| {
         capture::write_capture(&dir, rec.clone())?;
         Ok(rec)

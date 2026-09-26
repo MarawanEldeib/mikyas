@@ -581,14 +581,30 @@ fn cmd_pipe_form_preserves_bytes() {
     }
 }
 
+/// Git for Windows' bash from its machine-wide or per-user install. Never `bash` from PATH:
+/// `System32\bash.exe` is the WSL launcher.
+#[cfg(windows)]
+fn git_bash() -> Option<PathBuf> {
+    let machine = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(|var| Some(PathBuf::from(std::env::var_os(var)?).join(r"Git\bin\bash.exe")));
+    let user = std::env::var_os("LOCALAPPDATA")
+        .map(|dir| PathBuf::from(dir).join(r"Programs\Git\bin\bash.exe"));
+    machine.chain(user).find(|p| p.is_file())
+}
+
 #[cfg(windows)]
 #[test]
 fn git_bash_pipe_form_preserves_bytes() {
-    let bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
-    if !bash.exists() {
-        eprintln!("skipped: Git Bash not installed");
+    let Some(bash) = git_bash() else {
+        // libtest hides `eprintln!` output of passing tests; a direct write to stderr is not
+        // captured, so the skip shows in the `cargo test` output instead of passing silently.
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipped: bash.exe not found (git_bash_pipe_form_preserves_bytes)"
+        );
         return;
-    }
+    };
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let mut cmd = Command::new(bash);
