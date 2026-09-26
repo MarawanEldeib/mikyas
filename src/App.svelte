@@ -95,7 +95,7 @@
   {#if !app.ready}
     {#if app.error}
       <div class="fatal" role="alert">
-        <p>Couldn't load usage data: {app.error}</p>
+        <p title={app.error}>Couldn't load usage data: {app.error}</p>
         <button type="button" class="retry" onclick={() => void app.init()}>Retry</button>
       </div>
     {/if}
@@ -131,16 +131,27 @@
   .ghost :global(*) {
     pointer-events: none;
   }
+  /* Fits any view's window (down to the 72px pill): the message scrolls, Retry stays visible. */
   .fatal {
-    padding: 12px;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
     color: var(--fg-2);
   }
   .fatal p {
-    margin: 0 0 8px;
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 0;
     /* Clear of the caption buttons in the top-right corner. */
     padding-right: 72px;
   }
   .retry {
+    flex: none;
+    align-self: flex-start;
     height: 28px;
     padding: 0 12px;
     border: 0;
