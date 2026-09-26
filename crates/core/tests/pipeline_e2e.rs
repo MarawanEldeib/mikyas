@@ -424,15 +424,19 @@ fn oversized_desktop_file_is_refused_not_read() {
 fn bad_capture_files_are_skipped_and_good_ones_still_count() {
     let env = Env::new();
     let reset = T0 + 2 * HOUR_MS;
-    env.statusline(&five_hour(33.0, reset), T0);
     let dir = env.paths.capture_dir();
-    let good = std::fs::read(dir.join(format!("{SID}.json"))).unwrap();
-    // Oversized, truncated, garbage, a stray temp file and an old log: none may break loading.
-    let mut big = good.clone();
+    // An otherwise valid capture of another session at 90%, padded past the 64 KiB cap: if it
+    // were read, the account maximum would show 90% and fire the 80% alert.
+    env.statusline(&Statusline { five_hour: Some((90.0, reset)), ..Statusline::new(SID2) }, T0);
+    let mut big = std::fs::read(dir.join(format!("{SID2}.json"))).unwrap();
     big.pop();
     big.extend(std::iter::repeat_n(b' ', 70 * 1024));
     big.push(b'}');
+    assert!(serde_json::from_slice::<serde_json::Value>(&big).is_ok(), "still valid JSON, only too big");
     std::fs::write(dir.join(format!("{SID2}.json")), &big).unwrap();
+    env.statusline(&five_hour(33.0, reset), T0);
+    let good = std::fs::read(dir.join(format!("{SID}.json"))).unwrap();
+    // Truncated, garbage, a stray temp file and an old log: none may break loading.
     std::fs::write(dir.join("33333333-3333-4333-8333-333333333333.json"), &good[..good.len() / 2]).unwrap();
     std::fs::write(dir.join("44444444-4444-4444-8444-444444444444.json"), [0xff, 0xfe, 0x00, 0x7b]).unwrap();
     std::fs::write(dir.join(".55555555-5555-4555-8555-555555555555.1.2.tmp"), b"{").unwrap();
@@ -440,7 +444,8 @@ fn bad_capture_files_are_skipped_and_good_ones_still_count() {
 
     let mut widget = Widget::start(&env);
     let tick = widget.tick(T0 + MINUTE_MS);
-    assert_eq!(tick.five_hour().state.pct, 33.0);
+    assert_eq!(tick.five_hour().state.pct, 33.0, "the oversized 90% capture was read");
+    assert!(tick.limit.is_empty(), "{:?}", tick.limit);
     assert_eq!(tick.snap.health.cli_last_capture_ms, Some(T0));
 }
 
