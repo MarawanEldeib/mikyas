@@ -119,7 +119,7 @@ pub fn compute(
         reset_ms.map(|r| (pct + slope * ms_to_hours(r.saturating_sub(now_ms))) as f32);
     Some(Burn {
         slope_pct_per_h: slope as f32,
-        t100_ms: Some(t100_ms),
+        t100_ms,
         pct_at_reset,
         hits_limit_before_reset: reset_ms.is_some_and(|r| t100_ms < r),
     })
@@ -248,7 +248,7 @@ mod tests {
         assert!((burn.slope_pct_per_h - 10.0).abs() < 0.01, "{burn:?}");
         let expected = NOW + 5 * HOUR_MS;
         assert!(
-            (burn.t100_ms.unwrap() - expected).abs() <= MINUTE_MS,
+            (burn.t100_ms - expected).abs() <= MINUTE_MS,
             "{burn:?}"
         );
         assert!((burn.pct_at_reset.unwrap() - 80.0).abs() < 0.1, "{burn:?}");
@@ -270,7 +270,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            (burn.t100_ms.unwrap() - (NOW + 3 * HOUR_MS)).abs() <= MINUTE_MS,
+            (burn.t100_ms - (NOW + 3 * HOUR_MS)).abs() <= MINUTE_MS,
             "{burn:?}"
         );
         assert!(
@@ -598,7 +598,7 @@ mod tests {
             let got = compute(&WindowKind::FiveHour, history, &st, now);
             if let Some(b) = &got {
                 assert!(b.slope_pct_per_h > MIN_SLOPE_PCT_PER_H, "sample {k}: {b:?}");
-                assert!(b.t100_ms.is_some_and(|t| t > now), "sample {k}: {b:?}");
+                assert!(b.t100_ms > now, "sample {k}: {b:?}");
             }
 
             // Samples before a decrease inside the lookback never influence the result.
@@ -657,7 +657,7 @@ mod tests {
             let st = state(kind.clone(), pct, reset.clone());
             if let Some(b) = compute(&kind, &samples, &st, NOW) {
                 prop_assert!(b.slope_pct_per_h > MIN_SLOPE_PCT_PER_H);
-                prop_assert!(b.t100_ms.is_some_and(|t| t > NOW));
+                prop_assert!(b.t100_ms > NOW);
                 let future_reset = reset.at_ms().filter(|r| *r > NOW);
                 prop_assert_eq!(b.pct_at_reset.is_some(), future_reset.is_some());
                 if let Some(p) = b.pct_at_reset {

@@ -18,7 +18,7 @@
 //! - `cost.total_api_duration_ms` (only used to detect a real new API response)
 //! - `version` (Claude Code version)
 //!
-//! [`read_capture`] applies the same rules again, so a hand-edited file cannot bring back what
+//! [`parse_capture`] applies the same rules again, so a hand-edited file cannot bring back what
 //! extraction drops.
 //!
 //! Freshness: `refreshInterval` re-runs the statusline with the SAME cached data, so
@@ -292,7 +292,7 @@ pub fn capture_from_bytes(
 
 /// Parses a capture file written by [`write_capture`]. Returns `None` for other schema versions
 /// or malformed content.
-pub fn read_capture(bytes: &[u8]) -> Option<CaptureRecord> {
+pub fn parse_capture(bytes: &[u8]) -> Option<CaptureRecord> {
     let rec: CaptureRecord = serde_json::from_slice(bytes).ok()?;
     if rec.v != CAPTURE_VERSION || sanitize_session_id(&rec.session_id).is_none() {
         return None;
@@ -346,7 +346,7 @@ pub(crate) fn read_capture_file(path: &Path) -> Option<CaptureRecord> {
     if buf.len() as u64 > MAX_CAPTURE_FILE_BYTES {
         return None;
     }
-    read_capture(&buf)
+    parse_capture(&buf)
 }
 
 fn bounded_str(v: Option<&Value>, max_len: usize) -> Option<String> {
@@ -397,7 +397,7 @@ fn non_negative_u64(v: Option<&Value>) -> Option<u64> {
 /// RFC 3339 strings are also accepted (see [`crate::time::json_time_to_ms`]). Outside
 /// [`plausible_resets_at`] → `None`.
 fn epoch_secs(v: &Value) -> Option<i64> {
-    // Checked after the conversion: strings are not range-checked by `json_time_to_ms`.
+    // `json_time_to_ms` range-checks milliseconds; checked again here in whole seconds.
     crate::time::json_time_to_ms(v)
         .map(|ms| ms.div_euclid(1000))
         .filter(|&secs| plausible_resets_at(secs))
@@ -805,7 +805,7 @@ mod tests {
             WriteOutcome::Written
         );
         assert_eq!(file_names(&dir), [format!("{SID}.json")]);
-        let stored = read_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
+        let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored, rec_at(NOW));
     }
 
@@ -833,7 +833,7 @@ mod tests {
             write_capture(dir, rec_at(later)).unwrap(),
             WriteOutcome::Written
         );
-        let stored = read_capture(&fs::read(&path).unwrap()).unwrap();
+        let stored = parse_capture(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored.written_at_ms, later);
         assert_eq!(
             stored.changed_at_ms, NOW,
@@ -853,7 +853,7 @@ mod tests {
             .unwrap()
             .used_percentage = 23.0;
         assert_eq!(write_capture(dir, next).unwrap(), WriteOutcome::Written);
-        let stored = read_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
+        let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored.changed_at_ms, NOW + SECOND_MS);
         assert_eq!(stored.written_at_ms, NOW + SECOND_MS);
         assert_eq!(stored.fingerprint, fingerprint(&stored));
@@ -869,7 +869,7 @@ mod tests {
             write_capture(dir, rec_at(earlier)).unwrap(),
             WriteOutcome::Written
         );
-        let stored = read_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
+        let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored.written_at_ms, earlier);
         assert_eq!(stored.changed_at_ms, earlier);
     }
@@ -885,7 +885,7 @@ mod tests {
                 write_capture(dir, rec_at(NOW)).unwrap(),
                 WriteOutcome::Written
             );
-            assert!(read_capture(&fs::read(&path).unwrap()).is_some());
+            assert!(parse_capture(&fs::read(&path).unwrap()).is_some());
             assert_eq!(file_names(dir), [format!("{SID}.json")]);
         }
     }
@@ -974,33 +974,33 @@ mod tests {
     }
 
     #[test]
-    fn read_capture_validates() {
+    fn parse_capture_validates() {
         let rec = rec_at(NOW);
         let bytes = serde_json::to_vec(&rec).unwrap();
-        assert_eq!(read_capture(&bytes), Some(rec.clone()));
+        assert_eq!(parse_capture(&bytes), Some(rec.clone()));
 
         let mut other_version = rec.clone();
         other_version.v = 2;
         assert_eq!(
-            read_capture(&serde_json::to_vec(&other_version).unwrap()),
+            parse_capture(&serde_json::to_vec(&other_version).unwrap()),
             None
         );
 
         let mut bad_id = rec.clone();
         bad_id.session_id = "a/b".into();
-        assert_eq!(read_capture(&serde_json::to_vec(&bad_id).unwrap()), None);
+        assert_eq!(parse_capture(&serde_json::to_vec(&bad_id).unwrap()), None);
 
-        assert_eq!(read_capture(b"garbage"), None);
-        assert_eq!(read_capture(&bytes[..bytes.len() / 2]), None);
+        assert_eq!(parse_capture(b"garbage"), None);
+        assert_eq!(parse_capture(&bytes[..bytes.len() / 2]), None);
 
         let mut edited: Value = serde_json::from_slice(&bytes).unwrap();
         edited["rate_limits"]["five_hour"]["used_percentage"] = json!(400.0);
-        let read = read_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
+        let read = parse_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
         assert_eq!(read.rate_limits["five_hour"].used_percentage, 100.0);
     }
 
     #[test]
-    fn read_capture_reapplies_the_extraction_rules_to_edited_files() {
+    fn parse_capture_reapplies_the_extraction_rules_to_edited_files() {
         let window = json!({ "used_percentage": 5.0, "resets_at": 1_790_000_000 });
         let mut edited = serde_json::to_value(rec_at(NOW)).unwrap();
         let limits = edited["rate_limits"].as_object_mut().unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
         edited["model"] = json!({ "id": "m".repeat(MAX_LABEL_LEN + 1), "display_name": "" });
         edited["context"] = json!({ "used_percentage": null, "context_window_size": 0 });
 
-        let read = read_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
+        let read = parse_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
         let keys: Vec<&str> = read.rate_limits.keys().map(String::as_str).collect();
         assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
         assert_eq!(read.transcript_path, None);
@@ -1034,7 +1034,7 @@ mod tests {
 
         let mut label_only = serde_json::to_value(rec_at(NOW)).unwrap();
         label_only["model"]["display_name"] = json!("d".repeat(MAX_LABEL_LEN + 1));
-        let read = read_capture(&serde_json::to_vec(&label_only).unwrap()).unwrap();
+        let read = parse_capture(&serde_json::to_vec(&label_only).unwrap()).unwrap();
         assert_eq!(
             read.model,
             Some(ModelInfo {
@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn read_capture_keeps_at_most_max_windows() {
+    fn parse_capture_keeps_at_most_max_windows() {
         let mut rec = rec_at(NOW);
         for i in 0..MAX_WINDOWS {
             rec.rate_limits.insert(
@@ -1056,7 +1056,7 @@ mod tests {
                 },
             );
         }
-        let read = read_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        let read = parse_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(read.rate_limits.len(), MAX_WINDOWS);
     }
 
@@ -1205,7 +1205,7 @@ mod tests {
                     prop_assert!((0.0..=100.0).contains(&pct));
                 }
                 let bytes = serde_json::to_vec(&rec).unwrap();
-                prop_assert_eq!(read_capture(&bytes), Some(rec));
+                prop_assert_eq!(parse_capture(&bytes), Some(rec));
             }
         }
 
@@ -1244,7 +1244,7 @@ mod tests {
                 prop_assert!((0.0..=100.0).contains(&pct));
             }
             let bytes = serde_json::to_vec(&rec).unwrap();
-            prop_assert_eq!(read_capture(&bytes), Some(rec));
+            prop_assert_eq!(parse_capture(&bytes), Some(rec));
         }
 
         #[test]

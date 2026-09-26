@@ -6,18 +6,27 @@
 //! `[1m]`), `lastFocusedAt`, `lastActivityAt` (epoch ms/s number or RFC 3339 string — use
 //! [`crate::time::json_time_to_ms`]). PRIVACY: the `<account>` and `<org>` directory names are
 //! never stored.
+//!
+//! [`load_all`] reads every file; [`DesktopSessionCache`] re-reads only the files that changed
+//! since its last update and skips files not modified for [`MAX_AGE_MS`].
 
 use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::fs::DirEntry;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use serde::Deserialize;
 
 use crate::saferead::SafeReader;
-use crate::sources::transcript::{has_extension, lenient, walk_files};
-use crate::time::{Ms, json_time_to_ms};
+use crate::sources::fsutil::{has_extension, lenient, walk_files};
+use crate::time::{DAY_MS, Ms, json_time_to_ms, system_time_ms};
 
 pub const MAX_FILE_BYTES: u64 = 256 * 1024;
 pub const MAX_WALK_DEPTH: usize = 4;
+/// [`DesktopSessionCache`] skips session files not modified for this long: their sessions have no
+/// transcript the widget still tracks, so they are never shown.
+pub const MAX_AGE_MS: Ms = 7 * DAY_MS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopSession {
@@ -34,21 +43,82 @@ pub struct DesktopSession {
 /// Empty strings count as missing. Symlinks are not followed.
 pub fn load_all(reader: &SafeReader, dirs: &[PathBuf]) -> Vec<DesktopSession> {
     let mut sessions = Vec::new();
+    for_each_session_file(reader, dirs, &mut |entry| {
+        if let Some(session) = read_session(reader, entry) {
+            sessions.push(session);
+        }
+    });
+    sorted(sessions)
+}
+
+/// [`load_all`] across calls, re-reading only files whose size or modification time changed.
+#[derive(Debug, Default)]
+pub struct DesktopSessionCache {
+    files: HashMap<PathBuf, CachedSession>,
+}
+
+#[derive(Debug)]
+struct CachedSession {
+    stamp: (Option<SystemTime>, u64),
+    session: Option<DesktopSession>,
+}
+
+impl DesktopSessionCache {
+    /// The sessions [`load_all`] would return, leaving out files not modified within
+    /// [`MAX_AGE_MS`] of `now_ms`. Unchanged files (same listed size and modification time) are
+    /// not read again; files that disappeared are dropped from the cache.
+    pub fn update(&mut self, reader: &SafeReader, dirs: &[PathBuf], now_ms: Ms) -> Vec<DesktopSession> {
+        let floor = now_ms.saturating_sub(MAX_AGE_MS);
+        let mut next = HashMap::with_capacity(self.files.len());
+        for_each_session_file(reader, dirs, &mut |entry| {
+            let Ok(meta) = entry.metadata() else { return };
+            let modified = meta.modified().ok();
+            if modified.and_then(system_time_ms).is_some_and(|m| m < floor) {
+                return;
+            }
+            let stamp = (modified, meta.len());
+            let path = entry.path();
+            let cached = self.files.remove(&path).filter(|c| c.stamp == stamp);
+            let slot = cached.unwrap_or_else(|| CachedSession {
+                stamp,
+                session: read_session(reader, entry),
+            });
+            next.insert(path, slot);
+        });
+        self.files = next;
+        sorted(self.files.values().filter_map(|c| c.session.clone()).collect())
+    }
+}
+
+/// Calls `on_file` for every `local_*.json` file below `dirs`.
+fn for_each_session_file(reader: &SafeReader, dirs: &[PathBuf], on_file: &mut dyn FnMut(&DirEntry)) {
     for dir in dirs {
         walk_files(reader, dir, MAX_WALK_DEPTH, &|_| false, &mut |entry| {
             let name = entry.file_name();
             let is_session_file = name.to_str().is_some_and(|n| n.starts_with("local_"));
-            if !is_session_file || !has_extension(&entry.path(), "json") {
-                return;
-            }
-            let Ok(bytes) = reader.read(&entry.path(), MAX_FILE_BYTES) else { return };
-            if let Some(session) = parse(&bytes) {
-                sessions.push(session);
+            if is_session_file && has_extension(&entry.path(), "json") {
+                on_file(entry);
             }
         });
     }
-    // `None < Some(_)`, so a descending sort puts sessions without activity last.
-    sessions.sort_by_key(|s| Reverse(s.last_activity_ms));
+}
+
+fn read_session(reader: &SafeReader, entry: &DirEntry) -> Option<DesktopSession> {
+    let bytes = reader.read(&entry.path(), MAX_FILE_BYTES).ok()?;
+    parse(&bytes)
+}
+
+/// Newest activity first; `None < Some(_)`, so a descending sort puts sessions without activity
+/// last. Equal activity is ordered by the remaining fields, so the result does not depend on the
+/// listing order.
+fn sorted(mut sessions: Vec<DesktopSession>) -> Vec<DesktopSession> {
+    sessions.sort_by(|a, b| {
+        Reverse(a.last_activity_ms)
+            .cmp(&Reverse(b.last_activity_ms))
+            .then_with(|| a.cli_session_id.cmp(&b.cli_session_id))
+            .then_with(|| a.last_focused_ms.cmp(&b.last_focused_ms))
+            .then_with(|| a.model.cmp(&b.model))
+    });
     sessions
 }
 
@@ -216,6 +286,36 @@ mod tests {
         write(&outside.join("local_x.json"), &session_json("x", json!(T_NOON)));
         let sessions = load_all(&e.reader, &[outside, e.dir.join("missing")]);
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn cache_rereads_only_changed_files_and_skips_old_ones() {
+        let e = env();
+        let org = e.dir.join("acct-dir").join("org-dir");
+        let (a, b) = (org.join("local_a.json"), org.join("local_b.json"));
+        write(&a, &session_json("a", json!(T_NOON)));
+        write(&b, &session_json("b", json!(T_NOON + 1_000)));
+        let now = crate::time::now_ms();
+        let dirs = std::slice::from_ref(&e.dir);
+        let mut cache = DesktopSessionCache::default();
+        let first = cache.update(&e.reader, dirs, now);
+        assert_eq!(first, load_all(&e.reader, dirs));
+
+        // Replace `a` behind the cache's back with the same size and time: not read again.
+        let stamp = std::fs::metadata(&a).unwrap().modified().unwrap();
+        write(&a, &session_json("z", json!(T_NOON)));
+        std::fs::File::options().write(true).open(&a).unwrap().set_modified(stamp).unwrap();
+        assert_eq!(cache.update(&e.reader, dirs, now), first, "unchanged stamp: cached");
+
+        // A real change (new size) is picked up; a removed file is dropped.
+        write(&a, &session_json("a2", json!(T_NOON + 2_000)));
+        std::fs::remove_file(&b).unwrap();
+        let ids: Vec<_> = cache.update(&e.reader, dirs, now).into_iter().filter_map(|s| s.cli_session_id).collect();
+        assert_eq!(ids, ["a2"]);
+
+        // Files not modified for a week are left out.
+        let later = now + MAX_AGE_MS + crate::time::DAY_MS;
+        assert!(cache.update(&e.reader, dirs, later).is_empty());
     }
 
     #[test]

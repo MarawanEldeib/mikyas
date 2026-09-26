@@ -7,6 +7,17 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::time::{FIVE_HOURS_MS, Ms, SEVEN_DAYS_MS};
 
+/// A drop of at least this many points between two measurements of one window means the window
+/// reset. Desktop reports integers that can lag the CLI's one-decimal values a little (80.2, then
+/// 79), so a smaller dip is noise. Merge (early reset), reset estimation, alerts, the history view
+/// and the weekly recap all use this one rule: see [`is_reset_drop`].
+pub const RESET_DROP_PCT: f32 = 2.0;
+
+/// True if going from `before` to `after` is a reset (a drop of at least [`RESET_DROP_PCT`]).
+pub fn is_reset_drop(before: f32, after: f32) -> bool {
+    before - after >= RESET_DROP_PCT
+}
+
 /// A usage-limit window. Serialised as a plain string: `"five_hour"`, `"seven_day"`, or any
 /// other key Anthropic adds later (e.g. `"seven_day_opus"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -53,6 +64,21 @@ impl WindowKind {
             WindowKind::FiveHour => "5h",
             WindowKind::SevenDay => "7d",
             WindowKind::Other(k) => k,
+        }
+    }
+
+    /// True if the history label `s` names this kind (as [`Self::from_short`] would parse it),
+    /// without allocating.
+    pub fn matches_short(&self, s: &str) -> bool {
+        match self {
+            WindowKind::FiveHour => matches!(s, "5h" | "five_hour" | "fh"),
+            WindowKind::SevenDay => matches!(s, "7d" | "seven_day" | "sd"),
+            WindowKind::Other(k) => match s {
+                "5h" | "five_hour" | "fh" | "7d" | "seven_day" | "sd" => false,
+                "so" => k == "seven_day_opus",
+                "sn" => k == "seven_day_sonnet",
+                other => k == other,
+            },
         }
     }
 
@@ -177,8 +203,9 @@ pub struct WindowState {
 pub struct Burn {
     /// Percentage points per hour (> 0).
     pub slope_pct_per_h: f32,
-    /// When 100% will be reached at this pace.
-    pub t100_ms: Option<Ms>,
+    /// When 100% will be reached at this pace (always known: a burn exists only for a positive
+    /// slope).
+    pub t100_ms: Ms,
     /// Projected % at the reset time (may exceed 100 before clamping in the UI).
     pub pct_at_reset: Option<f32>,
     /// True if 100% is projected before the reset.
@@ -325,6 +352,31 @@ mod tests {
         assert_eq!(k, WindowKind::Other("seven_day_opus".into()));
         assert_eq!(WindowKind::from_key("sd"), WindowKind::SevenDay);
         assert_eq!(WindowKind::from_short("5h"), WindowKind::FiveHour);
+    }
+
+    #[test]
+    fn matches_short_agrees_with_from_short() {
+        let kinds = [
+            WindowKind::FiveHour,
+            WindowKind::SevenDay,
+            WindowKind::Other("seven_day_opus".into()),
+            WindowKind::Other("seven_day_sonnet".into()),
+            WindowKind::Other("x".into()),
+            WindowKind::Other("fh".into()),
+        ];
+        for s in ["5h", "7d", "five_hour", "seven_day", "fh", "sd", "so", "sn", "seven_day_opus", "x", ""] {
+            for k in &kinds {
+                assert_eq!(k.matches_short(s), WindowKind::from_short(s) == *k, "{k:?} vs {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn reset_drop_is_two_points_inclusive() {
+        assert!(is_reset_drop(80.0, 78.0));
+        assert!(!is_reset_drop(80.2, 79.0));
+        assert!(!is_reset_drop(80.0, 79.0));
+        assert!(!is_reset_drop(10.0, 12.0));
     }
 
     #[test]

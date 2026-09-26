@@ -16,6 +16,20 @@ pub const SEVEN_DAYS_MS: Ms = 7 * DAY_MS;
 pub const MIN_PLAUSIBLE_MS: Ms = 978_307_200_000;
 /// 2200-01-01T00:00:00Z. An epoch number after this is a corrupt value, not a real time.
 pub const MAX_PLAUSIBLE_MS: Ms = 7_258_118_400_000;
+/// Samples, captures and turns dated further in the future than this (clock skew, corrupt files)
+/// are ignored.
+pub const FUTURE_SLACK_MS: Ms = 5 * MINUTE_MS;
+
+/// True for a time within [`MIN_PLAUSIBLE_MS`]..=[`MAX_PLAUSIBLE_MS`]; anything else is corrupt.
+pub fn plausible_ms(ms: Ms) -> bool {
+    (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).contains(&ms)
+}
+
+/// A file-system time in epoch ms: `None` before 1970, saturating at [`Ms::MAX`].
+pub fn system_time_ms(t: SystemTime) -> Option<Ms> {
+    let d = t.duration_since(UNIX_EPOCH).ok()?;
+    Some(Ms::try_from(d.as_millis()).unwrap_or(Ms::MAX))
+}
 
 /// Current wall-clock time. Only the app shell and the capture shim should call this;
 /// engine functions take `now_ms` as a parameter.
@@ -34,20 +48,21 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<Ms> {
 }
 
 /// Interprets a JSON value that may be epoch seconds, epoch milliseconds, or an RFC 3339 string.
-/// Numbers below 10^11 are treated as seconds (10^11 s is year 5138). A number that lands outside
-/// [`MIN_PLAUSIBLE_MS`]..=[`MAX_PLAUSIBLE_MS`] is corrupt (a tiny value would otherwise become a
-/// 1970 timestamp) and yields `None`. Strings carry their own unit and are not range-checked.
+/// Numbers below 10^11 are treated as seconds (10^11 s is year 5138). A time that lands outside
+/// [`MIN_PLAUSIBLE_MS`]..=[`MAX_PLAUSIBLE_MS`] ([`plausible_ms`]) is corrupt (a tiny number would
+/// otherwise become a 1970 timestamp) and yields `None`, for numbers and strings alike.
 pub fn json_time_to_ms(v: &serde_json::Value) -> Option<Ms> {
-    match v {
+    let ms = match v {
         serde_json::Value::Number(n) => {
             let f = n.as_f64()?;
             let ms = if f < 1e11 { f * 1000.0 } else { f };
             // `as` saturates (NaN becomes 0), so every out-of-range value fails the check below.
-            Some(ms as Ms).filter(|ms| (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).contains(ms))
+            ms as Ms
         }
-        serde_json::Value::String(s) => parse_rfc3339_ms(s),
-        _ => None,
-    }
+        serde_json::Value::String(s) => parse_rfc3339_ms(s)?,
+        _ => return None,
+    };
+    Some(ms).filter(|&ms| plausible_ms(ms))
 }
 
 #[cfg(test)]
@@ -68,8 +83,10 @@ mod tests {
         assert_eq!(json_time_to_ms(&serde_json::json!(1_790_000_000.5)), Some(1_790_000_000_500));
         assert_eq!(json_time_to_ms(&serde_json::json!(1_790_000_000_123_i64)), Some(1_790_000_000_123));
         assert_eq!(json_time_to_ms(&serde_json::json!("2026-09-24T00:00:02Z")), Some(1_790_208_002_000));
-        // Strings carry their own unit, so they are not range-checked.
-        assert_eq!(json_time_to_ms(&serde_json::json!("1970-01-01T00:00:02Z")), Some(2_000));
+        // Strings are range-checked like numbers.
+        assert_eq!(json_time_to_ms(&serde_json::json!("1970-01-01T00:00:02Z")), None);
+        assert_eq!(json_time_to_ms(&serde_json::json!("2200-01-01T00:00:00.001Z")), None);
+        assert_eq!(json_time_to_ms(&serde_json::json!("2200-01-01T00:00:00Z")), Some(MAX_PLAUSIBLE_MS));
         assert_eq!(json_time_to_ms(&serde_json::json!(null)), None);
         assert_eq!(json_time_to_ms(&serde_json::json!(-5)), None);
     }
@@ -104,5 +121,12 @@ mod tests {
         assert_eq!(json_time_to_ms(&json!(978_307_200_000_i64)), Some(MIN_PLAUSIBLE_MS));
         assert_eq!(json_time_to_ms(&json!(7_258_118_400_i64)), Some(MAX_PLAUSIBLE_MS));
         assert_eq!(json_time_to_ms(&json!(7_258_118_400_000_i64)), Some(MAX_PLAUSIBLE_MS));
+        assert!(plausible_ms(MIN_PLAUSIBLE_MS) && !plausible_ms(MIN_PLAUSIBLE_MS - 1));
+    }
+
+    #[test]
+    fn system_times_before_1970_are_none() {
+        assert_eq!(system_time_ms(UNIX_EPOCH + std::time::Duration::from_millis(5)), Some(5));
+        assert_eq!(system_time_ms(UNIX_EPOCH - std::time::Duration::from_millis(5)), None);
     }
 }

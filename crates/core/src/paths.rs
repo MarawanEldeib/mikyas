@@ -2,13 +2,14 @@
 //! paths from a [`Paths`] value so tests can point everything at a temp directory.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 /// Directory name of the widget's own data under the OS local-data dir.
 pub const APP_DIR_NAME: &str = "ClaudeUsageWidget";
 /// Directory under the data root where the shim writes statusline captures.
 const CAPTURE_DIR_NAME: &str = "capture";
-/// Env var that overrides the widget data root (tests, dev builds).
+/// Env var that overrides the widget data root (tests, dev builds, Connect's self-test). Only an
+/// absolute local path without `..` is honoured (see [`data_root_from`]).
 pub const DATA_DIR_ENV: &str = "CUW_DATA_DIR";
 /// Claude Code's own override for `~/.claude`.
 pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
@@ -18,6 +19,8 @@ pub struct Paths {
     claude_home: PathBuf,
     desktop_roots: Vec<PathBuf>,
     data_root: PathBuf,
+    /// The Desktop roots came from [`detect_desktop_roots`] (and may be refreshed).
+    detected_desktop: bool,
 }
 
 impl Paths {
@@ -31,7 +34,22 @@ impl Paths {
             claude_home,
             desktop_roots: detect_desktop_roots(),
             data_root: detect_data_root(),
+            detected_desktop: true,
         }
+    }
+
+    /// Detects the Desktop roots again (Claude Desktop's MSIX package can be installed, moved or
+    /// removed while the widget runs; this only lists entry names). Returns whether they changed,
+    /// in which case a [`crate::saferead::SafeReader`] built from the old value must be rebuilt.
+    /// Explicit roots ([`Self::with_roots`]) are kept as they are.
+    pub fn refresh_desktop_roots(&mut self) -> bool {
+        if !self.detected_desktop {
+            return false;
+        }
+        let roots = detect_desktop_roots();
+        let changed = roots != self.desktop_roots;
+        self.desktop_roots = roots;
+        changed
     }
 
     /// Only [`Self::capture_dir`], for the capture shim: it runs on every statusline update and
@@ -46,6 +64,7 @@ impl Paths {
             claude_home,
             desktop_roots,
             data_root,
+            detected_desktop: false,
         }
     }
 
@@ -129,12 +148,26 @@ fn detect_data_root() -> PathBuf {
     })
 }
 
-/// The [`DATA_DIR_ENV`] value unless unset or empty, else `<local data dir>/ClaudeUsageWidget`.
+/// The [`DATA_DIR_ENV`] value if it is a usable override ([`valid_override`]), else
+/// `<local data dir>/ClaudeUsageWidget`.
 fn data_root_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> PathBuf) -> PathBuf {
     env_value
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|p| valid_override(p))
         .unwrap_or_else(|| local_dir().join(APP_DIR_NAME))
+}
+
+/// An override must be an absolute local path without `..`: the data root decides where Connect
+/// installs the capture helper that Claude Code runs, so a relative path (resolved against
+/// whatever the working directory is), a network share (`\\server\share`, `\\?\UNC\…`, device
+/// paths) or a path climbing out of its stated directory is ignored.
+fn valid_override(path: &Path) -> bool {
+    let local = match path.components().next() {
+        Some(Component::Prefix(prefix)) => matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)),
+        Some(Component::RootDir) => !cfg!(windows),
+        _ => false,
+    };
+    local && path.is_absolute() && !path.components().any(|c| c == Component::ParentDir)
 }
 
 /// `<config_dir>/Claude` on every OS (`%APPDATA%\Claude`, `~/Library/Application Support/Claude`,
@@ -173,21 +206,59 @@ mod tests {
         assert!(p.desktop_usage_files().is_empty(), "non-existent roots are filtered");
     }
 
+    /// An absolute local path on this platform.
+    fn absolute(rest: &str) -> PathBuf {
+        if cfg!(windows) { PathBuf::from(format!(r"C:\{rest}")) } else { PathBuf::from(format!("/{rest}")) }
+    }
+
     #[test]
     fn data_root_honours_the_env_override_unless_empty() {
         let local = || PathBuf::from("/local");
         let default = PathBuf::from("/local/ClaudeUsageWidget");
+        let override_dir = absolute("override");
         assert_eq!(
-            data_root_from(Some("/override".into()), || unreachable!("override wins")),
-            PathBuf::from("/override")
+            data_root_from(Some(override_dir.clone().into()), || unreachable!("override wins")),
+            override_dir
         );
         assert_eq!(data_root_from(Some(OsString::new()), local), default);
         assert_eq!(data_root_from(None, local), default);
     }
 
     #[test]
-    fn fast_capture_dir_matches_the_full_detection() {
-        assert_eq!(Paths::detect_capture_dir(), Paths::detect().capture_dir());
+    fn data_root_override_must_be_an_absolute_local_path() {
+        let local = || PathBuf::from("/local");
+        let default = PathBuf::from("/local/ClaudeUsageWidget");
+        for bad in [
+            "relative",
+            r".\here",
+            r"\\server\share\cuw",
+            r"\\?\UNC\server\share\cuw",
+            r"\\.\pipe\cuw",
+        ] {
+            assert_eq!(data_root_from(Some(bad.into()), local), default, "{bad}");
+        }
+        let climbing = absolute("x").join("..").join("y");
+        assert_eq!(data_root_from(Some(climbing.into()), local), default);
+        if cfg!(windows) {
+            assert_eq!(data_root_from(Some(r"\rooted-no-drive".into()), local), default);
+            assert_eq!(data_root_from(Some(r"C:relative".into()), local), default);
+            let verbatim = PathBuf::from(r"\\?\C:\cuw");
+            assert_eq!(data_root_from(Some(verbatim.clone().into()), local), verbatim);
+        }
+    }
+
+    #[test]
+    fn capture_dir_is_below_the_data_root() {
+        let root = data_root_from(Some(absolute("data").into()), || unreachable!());
+        let p = Paths::with_roots(absolute("h"), vec![], root.clone());
+        assert_eq!(p.capture_dir(), root.join(CAPTURE_DIR_NAME));
+    }
+
+    #[test]
+    fn explicit_desktop_roots_are_not_refreshed() {
+        let mut p = Paths::with_roots("/h/.claude".into(), vec!["/d/Claude".into()], "/data".into());
+        assert!(!p.refresh_desktop_roots());
+        assert_eq!(p.desktop_roots(), [PathBuf::from("/d/Claude")]);
     }
 
     #[test]
