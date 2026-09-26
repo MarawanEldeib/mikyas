@@ -219,7 +219,8 @@ fn cursor_inside(window: &WebviewWindow) -> bool {
 }
 
 /// Slides the docked widget out or back in; updates `UiState.dock_expanded` and emits it.
-/// `force` is the user's own request (the card's "–"), made with the cursor over the widget.
+/// `force` is the user's own request (the card's "–", or hiding it from its × or menu), made with
+/// the cursor over the widget.
 pub fn set_expanded(app: &AppHandle, shared: &Shared, expanded: bool, force: bool) {
     let Some(side) = Side::from_edge(shared.settings().dock) else { return };
     let ui = shared.ui().clone();

@@ -74,9 +74,9 @@
   }
 
   // WebView2's own menu (Back, Reload, Inspect…) makes no sense here: the app's native menu
-  // replaces it, except in text fields (cut, copy, paste).
+  // replaces it, except in text fields and on selected text (cut, copy, paste).
   function oncontextmenu(e: MouseEvent) {
-    if (nativeMenuAllowed(e.target)) return;
+    if (nativeMenuAllowed(e.target, window.getSelection())) return;
     e.preventDefault();
     if (!app.ui.click_through) api.showContextMenu().catch((err: unknown) => console.warn("show_context_menu failed", err));
   }

@@ -77,4 +77,21 @@ describe("nativeMenuAllowed", () => {
     expect(nativeMenuAllowed(undefined)).toBe(false);
     expect(nativeMenuAllowed("input")).toBe(false);
   });
+
+  it("keeps it on selected text, so the Connect panel's command and preview can be copied", () => {
+    const pre = { tagName: "PRE", isContentEditable: false };
+    const other = { tagName: "SPAN", isContentEditable: false };
+    // A fake Selection whose one range covers `pre` only.
+    const selection = (text: boolean) => ({
+      isCollapsed: !text,
+      rangeCount: 1,
+      getRangeAt: () => ({ intersectsNode: (n: unknown) => n === pre }),
+    });
+    expect(nativeMenuAllowed(pre, selection(true))).toBe(true);
+    // No selection, an empty one, or one elsewhere: the app's menu.
+    expect(nativeMenuAllowed(pre, null)).toBe(false);
+    expect(nativeMenuAllowed(pre, selection(false))).toBe(false);
+    expect(nativeMenuAllowed(pre, { isCollapsed: false, rangeCount: 0, getRangeAt: () => { throw new Error("no range"); } })).toBe(false);
+    expect(nativeMenuAllowed(other, selection(true))).toBe(false);
+  });
 });

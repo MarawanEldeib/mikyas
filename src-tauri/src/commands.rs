@@ -128,6 +128,9 @@ pub fn apply_pinned(app: &AppHandle, shared: &Shared, pinned: bool) {
 /// Hides the widget from its own × or right-click menu, on the tray's and the hotkey's path
 /// (`HiddenReason::User`); the first time, a toast says how to bring it back.
 pub fn hide_from_widget(app: &AppHandle, shared: &Shared) {
+    // The pointer is over a slid-out pill or card, so it would never slide back in on its own
+    // and would come back slid out: back into the strip first (forced, like the card's "–").
+    crate::dock::set_expanded(app, shared, false, true);
     crate::visibility::apply(app, shared, Event::UserHide);
     // A show/hide shortcut that failed to register can't bring it back.
     let hotkey_works = shared.ui().toggle_hotkey_error.is_none();

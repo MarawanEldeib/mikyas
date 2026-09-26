@@ -67,12 +67,23 @@ interface FieldLike {
   isContentEditable?: boolean;
 }
 
+/** The slice of a Selection this reads (a plain object in tests). */
+interface SelectionLike {
+  isCollapsed: boolean;
+  rangeCount: number;
+  getRangeAt(index: number): { intersectsNode(node: Node): boolean };
+}
+
 /**
  * Whether a right-click on `target` keeps WebView2's own menu: text fields do (cut, copy,
- * paste); everywhere else the app's menu replaces it.
+ * paste), and so does selected text under the pointer (the Connect panel's command and preview
+ * are selectable, for copying); everywhere else the app's menu replaces it.
  */
-export function nativeMenuAllowed(target: unknown): boolean {
+export function nativeMenuAllowed(target: unknown, selection: SelectionLike | null = null): boolean {
   if (typeof target !== "object" || target === null) return false;
+  if (selection && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(target as Node)) {
+    return true;
+  }
   const el = target as FieldLike;
   if (el.isContentEditable) return true;
   const tag = el.tagName?.toLowerCase();
