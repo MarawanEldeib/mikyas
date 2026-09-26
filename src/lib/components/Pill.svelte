@@ -1,6 +1,6 @@
 
 <script lang="ts">
-  import { clampPct, fillColor } from "../color";
+  import { clampPct } from "../color";
   import { startDock } from "../dock";
   import { ctxLabel, estimateTooltip, formatAge, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
   import { api } from "../ipc";
@@ -8,12 +8,13 @@
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
+  import { mainWindows, mutedColor } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
   import Ring from "./Ring.svelte";
 
   const snap = $derived(app.snapshot);
-  const shown = $derived(pickWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
+  const shown = $derived(mainWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
   // The reconnect banner only fits the card: in the pill the loss is a warning (dot + tooltip).
   const warn = $derived([
     ...notices(snap),
@@ -29,17 +30,6 @@
   // Slides the widget back into its strip when the pointer leaves (edge dock).
   startDock(app, api.setDockExpanded);
 
-  /** Bar colour: neutral while stale or waiting for the first reading after a reset. */
-  function barColor(w: WindowView): string {
-    return w.stale || w.phase === "reset_awaiting_data" ? "var(--fg-3)" : fillColor(w.pct);
-  }
-
-  function pickWindows(ws: WindowView[]): WindowView[] {
-    const main = ["five_hour", "seven_day"]
-      .map((k) => ws.find((w) => w.kind === k))
-      .filter((w): w is WindowView => w !== undefined);
-    return main.length ? main : ws.slice(0, 2);
-  }
 
   function describe(w: WindowView): string {
     const parts = [`${windowLabel(w.kind)} limit ${formatPct(w.pct)}% used`];
@@ -71,7 +61,7 @@
       {#each shown as w, i (w.kind)}
         <div class="brow" role="img" aria-label={describe(w)}>
           <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
-          <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={barColor(w)}></span></span>
+          <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={mutedColor(w)}></span></span>
           <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
             {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
           </span>

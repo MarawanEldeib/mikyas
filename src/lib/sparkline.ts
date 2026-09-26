@@ -3,6 +3,7 @@
 // time; a `null` pct, or a missing stretch longer than 1.5 buckets, breaks the line.
 
 import { clampPct } from "./color";
+import { stepPath, valueOf } from "./step";
 import type { SparkPoint } from "./types";
 
 export interface SparkOptions {
@@ -49,61 +50,19 @@ export function sparkGeometry(points: readonly SparkPoint[], opts: SparkOptions)
   const empty: SparkGeometry = { line: "", area: "", dot: null, runs: 0 };
   const padX = opts.padX ?? 2;
   const pts = points.filter((p) => Number.isFinite(p.t_ms)).slice().sort((a, b) => a.t_ms - b.t_ms);
-  const value = (p: SparkPoint): number | null =>
-    p.pct === null || !Number.isFinite(p.pct) ? null : p.pct;
   if (pts.length === 0) return empty;
 
   const step = medianStep(pts.map((p) => p.t_ms));
   if (step === null) {
     // One distinct instant: no width to draw a line over, so show the latest value as a dot.
-    const last = [...pts].reverse().find((p) => value(p) !== null);
+    const last = [...pts].reverse().find((p) => valueOf(p) !== null);
     if (!last) return empty;
-    return { ...empty, dot: { x: round(opts.width - padX), y: sparkY(value(last) ?? 0, opts) } };
+    return { ...empty, dot: { x: round(opts.width - padX), y: sparkY(valueOf(last) ?? 0, opts) } };
   }
 
   const t0 = pts[0].t_ms;
   const span = pts[pts.length - 1].t_ms + step - t0;
   const x = (t: number) => round(padX + ((t - t0) / span) * (opts.width - 2 * padX));
-  const base = sparkY(0, opts);
-
-  let line = "";
-  let area = "";
-  let runs = 0;
-  let run = ""; // current run's line commands
-  let runStartX = 0;
-  let lastY = Number.NaN;
-  let dot: SparkGeometry["dot"] = null;
-
-  const closeRun = () => {
-    if (!run) return;
-    line += run;
-    area += `${run}V${base}H${runStartX}Z`;
-    runs++;
-    run = "";
-  };
-
-  for (let i = 0; i < pts.length; i++) {
-    const v = value(pts[i]);
-    if (v === null) {
-      closeRun();
-      continue;
-    }
-    const next = pts[i + 1];
-    const adjacent = next !== undefined && next.t_ms - pts[i].t_ms <= step * 1.5;
-    const xs = x(pts[i].t_ms);
-    const xe = x(adjacent ? next.t_ms : pts[i].t_ms + step);
-    const y = sparkY(v, opts);
-    if (!run) {
-      runStartX = xs;
-      run = `M${xs} ${y}H${xe}`;
-    } else {
-      run += `${y === lastY ? "" : `V${y}`}H${xe}`;
-    }
-    lastY = y;
-    dot = { x: xe, y };
-    if (!adjacent) closeRun();
-  }
-  closeRun();
-
-  return { line, area, dot, runs };
+  const { line, area, last, runs } = stepPath(pts, x, (pct) => sparkY(pct, opts), step);
+  return { line, area, dot: last && { x: last.x, y: last.y }, runs };
 }

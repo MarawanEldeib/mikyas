@@ -3,7 +3,9 @@
 // The view fetches FETCH_DAYS once; each range is a slice of that data.
 
 import { clampPct } from "./color";
-import { DAY, HOUR, formatPct, type ClockOptions } from "./format";
+import { DAY, HOUR, formatPct } from "./format";
+import { dtf, type ClockOptions } from "./intl";
+import { stepPath, valueOf, type StepPath } from "./step";
 import type { HistoryDay, HistoryWindow, SparkPoint } from "./types";
 
 export type RangeKey = "24h" | "7d" | "14d";
@@ -65,17 +67,7 @@ export function plotY(pct: number, box: PlotBox): number {
   return round(box.top + (1 - clampPct(pct) / 100) * h);
 }
 
-export interface ChartGeometry {
-  /** Step line, one `M` subpath per contiguous run; "" without data. */
-  line: string;
-  /** Closed fill under each run, down to the 0% baseline. */
-  area: string;
-  /** Right end of the latest value, or null without data. */
-  last: { x: number; y: number; pct: number } | null;
-  runs: number;
-}
-
-const valueOf = (p: SparkPoint): number | null => (p.pct === null || !Number.isFinite(p.pct) ? null : p.pct);
+export type ChartGeometry = StepPath;
 
 /**
  * Step chart over a fixed domain: each point holds its value for `step` ms (clipped to the
@@ -85,46 +77,7 @@ export function chartGeometry(points: readonly SparkPoint[], d: Domain, box: Plo
   const pts = points
     .filter((p) => Number.isFinite(p.t_ms) && p.t_ms < d.to && p.t_ms + step > d.from)
     .sort((a, b) => a.t_ms - b.t_ms);
-  const base = plotY(0, box);
-  let line = "";
-  let area = "";
-  let runs = 0;
-  let run = "";
-  let runStartX = 0;
-  let lastY = Number.NaN;
-  let last: ChartGeometry["last"] = null;
-
-  const closeRun = () => {
-    if (!run) return;
-    line += run;
-    area += `${run}V${base}H${runStartX}Z`;
-    runs++;
-    run = "";
-  };
-
-  for (let i = 0; i < pts.length; i++) {
-    const v = valueOf(pts[i]);
-    if (v === null) {
-      closeRun();
-      continue;
-    }
-    const next = pts[i + 1];
-    const adjacent = next !== undefined && next.t_ms - pts[i].t_ms <= step * 1.5;
-    const xs = plotX(pts[i].t_ms, d, box);
-    const xe = plotX(adjacent ? next.t_ms : pts[i].t_ms + step, d, box);
-    const y = plotY(v, box);
-    if (!run) {
-      runStartX = xs;
-      run = `M${xs} ${y}H${xe}`;
-    } else {
-      run += `${y === lastY ? "" : `V${y}`}H${xe}`;
-    }
-    lastY = y;
-    last = { x: xe, y, pct: v };
-    if (!adjacent) closeRun();
-  }
-  closeRun();
-  return { line, area, last, runs };
+  return stepPath(pts, (t) => plotX(t, d, box), (pct) => plotY(pct, box), step);
 }
 
 /** X positions of the resets inside the domain. */
@@ -144,17 +97,6 @@ export function addLocalDays(t: number, n: number): number {
   const d = new Date(startOfLocalDay(t));
   d.setDate(d.getDate() + n);
   return d.getTime();
-}
-
-const fmtCache = new Map<string, Intl.DateTimeFormat>();
-function dtf(opts: ClockOptions, fmt: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
-  const key = JSON.stringify([opts.locale ?? "", opts.timeZone ?? "", fmt]);
-  let f = fmtCache.get(key);
-  if (!f) {
-    f = new Intl.DateTimeFormat(opts.locale, { ...fmt, timeZone: opts.timeZone });
-    fmtCache.set(key, f);
-  }
-  return f;
 }
 
 export interface TimeAxis {

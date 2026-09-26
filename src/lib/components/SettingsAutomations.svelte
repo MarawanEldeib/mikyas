@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from "../stores.svelte";
-  import type { Settings, TrayNumber } from "../types";
+  import type { TrayNumber } from "../types";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
@@ -14,9 +14,6 @@
   const uid = $props.id();
   const s = $derived(app.settings);
 
-  function update(patch: Partial<Settings>) {
-    void app.updateSettings(patch);
-  }
 </script>
 
 {#if s}
@@ -27,25 +24,25 @@
         Warn before a limit runs out
         <span class="sub">When the current pace hits 100% before the reset</span>
       </span>
-      <Toggle label="Warn before a limit runs out" checked={s.pace_alerts} onchange={(v) => update({ pace_alerts: v })} />
+      <Toggle label="Warn before a limit runs out" checked={s.pace_alerts} onchange={(v) => app.patch({ pace_alerts: v })} />
     </div>
     <div class="row">
       <span class="label">
         Heads-up before a limit reopens
         <span class="sub">10 min before a 5-hour reset, 1 h before a weekly one</span>
       </span>
-      <Toggle label="Heads-up before a limit reopens" checked={s.reset_heads_up} onchange={(v) => update({ reset_heads_up: v })} />
+      <Toggle label="Heads-up before a limit reopens" checked={s.reset_heads_up} onchange={(v) => app.patch({ reset_heads_up: v })} />
     </div>
     <div class="row">
       <span class="label">
         Weekly recap
         <span class="sub">A summary when the weekly limit resets</span>
       </span>
-      <Toggle label="Weekly recap" checked={s.weekly_recap} onchange={(v) => update({ weekly_recap: v })} />
+      <Toggle label="Weekly recap" checked={s.weekly_recap} onchange={(v) => app.patch({ weekly_recap: v })} />
     </div>
     <div class="row">
       <span class="label">Notify when Claude finishes</span>
-      <Toggle label="Notify when Claude finishes" checked={s.finished_alerts} onchange={(v) => update({ finished_alerts: v })} />
+      <Toggle label="Notify when Claude finishes" checked={s.finished_alerts} onchange={(v) => app.patch({ finished_alerts: v })} />
     </div>
     <fieldset class="nested" disabled={!s.finished_alerts}>
       <legend class="sr">Finished notification length</legend>
@@ -57,7 +54,7 @@
           min={1}
           max={60}
           suffix="m"
-          onchange={(v) => update({ finished_min_minutes: v })}
+          onchange={(v) => app.patch({ finished_min_minutes: v })}
         />
       </div>
     </fieldset>
@@ -66,18 +63,18 @@
         Warn if the connection breaks
         <span class="sub">When Claude Code's status line is changed</span>
       </span>
-      <Toggle label="Warn if the connection breaks" checked={s.connection_watchdog} onchange={(v) => update({ connection_watchdog: v })} />
+      <Toggle label="Warn if the connection breaks" checked={s.connection_watchdog} onchange={(v) => app.patch({ connection_watchdog: v })} />
     </div>
     <div class="row">
       <span class="label">
         Remember position per display
         <span class="sub">Each monitor setup keeps its own spot</span>
       </span>
-      <Toggle label="Remember position per display" checked={s.per_display_position} onchange={(v) => update({ per_display_position: v })} />
+      <Toggle label="Remember position per display" checked={s.per_display_position} onchange={(v) => app.patch({ per_display_position: v })} />
     </div>
     <div class="row">
       <label class="label" for="{uid}-tray">Tray icon number</label>
-      <select id="{uid}-tray" value={s.tray_number} onchange={(e) => update({ tray_number: e.currentTarget.value as TrayNumber })}>
+      <select id="{uid}-tray" value={s.tray_number} onchange={(e) => app.patch({ tray_number: e.currentTarget.value as TrayNumber })}>
         {#each TRAY_NUMBERS as t (t.value)}
           <option value={t.value}>{t.label}</option>
         {/each}

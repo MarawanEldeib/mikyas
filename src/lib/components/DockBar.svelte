@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { clampPct, fillColor } from "../color";
+  import { clampPct } from "../color";
   import { startDock } from "../dock";
   import { formatPct, liveWindow, windowLabel, windowShort } from "../format";
   import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
-  import type { WindowView } from "../types";
+  import { mainWindows, mutedColor } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
 
@@ -30,11 +30,7 @@
   const warn = $derived(notices(snap).length > 0);
 
   const meters = $derived.by((): Meter[] => {
-    const ws = snap?.windows ?? [];
-    const main = ["five_hour", "seven_day"]
-      .map((k) => ws.find((w) => w.kind === k))
-      .filter((w): w is WindowView => w !== undefined);
-    const shown = (main.length ? main : ws.slice(0, 2)).map((w) => liveWindow(w, app.now));
+    const shown = mainWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now));
     if (shown.length === 0) {
       // No data yet: keep the strip's shape with empty meters.
       return ["five_hour", "seven_day"].map((kind) => ({
@@ -49,13 +45,12 @@
       }));
     }
     return shown.map((w) => {
-      const muted = w.stale || w.phase === "reset_awaiting_data";
       return {
         key: w.kind,
         short: windowShort(w.kind),
         name: windowLabel(w.kind),
         pct: clampPct(w.pct),
-        color: muted ? "var(--fg-3)" : fillColor(w.pct),
+        color: mutedColor(w),
         stale: w.stale,
         locked: w.limit_reached,
         worked: showWorkedSince(w),

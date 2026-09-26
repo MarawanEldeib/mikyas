@@ -2,8 +2,8 @@
   import { api } from "../ipc";
   import { formatAge, formatTokens } from "../format";
   import { notices } from "../notices";
-  import { app } from "../stores.svelte";
-  import type { EffectName, Settings } from "../types";
+  import { app, errorText } from "../stores.svelte";
+  import type { EffectName } from "../types";
   import ConnectPanel from "./ConnectPanel.svelte";
   import HotkeyField from "./HotkeyField.svelte";
   import Icon from "./Icon.svelte";
@@ -32,9 +32,7 @@
 
   const t = $derived([s?.thresholds[0] ?? 80, s?.thresholds[1] ?? 95] as const);
 
-  function update(patch: Partial<Settings>) {
-    void app.updateSettings(patch);
-  }
+  const failed = (e: unknown) => (app.error = errorText(e));
 
   // ---- context-window overrides
   let newModel = $state("");
@@ -50,18 +48,18 @@
       return;
     }
     modelError = null;
-    update({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: newSize } });
+    app.patch({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: newSize } });
     newModel = "";
   }
 
   function setOverride(id: string, size: number) {
-    update({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: size } });
+    app.patch({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: size } });
   }
 
   function removeOverride(id: string) {
     const next = { ...(s?.ctx_overrides ?? {}) };
     delete next[id];
-    update({ ctx_overrides: next });
+    app.patch({ ctx_overrides: next });
   }
 
   const desktop = $derived.by(() => {
@@ -130,15 +128,15 @@
       <div class="group">
         <div class="row">
           <span class="label">First alert at</span>
-          <Stepper label="First alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => update({ thresholds: [v, t[1]] })} />
+          <Stepper label="First alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => app.patch({ thresholds: [v, t[1]] })} />
         </div>
         <div class="row">
           <span class="label">Second alert at</span>
-          <Stepper label="Second alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => update({ thresholds: [t[0], v] })} />
+          <Stepper label="Second alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => app.patch({ thresholds: [t[0], v] })} />
         </div>
         <div class="row">
           <span class="label">Notify when a limit resets</span>
-          <Toggle label="Notify when a limit resets" checked={s.notify_reset} onchange={(v) => update({ notify_reset: v })} />
+          <Toggle label="Notify when a limit resets" checked={s.notify_reset} onchange={(v) => app.patch({ notify_reset: v })} />
         </div>
       </div>
 
@@ -159,7 +157,7 @@
             value={Math.round(s.opacity * 100)}
             style:--p="{((s.opacity * 100 - 30) / 70) * 100}%"
             oninput={(e) => app.previewSettings({ opacity: Number(e.currentTarget.value) / 100 })}
-            onchange={(e) => update({ opacity: Number(e.currentTarget.value) / 100 })}
+            onchange={(e) => app.patch({ opacity: Number(e.currentTarget.value) / 100 })}
           />
         </div>
         <div class="row col">
@@ -173,12 +171,12 @@
             value={Math.round(s.ghost_opacity * 100)}
             style:--p="{((s.ghost_opacity * 100 - 15) / 85) * 100}%"
             oninput={(e) => app.previewSettings({ ghost_opacity: Number(e.currentTarget.value) / 100 })}
-            onchange={(e) => update({ ghost_opacity: Number(e.currentTarget.value) / 100 })}
+            onchange={(e) => app.patch({ ghost_opacity: Number(e.currentTarget.value) / 100 })}
           />
         </div>
         <div class="row">
           <label class="label" for="effect">Backdrop</label>
-          <select id="effect" value={s.effect} onchange={(e) => update({ effect: e.currentTarget.value as EffectName })}>
+          <select id="effect" value={s.effect} onchange={(e) => app.patch({ effect: e.currentTarget.value as EffectName })}>
             {#each EFFECTS as e (e.value)}
               <option value={e.value}>{e.label}</option>
             {/each}
@@ -186,7 +184,7 @@
         </div>
         <div class="row">
           <span class="label">Show project name</span>
-          <Toggle label="Show project name" checked={s.show_project} onchange={(v) => update({ show_project: v })} />
+          <Toggle label="Show project name" checked={s.show_project} onchange={(v) => app.patch({ show_project: v })} />
         </div>
       </div>
 
@@ -195,15 +193,15 @@
       <h2 class="section">Behaviour</h2>
       <div class="group">
         <div class="row">
-          <HotkeyField value={s.hotkey} error={app.ui.hotkey_error} onchange={(v) => update({ hotkey: v })} />
+          <HotkeyField value={s.hotkey} error={app.ui.hotkey_error} onchange={(v) => app.patch({ hotkey: v })} />
         </div>
         <div class="row">
           <span class="label">Start with Windows</span>
-          <Toggle label="Start with Windows" checked={s.start_with_windows} onchange={(v) => update({ start_with_windows: v })} />
+          <Toggle label="Start with Windows" checked={s.start_with_windows} onchange={(v) => app.patch({ start_with_windows: v })} />
         </div>
         <div class="row">
           <span class="label">Mark data stale after</span>
-          <Stepper label="Minutes until data is stale" value={s.stale_min} min={1} max={240} suffix="m" onchange={(v) => update({ stale_min: v })} />
+          <Stepper label="Minutes until data is stale" value={s.stale_min} min={1} max={240} suffix="m" onchange={(v) => app.patch({ stale_min: v })} />
         </div>
       </div>
 
@@ -265,13 +263,13 @@
       <div>
         <p>
           <strong>Reads only</strong> Claude Code's statusline output, local session transcripts (model and context size) and
-          Claude Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access{app.settings?.check_updates ? " except the daily update check (api.github.com)" : ""}.
+          Claude Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access except update checks you turn on or run (api.github.com).
         </p>
-        <button type="button" class="btn" onclick={() => api.openDataFolder()}><Icon name="folder" size={13} />Open data folder</button>
+        <button type="button" class="btn" onclick={() => api.openDataFolder().catch(failed)}><Icon name="folder" size={13} />Open data folder</button>
       </div>
     </div>
 
-    <button type="button" class="btn quit" onclick={() => api.quitApp()}><Icon name="power" size={13} />Quit Claude Usage</button>
+    <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}><Icon name="power" size={13} />Quit Claude Usage</button>
     <p class="credits">Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib</p>
   </div>
 </div>

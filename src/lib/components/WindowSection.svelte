@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { clampPct, fillColor } from "../color";
+  import { clampPct } from "../color";
   import { estimateTooltip, formatAgeShort, formatPct, resetLine, windowLabel } from "../format";
   import type { WindowView } from "../types";
+  import { mutedColor } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import BurnLine from "./BurnLine.svelte";
   import Icon from "./Icon.svelte";
@@ -26,7 +27,7 @@
   // Stale data, or a window that just reset and has no new reading yet, is drawn neutral: the
   // history before the reset should not be coloured by the fresh 0%.
   const muted = $derived(w.stale || w.phase === "reset_awaiting_data");
-  const color = $derived(muted ? "var(--fg-3)" : fillColor(p));
+  const color = $derived(mutedColor({ ...w, pct: p }));
   const tip = $derived(estimateTooltip(w.reset));
   // A reached limit's burn line says when it is usable again ("… at 21:36"); the reset line
   // then keeps only the countdown, so the clock shows once.

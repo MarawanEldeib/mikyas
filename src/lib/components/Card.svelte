@@ -5,7 +5,8 @@
   import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
-  import type { CardRows, WindowView } from "../types";
+  import type { CardRows } from "../types";
+  import { mainWindows } from "../windows";
   import ConnectionBanner from "./ConnectionBanner.svelte";
   import IconButton from "./IconButton.svelte";
   import SessionHeader from "./SessionHeader.svelte";
@@ -18,11 +19,7 @@
   const warn = $derived(notices(snap));
   const lost = $derived(connectionBannerVisible(app.ui, app.settings?.connection_watchdog ?? true));
   const shown = $derived.by(() => {
-    const ws = snap?.windows ?? [];
-    const main = ["five_hour", "seven_day"]
-      .map((k) => ws.find((w) => w.kind === k))
-      .filter((w): w is WindowView => w !== undefined);
-    return (main.length ? main : ws.slice(0, 2)).map((w) => liveWindow(w, app.now));
+    return mainWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now));
   });
   const noLimits = $derived(snap?.warnings.some((w) => w.type === "no_plan_limits") ?? false);
   const ALL_ROWS: CardRows = { sparklines: true, burn: true, session: true, sources: true };

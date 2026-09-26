@@ -142,6 +142,15 @@ describe("clock", () => {
   it("adds the date beyond a week", () => {
     expect(formatClock(Date.UTC(2026, 9, 12, 9, 5), NOW, GB)).toBe("12 Oct 09:05");
   });
+  it("never labels next week's same weekday with today's name", () => {
+    // Thursday 23:00 → next Thursday 09:05 is under 6.5 days away but 7 calendar days on.
+    const late = Date.UTC(2026, 8, 24, 23, 0);
+    expect(formatClock(Date.UTC(2026, 9, 1, 9, 5), late, GB)).toBe("1 Oct 09:05");
+    expect(formatClock(Date.UTC(2026, 8, 30, 9, 5), late, GB)).toBe("Wed 09:05");
+    // Six calendar days on still gets the weekday, whatever the time of day.
+    expect(formatClock(Date.UTC(2026, 8, 30, 23, 55), NOW, GB)).toBe("Wed 23:55");
+    expect(formatClock(Date.UTC(2026, 8, 18, 9, 5), NOW, GB)).toBe("Fri 09:05");
+  });
   it("keeps a 12-hour clock in another script than Latin short enough for the card", () => {
     // Saturday 21:36 UTC: "오후 9:36" and "السبت ٩:٣٦ م" overflowed the reset and burn lines.
     const sat = Date.UTC(2026, 8, 26, 21, 36);

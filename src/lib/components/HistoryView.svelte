@@ -10,7 +10,8 @@
   import { FETCH_DAYS, RANGES, barScale, dayBars, rangeDomain, resetsText, summaryText, windowSummary } from "../history";
   import { api } from "../ipc";
   import { app, errorText } from "../stores.svelte";
-  import type { HistoryData, HistoryWindow } from "../types";
+  import type { HistoryData } from "../types";
+  import { mainWindows } from "../windows";
   import { untrack } from "svelte";
   import HistoryChart from "./HistoryChart.svelte";
   import Icon from "./Icon.svelte";
@@ -73,13 +74,7 @@
 
   const spec = $derived(RANGES.find((r) => r.key === range) ?? RANGES[1]);
   const domain = $derived(data ? rangeDomain(data, spec.span) : null);
-  const charts = $derived.by(() => {
-    const ws = data?.windows ?? [];
-    const main = ["five_hour", "seven_day"]
-      .map((k) => ws.find((w) => w.kind === k))
-      .filter((w): w is HistoryWindow => w !== undefined);
-    return main.length ? main : ws.slice(0, 2);
-  });
+  const charts = $derived(mainWindows(data?.windows ?? []));
   const weekly = $derived(data?.windows.find((w) => w.kind === "seven_day") ?? null);
   const bars = $derived(weekly ? dayBars(weekly.days, spec.bars, app.now) : []);
   const scale = $derived(barScale(bars.map((b) => b.value)));

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { reconnect, type ReconnectState } from "../connection";
   import { api } from "../ipc";
+  import { app } from "../stores.svelte";
   import Icon from "./Icon.svelte";
 
   let status = $state<ReconnectState>({ state: "idle" });
@@ -14,6 +15,8 @@
   async function onreconnect() {
     status = { state: "busy" };
     status = await reconnect(api);
+    // Settings shows the connection state too; re-read it whether or not the reconnect worked.
+    await app.refreshConnection();
   }
 
   function ondismiss() {

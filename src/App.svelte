@@ -90,10 +90,14 @@
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
   <UpdateBanner />
   <!-- First in the DOM so Tab reaches the caption buttons before the view's content. -->
-  {#if app.ready}<WindowControls />{/if}
+  <!-- Also while loading or after a failed start, so the widget can always be hidden or closed. -->
+  <WindowControls />
   {#if !app.ready}
     {#if app.error}
-      <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>
+      <div class="fatal" role="alert">
+        <p title={app.error}>Couldn't load usage data: {app.error}</p>
+        <button type="button" class="retry" onclick={() => void app.init()}>Retry</button>
+      </div>
     {/if}
   {:else if docked}
     <DockBar />
@@ -127,9 +131,37 @@
   .ghost :global(*) {
     pointer-events: none;
   }
+  /* Fits any view's window (down to the 72px pill): the message scrolls, Retry stays visible. */
   .fatal {
-    margin: 0;
-    padding: 12px;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
     color: var(--fg-2);
+  }
+  .fatal p {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 0;
+    /* Clear of the caption buttons in the top-right corner. */
+    padding-right: 72px;
+  }
+  .retry {
+    flex: none;
+    align-self: flex-start;
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius-s);
+    background: var(--fill-control);
+    box-shadow: inset 0 0 0 1px var(--stroke-control);
+    font-weight: 500;
+  }
+  .retry:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>
