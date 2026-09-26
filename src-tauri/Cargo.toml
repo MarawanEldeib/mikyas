@@ -3,7 +3,7 @@ name = "claude-usage-widget"
 description = "Floating, token-free Claude usage widget"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 rust-version.workspace = true
 
 [lib]

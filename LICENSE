@@ -1,0 +1,27 @@
+Claude Usage Widget
+Copyright (c) 2026 Marawan Eldeib. All rights reserved.
+
+This repository is published so its source can be read and audited. Publishing it does not grant
+any license to the source code, except as stated below.
+
+1. Personal use of official releases. You may download the official installer published on this
+   repository's GitHub Releases page and install and use it on your own computers, for your own
+   personal or internal use, free of charge.
+
+2. Everything else is reserved. Without prior written permission from the copyright holder you
+   may not copy, modify, merge, publish, distribute, sublicense, sell, rent, or create derivative
+   works of this software or its source code, in whole or in part, and you may not redistribute
+   the installer or the application, modified or not, including under a different name.
+
+3. Viewing. You may view the source code on GitHub, and GitHub's Terms of Service allow creating
+   a fork on GitHub for viewing. A fork does not grant any of the rights reserved in section 2.
+
+4. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+5. Trademarks. "Claude" is a trademark of Anthropic. This project is independent and is not
+   affiliated with, endorsed by, or sponsored by Anthropic.
+
+For any other use, contact the author through GitHub (https://github.com/MarawanEldeib).

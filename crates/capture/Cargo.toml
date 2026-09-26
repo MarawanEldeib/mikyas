@@ -3,7 +3,7 @@ name = "cuw-capture"
 description = "Statusline tee shim: forwards Claude Code statusline JSON unchanged and saves whitelisted usage fields"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 rust-version.workspace = true
 
 [[bin]]

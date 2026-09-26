@@ -139,3 +139,9 @@ with `scripts\measure-ram.ps1`.
   auto-hide, the opt-in update check, notifications, and the NSIS installer hooks
   (`src-tauri/windows/hooks.nsh`).
 - `src` — Svelte 5 UI.
+
+## License
+
+Copyright (c) 2026 Marawan Eldeib. **All rights reserved** — see [LICENSE](LICENSE). You may install and use the official releases from this repository for personal use; copying, modifying or redistributing the code or the app is not permitted without written permission.
+
+Not affiliated with or endorsed by Anthropic. "Claude" is a trademark of Anthropic.

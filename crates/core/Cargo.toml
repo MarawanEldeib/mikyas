@@ -3,7 +3,7 @@ name = "cuw-core"
 description = "Token-free Claude usage data sources and engine for the Claude Usage Widget"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 rust-version.workspace = true
 
 [dependencies]
