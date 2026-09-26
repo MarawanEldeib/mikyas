@@ -278,7 +278,8 @@ fn plain_note(text: &str) -> Option<String> {
         .filter(|c| !c.is_control() && *c != '`')
         .collect();
     let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!plain.is_empty()).then(|| clip(&plain))
+    // Nothing but punctuation (a "* * *" rule, a lone "-"): not a note.
+    plain.chars().any(char::is_alphanumeric).then(|| clip(&plain))
 }
 
 fn clip(text: &str) -> String {
@@ -646,10 +647,15 @@ fn check(app: &AppHandle, shared: &Shared, trigger: Trigger) -> Result<Option<Up
         if *record != before {
             updater.save(&record);
         }
-        (announce, result.map(|update| record.shown(update)))
+        let result = result.map(|update| record.shown(update));
+        // Set while the record is still locked (the order `dismiss_update` uses too), so a "Later"
+        // clicked during the check is never overwritten with a stale `dismissed: false`.
+        if let Ok(update) = &result {
+            shared.ui().update = update.clone();
+        }
+        (announce, result)
     };
-    if let Ok(update) = &result {
-        shared.ui().update = update.clone();
+    if result.is_ok() {
         crate::window::emit_ui(app, shared);
     }
     if let Some(info) = announce {
@@ -845,6 +851,12 @@ mod tests {
         assert_eq!(release_notes(&wide)[0].chars().count(), MAX_NOTE_CHARS, "counts characters, not bytes");
         assert!(release_notes("- a\u{7}b\u{1b}[31m").iter().all(|n| !n.chars().any(char::is_control)));
         assert!(release_notes("").is_empty());
+    }
+
+    #[test]
+    fn thematic_breaks_are_not_notes() {
+        // "* * *" and "- - -" are Markdown horizontal rules, not bullets.
+        assert_eq!(release_notes("* * *\n- - -\n-  *  -\n- real\n* _ _\n"), ["real"]);
     }
 
     #[test]
