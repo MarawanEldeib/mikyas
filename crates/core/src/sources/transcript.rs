@@ -311,6 +311,9 @@ struct RawLine {
     kind: Option<String>,
     #[serde(rename = "isSidechain", default, deserialize_with = "lenient")]
     is_sidechain: Option<bool>,
+    /// Claude Code's own notices written as user lines; never a turn start.
+    #[serde(rename = "isMeta", default, deserialize_with = "lenient")]
+    is_meta: Option<bool>,
     #[serde(rename = "sessionId", default, deserialize_with = "lenient")]
     session_id: Option<String>,
     #[serde(default, deserialize_with = "lenient")]
@@ -533,7 +536,9 @@ impl TurnScan {
                 self.decided = Some(end);
                 self.done = end.is_none();
             }
-            (Some("user"), Some(Some(_))) if message.and_then(|m| m.content) == Some(ContentKind::Prompt) => {
+            (Some("user"), Some(Some(_)))
+                if line.is_meta != Some(true) && message.and_then(|m| m.content) == Some(ContentKind::Prompt) =>
+            {
                 self.prompt_ms = ts;
                 self.done = true;
             }
@@ -1806,13 +1811,15 @@ mod tests {
     #[test]
     fn a_text_user_line_mid_turn_moves_the_start() {
         let e = env();
-        // Claude Code sometimes writes text user lines inside a turn (`isMeta` notices, a message
-        // typed while Claude works). `isMeta` is not read, so such a line counts as the start: the
-        // duration is then shorter than the real turn, never longer.
+        // `isMeta` notices inside a turn are Claude Code's own lines: the turn still starts at the
+        // prompt. A message the person types while Claude works does move the start (the duration
+        // is then shorter than the real turn, never longer).
         let mut meta = prompt(100);
         meta["isMeta"] = json!(true);
         let values = [prompt(0), working(10), tool_result(20), meta, working(110), done(400)];
-        assert_eq!(turn_of(&e, "meta", &values), finished(100, 400, false));
+        assert_eq!(turn_of(&e, "meta", &values), finished(0, 400, false));
+        let typed = [prompt(0), working(10), tool_result(20), prompt(100), working(110), done(400)];
+        assert_eq!(turn_of(&e, "typed", &typed), finished(100, 400, false));
     }
 
     #[test]

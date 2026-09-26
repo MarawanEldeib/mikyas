@@ -3,6 +3,7 @@
   import { startDock } from "../dock";
   import { ctxLabel, estimateTooltip, formatAge, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
   import { api } from "../ipc";
+  import { connectionBannerVisible } from "../connection";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
@@ -12,7 +13,13 @@
 
   const snap = $derived(app.snapshot);
   const shown = $derived(pickWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
-  const warn = $derived(notices(snap));
+  // The reconnect banner only fits the card: in the pill the loss is a warning (dot + tooltip).
+  const warn = $derived([
+    ...notices(snap),
+    ...(connectionBannerVisible(app.ui, app.settings?.connection_watchdog ?? true)
+      ? [{ title: "Status line was changed — open the card to reconnect" }]
+      : []),
+  ]);
   const session = $derived(snap?.session ?? null);
   const bars = $derived(app.settings?.gauge_style === "bar");
   // The window controls (WindowControls.svelte) take the top-right corner while shown; the bars'

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { connectionBannerVisible, reconnect } from "./connection";
+import { SELFTEST_FAILED, connectionBannerVisible, reconnect } from "./connection";
 import type { UiState } from "./types";
 
 const ui: UiState = {
@@ -48,6 +48,16 @@ describe("reconnect", () => {
     expect(api.dismissConnectionWarning).not.toHaveBeenCalled();
     const thrown = { connectClaudeCode: async () => Promise.reject(new Error("boom")), dismissConnectionWarning: async () => {} };
     expect(await reconnect(thrown)).toEqual({ state: "error", message: "boom" });
+  });
+
+  it("reports a failed self-test instead of a silent success", async () => {
+    const api = {
+      connectClaudeCode: vi.fn(async () => ({ selftest_ok: false })),
+      dismissConnectionWarning: vi.fn(async () => {}),
+    };
+    expect(await reconnect(api)).toEqual({ state: "error", message: SELFTEST_FAILED });
+    const ok = { connectClaudeCode: async () => ({ selftest_ok: true }), dismissConnectionWarning: async () => {} };
+    expect(await reconnect(ok)).toEqual({ state: "idle" });
   });
 
   it("still succeeds when only the dismiss fails", async () => {

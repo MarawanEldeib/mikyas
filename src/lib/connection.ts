@@ -11,18 +11,25 @@ export function connectionBannerVisible(ui: UiState, watchdog: boolean): boolean
 export type ReconnectState = { state: "idle" } | { state: "busy" } | { state: "error"; message: string };
 
 interface ReconnectApi {
-  connectClaudeCode(dryRun: boolean): Promise<unknown>;
+  connectClaudeCode(dryRun: boolean): Promise<{ selftest_ok?: boolean | null } | unknown>;
   dismissConnectionWarning(): Promise<void>;
 }
 
+export const SELFTEST_FAILED =
+  "Reconnected, but your status line printed something different through the widget. Check it in Settings → Claude Code.";
+
 /** Runs the normal Connect (no preview). Once connected, the dismiss only clears the banner (the
- *  watchdog records nothing while the status line is ours), in case its own re-check is late. */
+ *  watchdog records nothing while the status line is ours), in case its own re-check is late. A
+ *  failed self-test is reported like Settings does, not as a silent success. */
 export async function reconnect(api: ReconnectApi): Promise<ReconnectState> {
+  let selftestFailed = false;
   try {
-    await api.connectClaudeCode(false);
+    const result = await api.connectClaudeCode(false);
+    selftestFailed = (result as { selftest_ok?: boolean | null } | null)?.selftest_ok === false;
   } catch (e) {
     return { state: "error", message: e instanceof Error ? e.message : String(e) };
   }
+  if (selftestFailed) return { state: "error", message: SELFTEST_FAILED };
   try {
     await api.dismissConnectionWarning();
   } catch {

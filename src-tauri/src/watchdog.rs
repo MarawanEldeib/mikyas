@@ -178,10 +178,17 @@ fn check(app: &AppHandle, shared: &Shared) {
             crate::window::emit_ui(app, shared);
         }
     }
-    if outcome.toast {
+    // Remembered in memory too: if watchdog.json can't be written, the same change must not toast
+    // again on every check.
+    let first_time = outcome.toast && lock(&LAST_TOASTED).as_ref() != outcome.warned.as_ref();
+    if first_time {
+        lock(&LAST_TOASTED).clone_from(&outcome.warned);
         crate::notify::show_alert(app, &Alert::ConnectionLost);
     }
 }
+
+/// The change last toasted in this run (backs up `WatchdogFile::warned`).
+static LAST_TOASTED: Mutex<Option<String>> = Mutex::new(None);
 
 struct Waker(Mutex<Sender<()>>);
 
