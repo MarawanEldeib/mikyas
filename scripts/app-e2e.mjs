@@ -3,8 +3,8 @@
 //
 // Usage (Windows):
 //   npm run build                               # the frontend the exe embeds (dist/)
-//   cargo build -p claude-usage-widget --features tauri/custom-protocol
-//                                               # needs src-tauri/binaries/cuw-capture-*.exe
+//   cargo build -p sovawatch --features tauri/custom-protocol
+//                                               # needs src-tauri/binaries/sovawatch-capture-*.exe
 //   npm install --no-save playwright-core       # unless it is already a devDependency
 //   node scripts/app-e2e.mjs
 //
@@ -12,8 +12,8 @@
 // the Vite dev server (devUrl) instead of the embedded frontend. The test fails on such a build.
 //
 // Env:
-//   CUW_APP_EXE        the debug exe (default <CARGO_TARGET_DIR or ./target>/debug/claude-usage-widget.exe)
-//   CUW_E2E_KEEP=1     keep the temp dir afterwards (its path is printed)
+//   SOVA_APP_EXE        the debug exe (default <CARGO_TARGET_DIR or ./target>/debug/sovawatch.exe)
+//   SOVA_E2E_KEEP=1     keep the temp dir afterwards (its path is printed)
 //
 // What it checks:
 //   - the window appears and renders the fixture's 5-hour % and model
@@ -21,13 +21,13 @@
 //   - the private working set of the app + WebView2 process tree stays under 150 MB
 //   - the process tree holds no established TCP connection except the test's own DevTools socket
 //   - `quit_app` ends the app and all of its WebView2 processes with exit code 0
-//   - the real %LOCALAPPDATA%\ClaudeUsageWidget listing (names only) is unchanged
+//   - the real %LOCALAPPDATA%\SovaWatch listing (names only) is unchanged
 //
 // Safety:
-//   - The app is single-instance. If any claude-usage-widget process is running (e.g. the user's
+//   - The app is single-instance. If any sovawatch process is running (e.g. the user's
 //     installed widget) the test SKIPS (exit 0) and never stops it. The check runs right before
 //     the launch; a widget started during the test would hand over to the test instance.
-//   - Widget data (CUW_DATA_DIR) and Claude Code data (CLAUDE_CONFIG_DIR) point at the temp dir;
+//   - Widget data (SOVA_DATA_DIR) and Claude Code data (CLAUDE_CONFIG_DIR) point at the temp dir;
 //     WEBVIEW2_USER_DATA_FOLDER keeps the WebView2 profile there too (verified below).
 //   - There is no override for Claude Desktop's folders, so the app still READS (never writes)
 //     the machine's Claude Desktop data if there is any. The fixture capture is stamped "now" so
@@ -35,7 +35,7 @@
 //   - The window-state plugin saves the window position under the app identifier on quit
 //     (%APPDATA%\<identifier from tauri.conf.json>\.window-state.json, shared with the installed
 //     widget). The file is saved before the launch and restored byte for byte after.
-//   - Debug builds only honour CUW_BROWSER_ARGS (the remote debugging port); release builds
+//   - Debug builds only honour SOVA_BROWSER_ARGS (the remote debugging port); release builds
 //     ignore it.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -48,10 +48,10 @@ import { CTX_SIZE, FIVE_HOUR_PCT, MODEL_NAME, writeFixtures } from "./app-e2e/fi
 import { pageKind } from "./app-e2e/page.mjs";
 import { anyAlive, inspectTree, killTree, listNames, pidsNamed, unexpectedConnections } from "./app-e2e/win.mjs";
 
-const APP_NAME = "claude-usage-widget";
+const APP_NAME = "sovawatch";
 const MAX_PRIVATE_MB = 150;
 const VIEWS = ["pill", "card", "sessions", "history", "settings", "card"];
-// wry's own default WebView2 arguments: CUW_BROWSER_ARGS replaces them, so they are repeated.
+// wry's own default WebView2 arguments: SOVA_BROWSER_ARGS replaces them, so they are repeated.
 const WRY_DEFAULT_ARGS = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,7 +99,7 @@ function freePort() {
 }
 
 function appExe() {
-  if (process.env.CUW_APP_EXE) return resolve(process.env.CUW_APP_EXE);
+  if (process.env.SOVA_APP_EXE) return resolve(process.env.SOVA_APP_EXE);
   const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(repo, "target");
   return join(target, "debug", `${APP_NAME}.exe`);
 }
@@ -108,7 +108,7 @@ function appExe() {
 function realDataListing() {
   const local = process.env.LOCALAPPDATA;
   if (!local) return null;
-  const dir = join(local, "ClaudeUsageWidget");
+  const dir = join(local, "SovaWatch");
   // The statusline helper writes capture\*.json (and *.tmp) for any running Claude Code session,
   // independently of the app, so those entries are not compared.
   return listNames(dir, (rel) => /^capture\\.+/i.test(rel) || /\.tmp$/i.test(rel));
@@ -147,7 +147,7 @@ async function main() {
     skip(`${APP_NAME} is already running (pid ${running.join(", ")}); the app is single-instance and the test never stops it`);
   }
 
-  const root = mkdtempSync(join(tmpdir(), "cuw-app-e2e-"));
+  const root = mkdtempSync(join(tmpdir(), "sova-app-e2e-"));
   const { dataDir, claudeDir, webviewDir } = writeFixtures(root);
   const windowState = process.env.APPDATA ? join(process.env.APPDATA, IDENTIFIER, ".window-state.json") : null;
   const windowStateBefore = windowState ? readIfExists(windowState) : null;
@@ -159,10 +159,10 @@ async function main() {
   const child = spawn(exe, [], {
     env: {
       ...process.env,
-      CUW_DATA_DIR: dataDir,
+      SOVA_DATA_DIR: dataDir,
       CLAUDE_CONFIG_DIR: claudeDir,
       WEBVIEW2_USER_DATA_FOLDER: webviewDir,
-      CUW_BROWSER_ARGS: `${WRY_DEFAULT_ARGS} --remote-debugging-port=${port}`,
+      SOVA_BROWSER_ARGS: `${WRY_DEFAULT_ARGS} --remote-debugging-port=${port}`,
       RUST_BACKTRACE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -276,7 +276,7 @@ async function main() {
 
   const realAfter = realDataListing();
   const same = JSON.stringify(realBefore) === JSON.stringify(realAfter);
-  check(same, `%LOCALAPPDATA%\\ClaudeUsageWidget listing unchanged (${realBefore ? realBefore.length : "absent"})`);
+  check(same, `%LOCALAPPDATA%\\SovaWatch listing unchanged (${realBefore ? realBefore.length : "absent"})`);
   if (!same) {
     const before = new Set(realBefore ?? []);
     const after = new Set(realAfter ?? []);
@@ -291,7 +291,7 @@ async function main() {
     );
   }
 
-  if (process.env.CUW_E2E_KEEP === "1") console.log(`  kept ${root}`);
+  if (process.env.SOVA_E2E_KEEP === "1") console.log(`  kept ${root}`);
   else rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 
   if (failures.length) {

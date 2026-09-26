@@ -57,7 +57,7 @@ describe("controlAction", () => {
 
   it("names every control for its action", () => {
     expect(controlLabel("close", base, "hide")).toBe("Hide to tray");
-    expect(controlLabel("close", base, "quit")).toBe("Quit Claude Usage");
+    expect(controlLabel("close", base, "quit")).toBe("Quit SovaWatch");
     expect(controlLabel("minimize", base, "hide")).toBe("Minimize to pill");
     expect(controlLabel("minimize", { ...base, dock: "left", dockExpanded: true }, "hide")).toBe("Minimize to the screen edge");
     expect(controlLabel("expand", { ...base, view: "pill" }, "hide")).toBe("Expand");

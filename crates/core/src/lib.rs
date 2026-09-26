@@ -9,7 +9,7 @@
 //!   [`sources::statusline::prune`] ([`sources::statusline::load_captures`] and
 //!   [`sources::statusline::CaptureCache`] use the reader);
 //! - in the app and the shim: `settings.json`, `state.json`, `alerts.json`, `update-check.json`,
-//!   `wrap.json`, `bin/cuw-capture.exe` (to skip identical copies), `backups/` (listed for
+//!   `wrap.json`, `bin/sovawatch-capture.exe` (to skip identical copies), `backups/` (listed for
 //!   rotation) and the shim's `capture/_*.log` files.
 //!
 //! Outside the data root, Connect reads the shim sidecar next to the app executable (the copy it

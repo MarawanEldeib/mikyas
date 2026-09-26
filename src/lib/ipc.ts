@@ -64,6 +64,7 @@ export const api = {
   connectClaudeCode: (dryRun: boolean) => call<ConnectPreview>("connect_claude_code", { dryRun }),
   disconnectClaudeCode: () => call<ConnectionStatus>("disconnect_claude_code"),
   openDataFolder: () => call<void>("open_data_folder"),
+  openThirdPartyNotices: () => call<void>("open_third_party_notices"),
   quitApp: () => call<void>("quit_app"),
   hideWidget: () => call<void>("hide_widget"),
   /** `at` (logical px from the window's top-left) for keyboard-opened menus; `null` = at the cursor. */

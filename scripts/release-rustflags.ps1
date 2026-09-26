@@ -16,7 +16,7 @@ $remaps = [ordered]@{}
 if ($profileDir) { $remaps[$profileDir] = '/home' }
 $remaps[$cargoHome] = '/cargo'
 $remaps[$rustupHome] = '/rustup'
-$remaps[$root] = '/cuw'
+$remaps[$root] = '/sovawatch'
 foreach ($from in $remaps.Keys) {
     $full = [IO.Path]::GetFullPath($from).TrimEnd('\', '/')
     $flags += "--remap-path-prefix=$full=$($remaps[$from])"

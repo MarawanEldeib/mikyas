@@ -3,6 +3,6 @@
 
 fn main() {
     // First, before anything can load a DLL.
-    cuw_widget_lib::restrict_dll_search();
-    cuw_widget_lib::run()
+    sovawatch_lib::restrict_dll_search();
+    sovawatch_lib::run()
 }

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use cuw_core::time::{MINUTE_MS, Ms, now_ms};
+use sovawatch_core::time::{MINUTE_MS, Ms, now_ms};
 
 use crate::diag::log;
 use crate::state::save_json;

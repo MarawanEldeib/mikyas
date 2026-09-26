@@ -1,10 +1,11 @@
 [package]
-name = "cuw-core"
-description = "Token-free Claude usage data sources and engine for the Claude Usage Widget"
+name = "sovawatch-core"
+description = "Token-free Claude usage data sources and engine for SovaWatch"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 serde.workspace = true

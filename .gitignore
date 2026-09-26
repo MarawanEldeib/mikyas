@@ -15,9 +15,9 @@
 **/capture/*.json
 history.jsonl
 
-# widget data files, in case CUW_DATA_DIR points inside the repo. For development use
-# CUW_DATA_DIR=<repo>\.cuw-data (ignored as a whole).
-/.cuw-data/
+# widget data files, in case SOVA_DATA_DIR points inside the repo. For development use
+# SOVA_DATA_DIR=<repo>\.sova-data (ignored as a whole).
+/.sova-data/
 /bin/
 **/backups/
 **/settings-*.json

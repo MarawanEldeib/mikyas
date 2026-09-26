@@ -1,10 +1,10 @@
 # Sums memory of the widget process and all of its WebView2 descendants.
-# Usage: scripts/measure-ram.ps1 [-ProcessId <pid>]  (defaults to the running claude-usage-widget)
+# Usage: scripts/measure-ram.ps1 [-ProcessId <pid>]  (defaults to the running sovawatch)
 param([int]$ProcessId = 0)
 
 if (-not $ProcessId) {
-    $p = Get-Process claude-usage-widget -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $p) { Write-Error "claude-usage-widget is not running"; exit 1 }
+    $p = Get-Process sovawatch -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $p) { Write-Error "sovawatch is not running"; exit 1 }
     $ProcessId = $p.Id
 }
 

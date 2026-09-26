@@ -1,5 +1,5 @@
-//! Claude Usage Widget app shell: window, tray, hotkey, notifications and the data pipeline
-//! around the token-free `cuw-core` engine.
+//! SovaWatch app shell: window, tray, hotkey, notifications and the data pipeline
+//! around the token-free `sovawatch-core` engine.
 
 mod cli;
 mod commands;
@@ -12,6 +12,7 @@ mod fullscreen;
 mod history_view;
 mod hotkey;
 mod localtime;
+mod migrate;
 mod pipeline;
 mod platform;
 mod settings;
@@ -32,8 +33,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
-use cuw_core::paths::Paths;
-use cuw_core::time::now_ms;
+use sovawatch_core::paths::Paths;
+use sovawatch_core::time::now_ms;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_window_state::StateFlags;
@@ -55,6 +56,9 @@ pub fn run() {
 
     let paths = Paths::detect();
     diag::init(paths.data_root());
+    // Once, before anything reads the data folder: the move from Claude Usage Widget.
+    let migrated =
+        migrate::run(&paths, migrate::legacy_root().as_deref(), connect::find_sidecar().as_deref(), now_ms());
     let settings = settings::load(&paths.settings_file());
     // Reads only: a second launch exits in the single-instance plugin before anything is written.
     let mut pipeline_state = PipelineState::new(paths.clone());
@@ -85,6 +89,7 @@ pub fn run() {
             commands::connect_claude_code,
             commands::disconnect_claude_code,
             commands::open_data_folder,
+            commands::open_third_party_notices,
             commands::quit_app,
             commands::hide_widget,
             context_menu::show_context_menu,
@@ -97,6 +102,12 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            // "Start with Windows" was on in the old app: its Run entry has the old name.
+            if let migrate::Outcome::Moved { autostart: true, .. } = migrated {
+                if let Err(e) = handle.autolaunch().enable() {
+                    diag::log(&format!("move from Claude Usage Widget: autostart: {e}"));
+                }
+            }
             // Reflect the real autostart registration (it may have been changed outside the app).
             if let Ok(enabled) = handle.autolaunch().is_enabled() {
                 shared.settings().start_with_windows = enabled;
@@ -118,15 +129,18 @@ pub fn run() {
             let thread_shared = shared.clone();
             let thread_handle = handle.clone();
             std::thread::Builder::new()
-                .name("cuw-pipeline".into())
+                .name("sova-pipeline".into())
                 .spawn(move || pipeline::run(thread_handle, thread_shared, pipeline_state, rx))?;
             for event in &first.alerts {
                 notify::show_alert(&handle, event);
             }
+            if let Some((title, body)) = migrate::notice(&migrated) {
+                notify::show(&handle, &title, &body);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Claude Usage Widget");
+        .expect("error while building SovaWatch");
 
     app.run(|app, event| {
         if let RunEvent::ExitRequested { api, code, .. } = event {

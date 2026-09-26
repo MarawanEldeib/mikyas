@@ -140,7 +140,7 @@ export interface CardRows {
   sources: boolean;
 }
 
-/** Persisted in %LOCALAPPDATA%\ClaudeUsageWidget\settings.json. */
+/** Persisted in %LOCALAPPDATA%\SovaWatch\settings.json. */
 export interface Settings {
   schema_version: number;
   view: ViewMode;
@@ -274,6 +274,7 @@ export interface ConnectPreview {
  *  connect_claude_code({ dryRun: boolean }) -> ConnectPreview
  *  disconnect_claude_code() -> ConnectionStatus
  *  open_data_folder() -> void
+ *  open_third_party_notices() -> void                    (the bundled THIRD_PARTY_NOTICES.md; no network)
  *  quit_app() -> void
  *  hide_widget() -> void                                 (the ×: hides like the tray, hint once)
  *  show_context_menu({ x?, y? }) -> void                 (native right-click menu at the cursor, or at x/y
@@ -299,6 +300,7 @@ export type CommandName =
   | "connect_claude_code"
   | "disconnect_claude_code"
   | "open_data_folder"
+  | "open_third_party_notices"
   | "quit_app"
   | "hide_widget"
   | "show_context_menu"

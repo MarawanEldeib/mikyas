@@ -2,13 +2,13 @@
 //! alerts, and the one-time hint after the widget was first hidden from its own × or menu.
 
 use chrono::{Local, TimeZone};
-use cuw_core::alerts::AlertEvent;
-use cuw_core::ctx_alerts::CtxAlertEvent;
-use cuw_core::engine::types::{Entrypoint, WindowKind};
-use cuw_core::pace_alerts::PaceAlertEvent;
-use cuw_core::recap::WeeklyRecap;
-use cuw_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, now_ms};
-use cuw_core::turns::FinishedTurn;
+use sovawatch_core::alerts::AlertEvent;
+use sovawatch_core::ctx_alerts::CtxAlertEvent;
+use sovawatch_core::engine::types::{Entrypoint, WindowKind};
+use sovawatch_core::pace_alerts::PaceAlertEvent;
+use sovawatch_core::recap::WeeklyRecap;
+use sovawatch_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, now_ms};
+use sovawatch_core::turns::FinishedTurn;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
@@ -197,7 +197,7 @@ pub fn hide_hint_text(toggle_hotkey: &str) -> (String, String) {
         "" => "Click the tray icon to show it again.".to_owned(),
         hotkey => format!("Click the tray icon or press {hotkey} to show it again."),
     };
-    ("Claude Usage is still running".into(), body)
+    ("SovaWatch is still running".into(), body)
 }
 
 pub fn show(app: &AppHandle, title: &str, body: &str) {
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn hide_hint_names_the_shortcut_when_there_is_one() {
         let (t, b) = hide_hint_text("Ctrl+Alt+H");
-        assert_eq!(t, "Claude Usage is still running");
+        assert_eq!(t, "SovaWatch is still running");
         assert_eq!(b, "Click the tray icon or press Ctrl+Alt+H to show it again.");
         assert_eq!(hide_hint_text(" Ctrl+Shift+F9 ").1, "Click the tray icon or press Ctrl+Shift+F9 to show it again.");
         assert_eq!(hide_hint_text("").1, "Click the tray icon to show it again.");

@@ -296,10 +296,15 @@
       </div>
     </div>
 
-    <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}
-      ><Icon name="power" size={13} />Quit Claude Usage</button
+    <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}><Icon name="power" size={13} />Quit SovaWatch</button
     >
     <p class="credits">Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib</p>
+    <p class="legal">
+      Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
+    </p>
+    <button type="button" class="btn notices" onclick={() => api.openThirdPartyNotices().catch(failed)}
+      ><Icon name="external" size={12} />Third-party licenses</button
+    >
   </div>
 </div>
 
@@ -603,6 +608,17 @@
     text-align: center;
     font-size: 11px;
     color: var(--fg-3);
+  }
+  .legal {
+    margin: 4px 0 0;
+    text-align: center;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--fg-3);
+  }
+  .notices {
+    align-self: center;
+    margin-top: 6px;
   }
   .quit:hover {
     color: var(--crit);

@@ -2,7 +2,7 @@
 //! the time zone so it is tested with fixed offsets.
 
 use chrono::{NaiveDate, Offset, TimeZone};
-use cuw_core::time::{HOUR_MS, Ms};
+use sovawatch_core::time::{HOUR_MS, Ms};
 
 /// The next full hour of the local clock after `now_ms` (half-hour zones included).
 pub fn next_local_hour<Tz: TimeZone>(now_ms: Ms, tz: &Tz) -> Ms {
@@ -39,7 +39,7 @@ pub fn local_midnight<Tz: TimeZone>(tz: &Tz, day: NaiveDate) -> Option<Ms> {
 mod tests {
     use super::*;
     use chrono::{FixedOffset, Local, Timelike};
-    use cuw_core::time::{DAY_MS, MINUTE_MS};
+    use sovawatch_core::time::{DAY_MS, MINUTE_MS};
 
     /// 2026-09-24T10:17:00Z.
     const NOW: Ms = 1_790_208_000_000 + 10 * HOUR_MS + 17 * MINUTE_MS;

@@ -6,8 +6,8 @@
 //!   count; bursts are debounced) and every 5 min. While it is off, the watch is dropped and the
 //!   thread only wakes for a setting change or shutdown.
 //! - Lost = `wrap.json` says we connected, and the status line is not ours any more: no status
-//!   line, someone else's command, or a `cuw-capture.exe` wrapper that runs a different shim
-//!   than `<data_root>/bin/cuw-capture.exe` or feeds a different command than the one recorded.
+//!   line, someone else's command, or a `sovawatch-capture.exe` wrapper that runs a different shim
+//!   than `<data_root>/bin/sovawatch-capture.exe` or feeds a different command than the one recorded.
 //!   An unreadable or non-strict file (`Error`) says nothing either way, so the state is kept.
 //!   Disconnect removes `wrap.json`, so a deliberate disconnect never warns.
 //! - Every check (on or off) also rewrites the installed shim when it differs from the bundled
@@ -27,11 +27,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cuw_core::claude_settings::WrapRecord;
-use cuw_core::fingerprint::Fnv64;
-use cuw_core::paths::Paths;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
+use sovawatch_core::claude_settings::WrapRecord;
+use sovawatch_core::fingerprint::Fnv64;
+use sovawatch_core::paths::Paths;
 use tauri::{AppHandle, Manager, State};
 
 use crate::connect::{self, ConnectionStatus};
@@ -86,7 +86,7 @@ pub fn change_id(command: Option<&str>) -> String {
     format!("{:016x}", Fnv64::new().write_str("statusline").write_opt_str(command).finish())
 }
 
-/// Fingerprint of a `cuw-capture.exe` wrapper that is not ours.
+/// Fingerprint of a `sovawatch-capture.exe` wrapper that is not ours.
 fn wrapper_change_id(shim_path: &str, original: Option<&str>) -> String {
     format!("{:016x}", Fnv64::new().write_str("wrapper").write_str(shim_path).write_opt_str(original).finish())
 }
@@ -155,7 +155,7 @@ fn wrap_record(paths: &Paths) -> Option<WrapRecord> {
 
 /// [`observe`] of what is on disk now.
 fn observe_paths(paths: &Paths) -> Observed {
-    let expected = cuw_core::cmdline::shim_path_for_command(&connect::installed_shim(paths));
+    let expected = sovawatch_core::cmdline::shim_path_for_command(&connect::installed_shim(paths));
     observe(wrap_record(paths).as_ref(), &expected, &connect::status(paths))
 }
 
@@ -235,7 +235,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(Mutex::new(tx.clone())));
     let app = app.clone();
-    std::thread::Builder::new().name("cuw-watchdog".into()).spawn(move || run(&app, &shared, &tx, &rx))?;
+    std::thread::Builder::new().name("sova-watchdog".into()).spawn(move || run(&app, &shared, &tx, &rx))?;
     Ok(())
 }
 
@@ -337,9 +337,9 @@ pub async fn dismiss_connection_warning(app: AppHandle, shared: State<'_, Arc<Sh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuw_core::cmdline::WrapMode;
+    use sovawatch_core::cmdline::WrapMode;
 
-    const SHIM: &str = "C:/data/bin/cuw-capture.exe";
+    const SHIM: &str = "C:/data/bin/sovawatch-capture.exe";
 
     fn connected() -> ConnectionStatus {
         ConnectionStatus::Connected { mode: WrapMode::Pipe, original: None, shim_path: SHIM.into() }
@@ -352,7 +352,7 @@ mod tests {
             empty_object_ws: None,
             shim_path: SHIM.into(),
             mode: WrapMode::Pipe,
-            shell: cuw_core::cmdline::ShellKind::Bash,
+            shell: sovawatch_core::cmdline::ShellKind::Bash,
             at_ms: 1,
         }
     }
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(observe(None, SHIM, &foreign("x")), Observed::NotWrapped);
         assert_eq!(observe(None, SHIM, &ConnectionStatus::NotConfigured), Observed::NotWrapped);
         assert_eq!(observe(wrapped, SHIM, &connected()), Observed::Connected);
-        assert_eq!(observe(wrapped, r"c:\DATA\bin\CUW-capture.exe", &connected()), Observed::Connected);
+        assert_eq!(observe(wrapped, r"c:\DATA\bin\SOVAWATCH-capture.exe", &connected()), Observed::Connected);
         assert_eq!(observe(wrapped, SHIM, &foreign("x")), Observed::Changed(change_id(Some("x"))));
         assert_eq!(observe(wrapped, SHIM, &ConnectionStatus::NotConfigured), Observed::Changed(change_id(None)));
         let err = ConnectionStatus::Error { message: "JSONC".into() };
@@ -384,11 +384,11 @@ mod tests {
             shim_path: SHIM.into(),
         };
         assert_eq!(observe(Some(&rec), SHIM, &ours), Observed::Connected);
-        // Some other cuw-capture.exe wraps the status line.
+        // Some other sovawatch-capture.exe wraps the status line.
         let elsewhere = ConnectionStatus::Connected {
             mode: WrapMode::Pipe,
             original: Some("my-line".into()),
-            shim_path: "C:/Users/tester/AppData/Local/Temp/cuw-capture.exe".into(),
+            shim_path: "C:/Users/tester/AppData/Local/Temp/sovawatch-capture.exe".into(),
         };
         assert!(matches!(observe(Some(&rec), SHIM, &elsewhere), Observed::Changed(_)));
         // Our shim, but it now feeds a different command.
@@ -399,7 +399,7 @@ mod tests {
         };
         assert!(matches!(observe(Some(&rec), SHIM, &other_inner), Observed::Changed(_)));
         // The record names our shim, but it is not where this install keeps it.
-        assert!(matches!(observe(Some(&rec), "D:/other/bin/cuw-capture.exe", &ours), Observed::Changed(_)));
+        assert!(matches!(observe(Some(&rec), "D:/other/bin/sovawatch-capture.exe", &ours), Observed::Changed(_)));
         // Distinct changes get distinct ids.
         let a = observe(Some(&rec), SHIM, &elsewhere);
         let b = observe(Some(&rec), SHIM, &other_inner);
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn a_real_connect_reads_back_as_connected_in_every_shell() {
-        use cuw_core::cmdline::ShellKind;
+        use sovawatch_core::cmdline::ShellKind;
         let originals = [None, Some("my-line --flag"), Some(r#""C:/Program Files/x/line.exe" a"#)];
         for kind in [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
             for original in originals {
@@ -419,7 +419,7 @@ mod tests {
                     let json = serde_json::json!({"statusLine": {"type": "command", "command": cmd}});
                     std::fs::write(paths.claude_settings(), json.to_string()).unwrap();
                 }
-                let sidecar = tmp.path().join("sidecar").join(cuw_core::cmdline::SHIM_EXE_NAME);
+                let sidecar = tmp.path().join("sidecar").join(sovawatch_core::cmdline::SHIM_EXE_NAME);
                 std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
                 std::fs::write(&sidecar, b"fake shim").unwrap();
                 let env = connect::ConnectEnv {
@@ -543,9 +543,9 @@ mod tests {
             original_command: Some("my-line".into()),
             original_command_raw: Some("\"my-line\"".into()),
             empty_object_ws: None,
-            shim_path: "C:/data/bin/cuw-capture.exe".into(),
+            shim_path: "C:/data/bin/sovawatch-capture.exe".into(),
             mode: WrapMode::PipeGrouped,
-            shell: cuw_core::cmdline::ShellKind::Bash,
+            shell: sovawatch_core::cmdline::ShellKind::Bash,
             at_ms: 1,
         };
         save_json(&p.wrap_file(), &record).unwrap();
