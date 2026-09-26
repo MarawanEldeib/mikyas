@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   COLLAPSE_DELAY_MS,
+  REEXPAND_GUARD_MS,
   bindPointer,
   canCollapse,
   canExpand,
@@ -144,6 +145,50 @@ describe("createDockController", () => {
     expect(settings.calls).toEqual([]);
   });
 
+  it("slides in at once on the card's minimize, forcing past the pointer check", () => {
+    const forced: (boolean | undefined)[] = [];
+    const state: DockState = { docked: true, expanded: true, clickThrough: false, view: "card" };
+    const ctl = createDockController({ state: () => state, setExpanded: (_v, force) => forced.push(force) });
+    ctl.leave();
+    ctl.collapse();
+    expect(forced).toEqual([true]);
+    // The pending slide-in was replaced, not added to.
+    vi.advanceTimersByTime(COLLAPSE_DELAY_MS);
+    expect(forced).toEqual([true]);
+    // Settings never slides in, and neither does an undocked or already collapsed widget.
+    for (const s of [{ view: "settings" as const }, { docked: false }, { expanded: false }]) {
+      const other = setup({ expanded: true, ...s });
+      other.ctl.collapse();
+      expect(other.calls).toEqual([]);
+    }
+  });
+
+  it("ignores pointing at the strip right after a minimize until the pointer leaves", () => {
+    const { state, calls, ctl } = setup({ expanded: true });
+    ctl.collapse();
+    state.expanded = false;
+    // The strip appeared under the pointer.
+    ctl.hover();
+    expect(calls).toEqual([false]);
+    // A click (or Enter) still slides it out.
+    ctl.expand();
+    expect(calls).toEqual([false, true]);
+    state.expanded = true;
+    ctl.collapse();
+    state.expanded = false;
+    // Once the pointer has left, pointing at the strip works again…
+    ctl.leave();
+    ctl.hover();
+    expect(calls).toEqual([false, true, false, true]);
+    state.expanded = true;
+    ctl.collapse();
+    state.expanded = false;
+    // …and so it does after the guard ran out without a leave (a lost pointerout).
+    vi.advanceTimersByTime(REEXPAND_GUARD_MS);
+    ctl.hover();
+    expect(calls).toEqual([false, true, false, true, false, true]);
+  });
+
   it("dispose cancels a pending slide-in", () => {
     const { calls, ctl } = setup({ expanded: true });
     ctl.leave();
@@ -206,7 +251,7 @@ describe("startDock", () => {
     const ctl = startDock(store, setExpanded);
     expect(startDock(store, vi.fn())).toBe(ctl);
     ctl.expand();
-    expect(setExpanded).toHaveBeenCalledWith(true);
+    expect(setExpanded).toHaveBeenCalledWith(true, undefined);
     await Promise.resolve();
     await Promise.resolve();
     expect(warn).toHaveBeenCalled();

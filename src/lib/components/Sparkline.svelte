@@ -12,9 +12,11 @@
     stale?: boolean;
     /** Accessible description, e.g. "Usage over the last 24 hours". */
     label: string;
+    /** Sits under the window controls: fades out while they show. */
+    underControls?: boolean;
   }
 
-  let { points, pct, width = 112, height = 40, stale = false, label }: Props = $props();
+  let { points, pct, width = 112, height = 40, stale = false, label, underControls = false }: Props = $props();
 
   const uid = $props.id();
   const opts = $derived({ width, height, padX: 3, padY: 3 });
@@ -24,7 +26,15 @@
   const color = $derived(stale ? "var(--fg-3)" : `var(--spark, ${fillColor(pct)})`);
 </script>
 
-<svg class="spark" {width} {height} viewBox="0 0 {width} {height}" role="img" aria-label={label}>
+<svg
+  class="spark"
+  {width}
+  {height}
+  viewBox="0 0 {width} {height}"
+  role="img"
+  aria-label={label}
+  data-under-controls={underControls ? "" : undefined}
+>
   <title>{label}</title>
   <defs>
     <linearGradient id="g{uid}" x1="0" y1="0" x2="0" y2="1">

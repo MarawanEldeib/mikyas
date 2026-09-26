@@ -1,12 +1,18 @@
 <script lang="ts">
   import { api } from "../ipc";
   import { app, errorText } from "../stores.svelte";
-  import type { Settings } from "../types";
+  import type { CloseAction, Settings } from "../types";
   import { APP_VERSION, updateStatus, type CheckState } from "../update";
   import HotkeyField from "./HotkeyField.svelte";
   import Icon from "./Icon.svelte";
   import Toggle from "./Toggle.svelte";
 
+  const CLOSE_ACTIONS: { value: CloseAction; label: string }[] = [
+    { value: "hide", label: "Hide to tray" },
+    { value: "quit", label: "Quit" },
+  ];
+
+  const uid = $props.id();
   const s = $derived(app.settings);
   let check = $state<CheckState>({ state: "idle" });
   const status = $derived(updateStatus(check, app.ui.update));
@@ -41,6 +47,20 @@
         clearable
         onchange={(v) => update({ toggle_hotkey: v })}
       />
+    </div>
+    <div class="row">
+      <span class="label" id="{uid}-close">
+        Close button
+        <span class="sub">The × in the corner</span>
+      </span>
+      <div class="seg" role="radiogroup" aria-labelledby="{uid}-close">
+        {#each CLOSE_ACTIONS as c (c.value)}
+          <label>
+            <input type="radio" name="{uid}-close" value={c.value} checked={s.close_action === c.value} onchange={() => update({ close_action: c.value })} />
+            <span>{c.label}</span>
+          </label>
+        {/each}
+      </div>
     </div>
     <div class="row">
       <span class="label">
@@ -180,5 +200,57 @@
   }
   .btn:disabled {
     color: var(--fg-2);
+  }
+  /* Segmented control copied from SettingsLayout.svelte: native radios, visually hidden over
+     their segment, so arrow keys move the selection. */
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--radius-s);
+    background: var(--fill-control);
+    box-shadow: inset 0 0 0 1px var(--stroke-control);
+    flex: none;
+  }
+  .seg label {
+    position: relative;
+    display: block;
+  }
+  .seg input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+  }
+  .seg span {
+    display: grid;
+    place-items: center;
+    height: 24px;
+    min-width: 52px;
+    padding: 0 10px;
+    border-radius: 3px;
+    color: var(--fg-2);
+    white-space: nowrap;
+    transition:
+      background-color 120ms ease-out,
+      color 120ms ease-out;
+  }
+  .seg input:hover + span {
+    background: var(--fill-hover);
+    color: var(--fg);
+  }
+  .seg input:checked + span {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  .seg input:checked:hover + span {
+    background: var(--accent-hover);
+  }
+  .seg input:focus-visible + span {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
   }
 </style>

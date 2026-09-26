@@ -63,6 +63,16 @@ pub enum DockEdge {
     Top,
 }
 
+/// What the widget's own × button does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// Hide to the tray (the app keeps running).
+    #[default]
+    Hide,
+    Quit,
+}
+
 /// Which optional rows the card shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -117,7 +127,14 @@ pub struct Settings {
     pub ui_scale: f32,
     pub card_rows: CardRows,
     pub dock: DockEdge,
+    pub close_action: CloseAction,
+    /// The one-time "still running" toast after the first hide from the widget was shown.
+    /// Internal: no UI control, and settings patches never change it.
+    pub hide_hint_shown: bool,
 }
+
+/// Settings the app keeps for itself: `apply_patch` ignores them.
+const INTERNAL_KEYS: &[&str] = &["hide_hint_shown"];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -146,6 +163,8 @@ impl Default for Settings {
             ui_scale: 1.0,
             card_rows: CardRows::default(),
             dock: DockEdge::Off,
+            close_action: CloseAction::Hide,
+            hide_hint_shown: false,
         }
     }
 }
@@ -200,8 +219,8 @@ pub fn save(path: &Path, settings: &Settings) -> std::io::Result<()> {
     write_atomic(path, &bytes)
 }
 
-/// Applies a partial update (`Partial<Settings>` from the UI). Unknown keys are ignored; a value
-/// of the wrong type is an error.
+/// Applies a partial update (`Partial<Settings>` from the UI). Unknown and internal keys are
+/// ignored; a value of the wrong type is an error.
 pub fn apply_patch(current: &Settings, patch: &serde_json::Value) -> Result<Settings, String> {
     let serde_json::Value::Object(patch) = patch else {
         return Err("settings patch must be an object".into());
@@ -209,7 +228,7 @@ pub fn apply_patch(current: &Settings, patch: &serde_json::Value) -> Result<Sett
     let mut value = serde_json::to_value(current).map_err(|e| e.to_string())?;
     let obj = value.as_object_mut().ok_or("settings did not serialise to an object")?;
     for (k, v) in patch {
-        if obj.contains_key(k) {
+        if obj.contains_key(k) && !INTERNAL_KEYS.contains(&k.as_str()) {
             obj.insert(k.clone(), v.clone());
         }
     }
@@ -251,6 +270,42 @@ mod tests {
             serde_json::json!({"sparklines": true, "burn": true, "session": true, "sources": true})
         );
         assert_eq!(v["dock"], "off");
+        assert_eq!(v["close_action"], "hide");
+        assert_eq!(v["hide_hint_shown"], false);
+    }
+
+    #[test]
+    fn close_action_patches_and_older_files_default_to_hide() {
+        let s = apply_patch(&Settings::default(), &serde_json::json!({"close_action": "quit"})).unwrap();
+        assert_eq!(s.close_action, CloseAction::Quit);
+        assert!(apply_patch(&s, &serde_json::json!({"close_action": "minimize"})).is_err());
+        // A settings.json from before the setting (and before the hint flag).
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        std::fs::write(&p, br#"{"view":"pill","dock":"left"}"#).unwrap();
+        let old = load(&p);
+        assert_eq!(old.close_action, CloseAction::Hide);
+        assert!(!old.hide_hint_shown);
+    }
+
+    #[test]
+    fn patches_never_change_the_hide_hint_flag() {
+        let shown = Settings {
+            hide_hint_shown: true,
+            ..Settings::default()
+        };
+        let next = apply_patch(&shown, &serde_json::json!({"hide_hint_shown": false, "opacity": 0.8})).unwrap();
+        assert!(next.hide_hint_shown, "a UI patch cannot reset it");
+        assert_eq!(next.opacity, 0.8, "the rest of the patch still applies");
+        let fresh = apply_patch(&Settings::default(), &serde_json::json!({"hide_hint_shown": true})).unwrap();
+        assert!(!fresh.hide_hint_shown, "nor set it");
+        // Any other patch keeps it, and it survives a save.
+        let kept = apply_patch(&shown, &serde_json::json!({"close_action": "quit"})).unwrap();
+        assert!(kept.hide_hint_shown);
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        save(&p, &kept).unwrap();
+        assert!(load(&p).hide_hint_shown);
     }
 
     #[test]

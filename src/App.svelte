@@ -6,7 +6,9 @@
   import SessionsView from "./lib/components/SessionsView.svelte";
   import Settings from "./lib/components/Settings.svelte";
   import UpdateBanner from "./lib/components/UpdateBanner.svelte";
-  import { startDragging } from "./lib/ipc";
+  import WindowControls from "./lib/components/WindowControls.svelte";
+  import { menuAnchor, nativeMenuAllowed } from "./lib/controls";
+  import { api, startDragging } from "./lib/ipc";
   import { app } from "./lib/stores.svelte";
   import { createTicker, type Ticker } from "./lib/tick";
   import { onMount, untrack } from "svelte";
@@ -70,11 +72,25 @@
     }
     startDragging();
   }
+
+  // WebView2's own menu (Back, Reload, Inspect…) makes no sense here: the app's native menu
+  // replaces it, except in text fields and on selected text (cut, copy, paste).
+  function oncontextmenu(e: MouseEvent) {
+    if (nativeMenuAllowed(e.target, window.getSelection())) return;
+    e.preventDefault();
+    if (app.ui.click_through) return;
+    const at = menuAnchor(e as PointerEvent, document.activeElement instanceof Element ? document.activeElement : null);
+    api.showContextMenu(at).catch((err: unknown) => console.warn("show_context_menu failed", err));
+  }
 </script>
+
+<svelte:window {oncontextmenu} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
   <UpdateBanner />
+  <!-- First in the DOM so Tab reaches the caption buttons before the view's content. -->
+  {#if app.ready}<WindowControls />{/if}
   {#if !app.ready}
     {#if app.error}
       <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>

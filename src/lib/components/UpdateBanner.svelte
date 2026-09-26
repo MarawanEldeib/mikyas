@@ -56,10 +56,10 @@
   .update {
     position: absolute;
     z-index: 2;
-    /* The card's status area: between the side padding and the four footer buttons (4 × 24px,
+    /* The card's status area: between the side padding and the three footer buttons (3 × 24px,
        2px apart, 8px in from the edge, then the footer's 8px gap). */
     left: 12px;
-    right: 118px;
+    right: 92px;
     bottom: 8px;
     height: 24px;
     display: flex;

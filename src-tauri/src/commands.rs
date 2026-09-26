@@ -14,6 +14,7 @@ use crate::connect::{self, ConnectEnv, ConnectPreview, ConnectionStatus};
 use crate::pipeline::Msg;
 use crate::settings::{self, Settings, ViewMode};
 use crate::state::{Shared, UiState, lock};
+use crate::visibility::Event;
 
 type Shr<'a> = State<'a, Arc<Shared>>;
 
@@ -91,6 +92,12 @@ pub fn quit_app(app: AppHandle, shared: Shr<'_>) {
     quit(&app, &shared);
 }
 
+/// The widget's × button (with `close_action` "hide").
+#[tauri::command]
+pub fn hide_widget(app: AppHandle, shared: Shr<'_>) {
+    hide_from_widget(&app, &shared);
+}
+
 // ---- shared actions ----
 
 pub fn apply_view(app: &AppHandle, shared: &Shared, view: ViewMode) {
@@ -116,6 +123,27 @@ pub fn apply_pinned(app: &AppHandle, shared: &Shared, pinned: bool) {
         save(shared, &s);
     }
     crate::window::emit_ui(app, shared);
+}
+
+/// Hides the widget from its own × or right-click menu, on the tray's and the hotkey's path
+/// (`HiddenReason::User`); the first time, a toast says how to bring it back.
+pub fn hide_from_widget(app: &AppHandle, shared: &Shared) {
+    // The pointer is over a slid-out pill or card, so it would never slide back in on its own
+    // and would come back slid out: back into the strip first (forced, like the card's "–").
+    crate::dock::set_expanded(app, shared, false, true);
+    crate::visibility::apply(app, shared, Event::UserHide);
+    // A show/hide shortcut that failed to register can't bring it back.
+    let hotkey_works = shared.ui().toggle_hotkey_error.is_none();
+    let (title, body) = {
+        let mut s = shared.settings();
+        if !crate::visibility::hide_hint_due(Event::UserHide, s.hide_hint_shown) {
+            return;
+        }
+        s.hide_hint_shown = true;
+        save(shared, &s);
+        crate::notify::hide_hint_text(if hotkey_works { &s.toggle_hotkey } else { "" })
+    };
+    crate::notify::show(app, &title, &body);
 }
 
 /// Ghost mode is never persisted.

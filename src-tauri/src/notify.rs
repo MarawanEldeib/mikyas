@@ -1,4 +1,5 @@
-//! OS toast notifications for limit and context alerts.
+//! OS toast notifications for limit and context alerts, and the one-time hint after the widget
+//! was first hidden from its own × or menu.
 
 use chrono::{Local, TimeZone};
 use cuw_core::alerts::AlertEvent;
@@ -110,6 +111,16 @@ pub fn toast_text(alert: &Alert, now: Ms) -> (String, String) {
     }
 }
 
+/// Title and body of the one-time toast after the first hide from the widget; `toggle_hotkey` is
+/// the show/hide shortcut ("" when there is none or it could not be registered).
+pub fn hide_hint_text(toggle_hotkey: &str) -> (String, String) {
+    let body = match toggle_hotkey.trim() {
+        "" => "Click the tray icon to show it again.".to_owned(),
+        hotkey => format!("Click the tray icon or press {hotkey} to show it again."),
+    };
+    ("Claude Usage is still running".into(), body)
+}
+
 pub fn show(app: &AppHandle, title: &str, body: &str) {
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         crate::pipeline::log(&format!("notification failed: {e}"));
@@ -162,6 +173,16 @@ mod tests {
         assert_eq!(window_name(&WindowKind::Other("seven_day_opus".into())), "weekly Opus");
         assert_eq!(duration_text(2 * DAY_MS + 3 * HOUR_MS), "2d 3h");
         assert_eq!(duration_text(30_000), "<1m");
+    }
+
+    #[test]
+    fn hide_hint_names_the_shortcut_when_there_is_one() {
+        let (t, b) = hide_hint_text("Ctrl+Alt+H");
+        assert_eq!(t, "Claude Usage is still running");
+        assert_eq!(b, "Click the tray icon or press Ctrl+Alt+H to show it again.");
+        assert_eq!(hide_hint_text(" Ctrl+Shift+F9 ").1, "Click the tray icon or press Ctrl+Shift+F9 to show it again.");
+        assert_eq!(hide_hint_text("").1, "Click the tray icon to show it again.");
+        assert_eq!(hide_hint_text("  ").1, "Click the tray icon to show it again.");
     }
 
     fn ctx_event(model: Option<&str>, project: Option<&str>) -> CtxAlertEvent {

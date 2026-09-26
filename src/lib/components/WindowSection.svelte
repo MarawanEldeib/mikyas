@@ -12,9 +12,12 @@
     /** Optional rows (Settings → Card rows). */
     sparkline?: boolean;
     burn?: boolean;
+    /** The top section of a card without the session header: its sparkline sits under the
+     *  window controls. */
+    underControls?: boolean;
   }
 
-  let { window: w, now, sparkline = true, burn = true }: Props = $props();
+  let { window: w, now, sparkline = true, burn = true, underControls = false }: Props = $props();
 
   const p = $derived(clampPct(w.pct));
   const label = $derived(windowLabel(w.kind));
@@ -47,7 +50,7 @@
       </div>
     </div>
     {#if sparkline}
-      <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" />
+      <Sparkline points={w.spark} pct={p} stale={muted} width={100} height={36} label="{label} usage over the last {span}" {underControls} />
     {/if}
   </div>
   <div class="bar" role="progressbar" aria-label="{label} usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)}>

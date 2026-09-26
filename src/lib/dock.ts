@@ -1,12 +1,16 @@
 // Edge-dock hover behaviour. Pointing at the collapsed strip slides the widget out at once;
 // leaving the slid-out widget slides it back in after a short grace period unless the pointer
-// returns. Rust owns the geometry (dock.rs) and ignores requests that don't apply (click-through,
-// Settings open, pointer still over the window); the guards here only avoid pointless calls.
+// returns, and the card's "–" slides it in at once. Rust owns the geometry (dock.rs) and ignores
+// requests that don't apply (click-through, Settings open, pointer still over the window unless
+// forced); the guards here only avoid pointless calls.
 
 import type { Settings, UiState, ViewMode } from "./types";
 
 /** Grace period before a left widget slides back in. */
 export const COLLAPSE_DELAY_MS = 450;
+/** After the card's "–" slid the widget in, the strip may appear right under the pointer:
+ *  pointing at it doesn't slide it out again until the pointer has left, or this long. */
+export const REEXPAND_GUARD_MS = 1000;
 
 export interface DockState {
   docked: boolean;
@@ -42,12 +46,17 @@ export function canCollapse(s: DockState): boolean {
 
 export interface DockDeps {
   state(): DockState;
-  setExpanded(expanded: boolean): void;
+  /** `force`: the user's own slide-in, with the pointer still over the widget. */
+  setExpanded(expanded: boolean, force?: boolean): void;
 }
 
 export interface DockController {
-  /** The pointer entered the strip: slide out now. */
+  /** The strip was clicked (or activated from the keyboard): slide out now. */
   expand(): void;
+  /** The pointer entered the strip: slide out now, unless the "–" just slid it in under it. */
+  hover(): void;
+  /** The card's "–": slide in now. */
+  collapse(): void;
   /** The pointer is over the widget: keep it out. */
   hold(): void;
   /** The pointer left the widget: slide in after COLLAPSE_DELAY_MS unless it comes back. */
@@ -62,20 +71,33 @@ export function createDockController(deps: DockDeps): DockController {
   // A slide-out was requested; the store only reports it once Rust's ui-state arrives, and the
   // flag is dropped when it does.
   let requested = false;
+  let guardUntil = 0;
   const cancel = () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
   };
+  const expand = () => {
+    cancel();
+    if (!canExpand(deps.state())) return;
+    requested = true;
+    deps.setExpanded(true);
+  };
   return {
-    expand() {
+    expand,
+    hover() {
+      if (Date.now() >= guardUntil) expand();
+    },
+    collapse() {
       cancel();
-      if (!canExpand(deps.state())) return;
-      requested = true;
-      deps.setExpanded(true);
+      requested = false;
+      if (!canCollapse(deps.state())) return;
+      guardUntil = Date.now() + REEXPAND_GUARD_MS;
+      deps.setExpanded(false, true);
     },
     hold: cancel,
     leave() {
       cancel();
+      guardUntil = 0;
       const s = deps.state();
       if (s.expanded) requested = false;
       // A pointer that brushed past the strip leaves before the slide-out lands; the widget
@@ -120,16 +142,16 @@ export function bindPointer(doc: Listenable, inside: (t: EventTarget | null) => 
 let controller: DockController | null = null;
 
 /**
- * The app-wide dock controller, bound to the document on first use (DockBar, Pill and Card call
- * this; it lives for the page's lifetime because the widget swaps between those views while
- * docked).
+ * The app-wide dock controller, bound to the document on first use (DockBar, Pill, Card and the
+ * window controls call this; it lives for the page's lifetime because the widget swaps between
+ * those views while docked).
  */
-export function startDock(a: DockApp, setExpanded: (expanded: boolean) => Promise<unknown>): DockController {
+export function startDock(a: DockApp, setExpanded: (expanded: boolean, force?: boolean) => Promise<unknown>): DockController {
   if (controller) return controller;
   const ctl = createDockController({
     state: () => dockState(a),
-    setExpanded: (v) => {
-      setExpanded(v).catch((e: unknown) => console.warn("set_dock_expanded failed", e));
+    setExpanded: (v, force) => {
+      setExpanded(v, force).catch((e: unknown) => console.warn("set_dock_expanded failed", e));
     },
   });
   if (typeof document !== "undefined") {

@@ -1,6 +1,7 @@
 //! Tray icon: colour by usage, tooltip "5h 22% · 7d 61%", and the menu. Left click and the
 //! Show/Hide item share the show/hide hotkey's path (`visibility`), and the item's label follows
-//! `UiState.hidden_reason`.
+//! `UiState.hidden_reason`. The menu handler also serves the widget's right-click menu
+//! (`context_menu`): Tauri passes it every menu event.
 
 use std::sync::Arc;
 
@@ -158,7 +159,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
     Ok(())
 }
 
-fn compact_label(view: ViewMode) -> &'static str {
+pub fn compact_label(view: ViewMode) -> &'static str {
     if view == ViewMode::Pill { "Expanded" } else { "Compact" }
 }
 
@@ -166,10 +167,12 @@ fn show_hide_label(reason: HiddenReason) -> &'static str {
     if reason == HiddenReason::None { "Hide widget" } else { "Show widget" }
 }
 
+/// Tray and right-click menu items (the ids "hide" and "history" are the right-click menu's).
 fn on_menu(app: &AppHandle, event: MenuEvent) {
     let shared = app.state::<Arc<Shared>>().inner().clone();
     match event.id().as_ref() {
         "show" => visibility::apply(app, &shared, Event::UserToggle),
+        "hide" => crate::commands::hide_from_widget(app, &shared),
         "pin" => {
             let pinned = !shared.ui().pinned;
             crate::commands::apply_pinned(app, &shared, pinned);
@@ -180,9 +183,10 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
             visibility::apply(app, &shared, Event::UserShow);
             crate::commands::apply_view(app, &shared, view);
         }
-        "settings" => {
+        id @ ("settings" | "history") => {
+            let view = if id == "settings" { ViewMode::Settings } else { ViewMode::History };
             visibility::apply(app, &shared, Event::UserShow);
-            crate::commands::apply_view(app, &shared, ViewMode::Settings);
+            crate::commands::apply_view(app, &shared, view);
         }
         "autostart" => {
             let on = !shared.settings().start_with_windows;

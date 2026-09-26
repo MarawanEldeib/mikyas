@@ -1,6 +1,6 @@
 // Browser-only mock backend: realistic, deterministic snapshots for every UI state, driven by
-// URL params (?scenario=…&view=…&effect=…&ghost=1&conn=…&update=…&hidden=…). Loaded lazily by
-// ipc.ts only when not running inside Tauri. All data here is synthetic.
+// URL params (?scenario=…&view=…&effect=…&ghost=1&conn=…&update=…&hidden=…&close=…). Loaded
+// lazily by ipc.ts only when not running inside Tauri. All data here is synthetic.
 
 import { ACCENTS } from "./color";
 import { DAY, HOUR, MIN, SEC } from "./format";
@@ -416,6 +416,9 @@ export function createMockBackend(params: URLSearchParams): Backend {
     ui_scale: Math.min(1.3, Math.max(0.85, Number(params.get("scale")) || 1)),
     card_rows: parseCardRows(params.get("rows")),
     dock: pick(params.get("dock"), ["off", "left", "right", "top"] as const, "off"),
+    // ?close=quit: the × quits instead of hiding.
+    close_action: pick(params.get("close"), ["hide", "quit"] as const, "hide"),
+    hide_hint_shown: false,
   };
   let ui: UiState = {
     view,
@@ -423,8 +426,9 @@ export function createMockBackend(params: URLSearchParams): Backend {
     click_through: params.get("ghost") === "1",
     hotkey_error: spec.hotkeyError ?? null,
     toggle_hotkey_error: null,
-    // Docked, the app slides out for Settings, Sessions and History (window.rs set_view).
-    dock_expanded: settings.dock !== "off" && view !== "pill" && view !== "card",
+    // Docked, the app slides out for Settings, Sessions and History (window.rs set_view);
+    // ?expanded=1 starts a docked pill or card slid out too.
+    dock_expanded: settings.dock !== "off" && (params.get("expanded") === "1" || (view !== "pill" && view !== "card")),
     hidden_reason: pick(params.get("hidden"), HIDDEN, "none"),
     update: updateMode === "1" ? MOCK_UPDATE : null,
   };
@@ -467,7 +471,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
     get_snapshot: () => snapshot,
     get_settings: () => settings,
     update_settings: (args) => {
-      const patch = args.patch as Partial<Settings>;
+      // Like Rust, the internal flag can't be patched.
+      const { hide_hint_shown: _internal, ...patch } = args.patch as Partial<Settings>;
       settings = { ...settings, ...patch };
       if (patch.hotkey !== undefined && ui.hotkey_error) {
         // Registering a different shortcut succeeds in the mock.
@@ -507,6 +512,17 @@ export function createMockBackend(params: URLSearchParams): Backend {
     },
     open_data_folder: () => console.info("[mock] open_data_folder"),
     quit_app: () => console.info("[mock] quit_app"),
+    // The page can't hide itself: the state changes and the first hide logs the hint.
+    hide_widget: () => {
+      console.info("[mock] hide_widget");
+      if (!settings.hide_hint_shown) {
+        settings = { ...settings, hide_hint_shown: true };
+        console.info("[mock] toast: Claude Usage is still running");
+      }
+      ui = { ...ui, hidden_reason: "user" };
+      emit("ui-state", ui);
+    },
+    show_context_menu: () => console.info("[mock] show_context_menu"),
     get_history: async (args) => {
       // ?history=slow|error previews the History view's loading and error states.
       const mode = params.get("history");

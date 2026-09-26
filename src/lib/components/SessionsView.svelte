@@ -110,7 +110,8 @@
     align-items: center;
     gap: 4px;
     height: 44px;
-    padding: 0 12px 0 6px;
+    /* The right 42px are the window controls' × (24px, 10px in) and an 8px gap. */
+    padding: 0 42px 0 6px;
     flex: none;
     border-bottom: 1px solid var(--divider);
   }
