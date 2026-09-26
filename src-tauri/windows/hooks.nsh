@@ -55,7 +55,7 @@ Var CuwDisconnected   ; 1 = the statusline was restored (or there was nothing to
     ${Else}
       DetailPrint "The statusline could not be restored automatically (exit code $0)."
       MessageBox MB_ABORTRETRYIGNORE|MB_ICONEXCLAMATION \
-        "The Claude Code statusline could not be restored automatically (exit code $0).$\r$\n$\r$\nIn $PROFILE\.claude\settings.json, remove the $\"statusLine$\" entry whose command runs$\r$\n${CUW_DATA_DIR}\bin\cuw-capture.exe$\r$\n(or put your own statusline command back).$\r$\n$\r$\nAbort keeps the widget installed, Retry tries again, Ignore uninstalls anyway." \
+        "The Claude Code statusline could not be restored automatically (exit code $0).$\r$\n$\r$\nIn $PROFILE\.claude\settings.json, remove the $\"statusLine$\" entry whose command runs$\r$\n${CUW_DATA_DIR}\bin\cuw-capture.exe$\r$\n(or put your own statusline command back).$\r$\n$\r$\nAbort keeps the widget installed, Retry tries again, Ignore uninstalls anyway and also deletes the widget's saved copies of settings.json in ${CUW_DATA_DIR}\backups." \
         /SD IDIGNORE IDRETRY cuw_disconnect IDIGNORE cuw_disconnect_ignored
       Abort "Uninstall cancelled: the Claude Code statusline still uses the widget."
       cuw_disconnect_ignored:
