@@ -14,6 +14,8 @@ test.describe("pill and card", () => {
   test("a single click on the pill does nothing", async ({ page }) => {
     await openWidget(page, { view: "pill" });
     await page.locator(".pill .win").first().click();
+    // Past the double-click window, so a late switch would have happened by now.
+    await page.waitForTimeout(600);
     await expect(page.locator("html")).toHaveAttribute("data-view", "pill");
   });
 
@@ -313,12 +315,14 @@ test.describe("connect Claude Code", () => {
 });
 
 test.describe("lost connection banner", () => {
-  test("lost=1: reconnect", async ({ page }) => {
+  test("lost=1: reconnect wraps the status line again and the banner goes", async ({ page }) => {
     await openWidget(page, { params: { lost: "1" } });
     const banner = page.locator(".lost");
     await expect(banner).toContainText("Status line changed");
     await banner.getByRole("button", { name: "Reconnect" }).click();
-    await expect(banner.getByRole("button", { name: /Reconnect/ })).toBeVisible();
+    await expect(banner.getByRole("button", { name: "Reconnecting…" })).toBeDisabled();
+    await expect(banner).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Data sources" })).toBeVisible();
   });
 
   test("lost=1: dismiss brings the data sources back", async ({ page }) => {

@@ -99,7 +99,8 @@ test.describe("card content per scenario", () => {
 
   test("reset: a window waiting for its first reading after a reset", async ({ page }) => {
     await openWidget(page, { view: "pill", params: { scenario: "reset" } });
-    await expect(page.getByRole("img", { name: /5-hour limit 0% used, resets in reset/ })).toBeVisible();
+    // The wording after "0% used" is pinned as a known issue in a11y.spec.ts ("resets in reset").
+    await expect(page.getByRole("img", { name: /^5-hour limit 0% used, / })).toBeVisible();
   });
 });
 

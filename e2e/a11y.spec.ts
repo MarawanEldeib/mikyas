@@ -22,23 +22,35 @@ async function tabOrder(page: Page, max = 60): Promise<string[]> {
   return names;
 }
 
-/** Whether the focused element draws a visible focus indicator (outline or box-shadow ring). */
+/**
+ * Whether the focused element draws a visible focus indicator: an outline or box-shadow ring on
+ * it, its ::before/::after, or a wrapper (the steppers' `.field:focus-within`) that is there while
+ * focused and gone once blurred. A resting shadow (a card's elevation) does not count. Focus is
+ * put back afterwards, so the next Tab continues from the same element.
+ */
 async function focusVisible(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     if (!el || el === document.body || !el.matches(":focus-visible")) return false;
-    const has = (e: Element, pseudo?: string) => {
-      const s = getComputedStyle(e, pseudo);
-      const outline = s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0;
-      const shadow = s.boxShadow !== "none" && s.boxShadow !== "";
-      return outline || shadow;
-    };
-    if (has(el) || has(el, "::after") || has(el, "::before")) return true;
-    // A wrapper may draw the ring for its field (the steppers' `.field:focus-within`).
-    for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) {
-      if (p.matches(":focus-within") && has(p)) return true;
-    }
-    return false;
+    const targets: [Element, string | undefined][] = [
+      [el, undefined],
+      [el, "::after"],
+      [el, "::before"],
+    ];
+    for (let p = el.parentElement, i = 0; p && i < 2; p = p.parentElement, i++) targets.push([p, undefined]);
+    const ring = () =>
+      targets.map(([e, pseudo]) => {
+        const s = getComputedStyle(e, pseudo);
+        const outline =
+          s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0 ? `${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor}` : "";
+        const shadow = s.boxShadow !== "none" ? s.boxShadow : "";
+        return outline || shadow ? `${outline}|${shadow}` : "";
+      });
+    const focused = ring();
+    el.blur();
+    const blurred = ring();
+    el.focus();
+    return focused.some((r, i) => r !== "" && r !== blurred[i]);
   });
 }
 
@@ -54,15 +66,26 @@ test.describe("keyboard only", () => {
   });
 
   test("every focus stop on each view shows a focus ring", async ({ page }) => {
+    // At least this many stops per view, so a view that stops rendering its controls fails here.
+    const MIN_STOPS: Record<View, number> = { pill: 5, card: 8, settings: 50, sessions: 2, history: 10 };
     for (const view of VIEWS) {
       await openWidget(page, { view, params: { update: "1" } });
-      for (let i = 0; i < 12; i++) {
+      if (view === "history") await expect(page.getByRole("region", { name: "Weekly budget used per day" })).toBeVisible();
+      let stops = 0;
+      // Walk the whole tab order once: until focus falls off the end or comes back round.
+      for (let i = 0; i < 200; i++) {
         await page.keyboard.press("Tab");
-        const onBody = await page.evaluate(() => document.activeElement === document.body);
-        if (onBody) break;
-        const label = await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120));
+        const label = await page.evaluate(() => {
+          const el = document.activeElement as HTMLElement | null;
+          if (!el || el === document.body || el.dataset.e2eSeen) return null;
+          el.dataset.e2eSeen = "1";
+          return el.outerHTML.slice(0, 120);
+        });
+        if (label === null) break;
+        stops++;
         expect(await focusVisible(page), `${view}: ${label}`).toBe(true);
       }
+      expect(stops, `${view}: focus stops`).toBeGreaterThanOrEqual(MIN_STOPS[view]);
     }
   });
 
@@ -177,26 +200,36 @@ async function openUpdateList(page: Page): Promise<void> {
   await expect(page.getByRole("dialog", { name: "Updates available" })).toBeVisible();
 }
 
-test.describe("known issues (expected to fail until fixed)", () => {
+// Each test asserts that its defect is still there (not test.fail, which would also pass when the
+// setup itself breaks). Once the owner fixes one, its test fails with FIXED: delete the test and,
+// for an axe finding, its KNOWN_AXE entry.
+const FIXED = (why: string) => `FIXED? ${why}. Remove this known-issue test (and its KNOWN_AXE entry).`;
+
+test.describe("known issues (pinned until fixed)", () => {
   // One test per finding, so each one flips on its own when it is fixed.
   for (const k of KNOWN_AXE) {
-    test(`update list: no ${k.id} finding on ${k.target}`, async ({ page }) => {
-      test.fail(true, k.why);
+    test(`update list: ${k.id} on ${k.target}`, async ({ page }) => {
       await openUpdateList(page);
-      expect((await seriousViolations(page)).filter((f) => f.startsWith(`${k.id} `))).toEqual([]);
+      expect(await seriousViolations(page), FIXED(k.why)).toContain(`${k.id} (serious): ${k.target}`);
     });
   }
 
-  test("sessions: the count keeps its screen-reader space", async ({ page }) => {
-    test.fail(true, 'SessionsView.svelte: Svelte 5 trims the leading space of <span class="sr"> sessions</span>, so it reads "4sessions"');
+  test("sessions: the count loses its screen-reader space", async ({ page }) => {
     await openWidget(page, { view: "sessions" });
-    await expect(page.locator(".count")).toHaveText("4 sessions");
+    const why = 'SessionsView.svelte: Svelte 5 trims the leading space of <span class="sr"> sessions</span> ("4sessions")';
+    await expect(page.locator(".count"), FIXED(why)).toHaveText("4sessions");
   });
 
-  test("sessions: the context label keeps its screen-reader space", async ({ page }) => {
-    test.fail(true, 'SessionsView.svelte: Svelte 5 trims the trailing space of <span class="sr">context </span>, so it reads "context34%"');
+  test("sessions: the context label loses its screen-reader space", async ({ page }) => {
     await openWidget(page, { view: "sessions" });
-    await expect(page.locator(".ctx-pct").first()).toHaveText("context 34%");
+    const why = 'SessionsView.svelte: Svelte 5 trims the trailing space of <span class="sr">context </span> ("context34%")';
+    await expect(page.locator(".ctx-pct").first(), FIXED(why)).toHaveText("context34%");
+  });
+
+  test("pill: a window waiting after its reset reads 'resets in reset'", async ({ page }) => {
+    await openWidget(page, { view: "pill", params: { scenario: "reset" } });
+    const why = "Pill.svelte describe(): pushes `resets in ${pillCountdown()}` even when the countdown is 'reset' or '—'";
+    await expect(page.getByRole("img", { name: /^5-hour limit 0% used/ }), FIXED(why)).toHaveAccessibleName(/resets in reset$/);
   });
 });
 
