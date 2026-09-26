@@ -3,7 +3,7 @@
 //! `UiState.hidden_reason`. The menu handler also serves the widget's right-click menu
 //! (`context_menu`): Tauri passes it every menu event.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cuw_core::engine::types::{Phase, Snapshot, WindowKind};
 use tauri::image::Image;
@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::settings::{TrayNumber, ViewMode};
 use crate::state::{HiddenReason, Shared};
+use crate::tray_icon::Style;
 use crate::visibility::{self, Event};
 
 pub const TRAY_ID: &str = "main";
@@ -49,11 +50,19 @@ pub fn level(snapshot: &Snapshot) -> Level {
         .filter(|w| !w.state.stale)
         .map(|w| if w.state.phase == Phase::ResetAwaitingData { 0.0 } else { w.state.pct })
         .fold(None, |m: Option<f32>, p| Some(m.map_or(p, |m| m.max(p))));
-    match max {
-        None => Level::Grey,
-        Some(p) if p >= 70.0 => Level::Red,
-        Some(p) if p >= 40.0 => Level::Orange,
-        Some(_) => Level::Green,
+    max.map_or(Level::Grey, Level::for_pct)
+}
+
+impl Level {
+    /// Statusline thresholds: green < 40, orange 40–69, red ≥ 70.
+    pub fn for_pct(pct: f32) -> Self {
+        if pct >= 70.0 {
+            Self::Red
+        } else if pct >= 40.0 {
+            Self::Orange
+        } else {
+            Self::Green
+        }
     }
 }
 
@@ -145,7 +154,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
                 visibility::apply(app, &shared, Event::UserToggle);
             }
         });
-    if let Some(img) = icon(level(&snapshot)) {
+    if let Some(img) = tray_image(app, &snapshot, settings.tray_number) {
         builder = builder.icon(img);
     }
     builder.build(app)?;
@@ -217,15 +226,38 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     }
 }
 
+/// What the icon was last drawn with (the number's mode and style).
+static DRAWN: Mutex<Option<(TrayNumber, Style)>> = Mutex::new(None);
+
+/// The number icon (`settings.tray_number`), or the coloured dot when it is off or there is no data.
+fn tray_image(app: &AppHandle, snapshot: &Snapshot, mode: TrayNumber) -> Option<Image<'static>> {
+    let style = Style::current(app);
+    *crate::state::lock(&DRAWN) = Some((mode, style));
+    crate::tray_icon::number_icon(snapshot, mode, style).or_else(|| icon(level(snapshot)))
+}
+
+fn mode(app: &AppHandle) -> TrayNumber {
+    app.try_state::<Arc<Shared>>()
+        .map_or(TrayNumber::Off, |shared| shared.settings().tray_number)
+}
+
 /// Refreshes the tooltip and icon from a new snapshot.
 pub fn update(app: &AppHandle, snapshot: &Snapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let _ = tray.set_tooltip(Some(tooltip(snapshot)));
-    let mode = app
-        .try_state::<Arc<Shared>>()
-        .map_or(TrayNumber::Off, |shared| shared.settings().tray_number);
-    let image = crate::tray_icon::number_icon(snapshot, mode).or_else(|| icon(level(snapshot)));
-    let _ = tray.set_icon(image);
+    let _ = tray.set_icon(tray_image(app, snapshot, mode(app)));
+}
+
+/// Redraws the icon when the number's setting, the display scale or the taskbar theme changed
+/// since it was drawn (called from the settings hook and the display poll).
+pub fn refresh_style(app: &AppHandle) {
+    let now = (mode(app), Style::current(app));
+    if *crate::state::lock(&DRAWN) == Some(now) {
+        return;
+    }
+    let Some(shared) = app.try_state::<Arc<Shared>>() else { return };
+    let snapshot = crate::state::lock(&shared.snapshot).clone();
+    update(app, &snapshot);
 }
 
 /// Mirrors visibility / pin / click-through / view / autostart into the menu.
@@ -294,5 +326,15 @@ mod tests {
         for l in [Level::Green, Level::Orange, Level::Red, Level::Grey] {
             assert!(icon(l).is_some());
         }
+    }
+
+    #[test]
+    fn level_thresholds() {
+        assert_eq!(Level::for_pct(0.0), Level::Green);
+        assert_eq!(Level::for_pct(39.9), Level::Green);
+        assert_eq!(Level::for_pct(40.0), Level::Orange);
+        assert_eq!(Level::for_pct(69.9), Level::Orange);
+        assert_eq!(Level::for_pct(70.0), Level::Red);
+        assert_eq!(Level::for_pct(100.0), Level::Red);
     }
 }
