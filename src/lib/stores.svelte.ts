@@ -134,6 +134,8 @@ class AppState {
       pasts.push(w.observed_at_ms);
     }
     if (s.session) pasts.push(s.session.last_active_ms);
+    // Every row of the Sessions view shows its own age.
+    for (const row of s.sessions ?? []) pasts.push(row.last_active_ms);
     if (s.health.cli_last_capture_ms !== null) pasts.push(s.health.cli_last_capture_ms);
     if (s.health.transcripts_last_activity_ms !== null) pasts.push(s.health.transcripts_last_activity_ms);
     if (s.health.desktop.state === "ok" && s.health.desktop.last_sample_ms !== null) {

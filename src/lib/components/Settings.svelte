@@ -262,7 +262,7 @@
       <div>
         <p>
           <strong>Reads only</strong> Claude Code's statusline output, local session transcripts (model and context size) and
-          Claude Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access.
+          Claude Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access{app.settings?.check_updates ? " except the daily update check (api.github.com)" : ""}.
         </p>
         <button type="button" class="btn" onclick={() => api.openDataFolder()}><Icon name="folder" size={13} />Open data folder</button>
       </div>

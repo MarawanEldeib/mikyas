@@ -13,7 +13,7 @@ use tauri::{
 
 use crate::dock::{self, Side};
 use crate::settings::{CardRows, DockEdge, EffectName, Settings, ViewMode};
-use crate::state::Shared;
+use crate::state::{HiddenReason, Shared};
 
 pub const LABEL: &str = "main";
 /// Gap to the work-area edge for the default position.
@@ -90,11 +90,15 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
         .minimizable(false)
         .shadow(true)
         .focused(false)
-        .focusable(settings.view == ViewMode::Settings)
+        .focusable(is_panel(settings.view))
         .visible(false)
         .on_page_load(|window, payload| {
             if payload.event() == PageLoadEvent::Finished {
-                let _ = window.show();
+                // A reload must not undo a hide by the user or by fullscreen auto-hide.
+                let hidden = shared_of(&window).is_some_and(|s| s.ui().hidden_reason != HiddenReason::None);
+                if !hidden {
+                    let _ = window.show();
+                }
                 if std::env::var_os("CUW_MEMORY_NORMAL").is_none() {
                     crate::platform::set_memory_low(&window, true);
                 }
@@ -213,9 +217,14 @@ fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
     )
 }
 
-/// The anchor chosen when Settings was opened: the tall Settings view would otherwise pick a
-/// different corner and the card would not return to where it was.
+/// The anchor chosen when a panel (Settings, Sessions, History) was opened: the larger panel
+/// would otherwise pick a different corner and the card would not return to where it was.
 static SETTINGS_ANCHOR: std::sync::Mutex<Option<Anchor>> = std::sync::Mutex::new(None);
+
+/// Panels are opened from the card, take keyboard focus (Esc, Tab) and return to the card.
+pub fn is_panel(view: ViewMode) -> bool {
+    matches!(view, ViewMode::Settings | ViewMode::Sessions | ViewMode::History)
+}
 
 fn anchored_position_with(rect: Rect, new_w: i32, new_h: i32, area: Rect, (right, bottom): Anchor) -> (i32, i32) {
     let x = if right { rect.0 + rect.2 - new_w } else { rect.0 };
@@ -289,11 +298,11 @@ fn resize_free(window: &WebviewWindow, from: ViewMode, view: ViewMode, logical: 
     let (x, y) = match area_for(rect, &areas) {
         Some(area) => {
             let mut saved = crate::state::lock(&SETTINGS_ANCHOR);
-            let anchor = match (from, view) {
-                (ViewMode::Settings, ViewMode::Settings) => saved.unwrap_or_else(|| nearest_anchor(rect, area)),
-                (ViewMode::Settings, _) => saved.take().unwrap_or_else(|| nearest_anchor(rect, area)),
-                (_, ViewMode::Settings) => *saved.insert(nearest_anchor(rect, area)),
-                _ => nearest_anchor(rect, area),
+            let anchor = match (is_panel(from), is_panel(view)) {
+                (true, true) => saved.unwrap_or_else(|| nearest_anchor(rect, area)),
+                (true, false) => saved.take().unwrap_or_else(|| nearest_anchor(rect, area)),
+                (false, true) => *saved.insert(nearest_anchor(rect, area)),
+                (false, false) => nearest_anchor(rect, area),
             };
             anchored_position_with(rect, w + frame_w, h + frame_h, area, anchor)
         }
@@ -303,7 +312,7 @@ fn resize_free(window: &WebviewWindow, from: ViewMode, view: ViewMode, logical: 
     let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
 }
 
-/// Switches view: size, focusability (only Settings takes keyboard focus). A docked strip
+/// Switches view: size, focusability (only panels take keyboard focus). A docked strip
 /// slides out for Settings, Sessions and History (which never slide back in).
 pub fn set_view(app: &AppHandle, from: ViewMode, view: ViewMode) {
     let Some(window) = get(app) else { return };
@@ -314,9 +323,9 @@ pub fn set_view(app: &AppHandle, from: ViewMode, view: ViewMode) {
         }
     }
     resize_anchored(&window, from, view);
-    let settings_view = view == ViewMode::Settings;
-    let _ = window.set_focusable(settings_view);
-    if settings_view {
+    let panel = is_panel(view);
+    let _ = window.set_focusable(panel);
+    if panel {
         let _ = window.show();
         let _ = window.set_focus();
     }
