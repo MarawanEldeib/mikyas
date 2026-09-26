@@ -96,7 +96,7 @@ pub fn set_outer_rect(window: &tauri::WebviewWindow, (x, y, w, h): (i32, i32, i3
 }
 
 // Fullscreen detection. Window queries only (no process handles, memory reads, injection or
-// hooks), which keeps the widget safe next to kernel anti-cheat such as Riot Vanguard.
+// hooks): the widget never touches other programs.
 
 fn rect(r: &RECT) -> Rect {
     Rect {

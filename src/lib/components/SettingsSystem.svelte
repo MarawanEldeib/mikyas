@@ -64,11 +64,11 @@
     </div>
     <div class="row">
       <span class="label">
-        Hide when a fullscreen app or game is focused
+        Hide while a fullscreen video or app is in front
         <span class="sub">Checks only which window is in front</span>
       </span>
       <Toggle
-        label="Hide when a fullscreen app or game is focused"
+        label="Hide while a fullscreen video or app is in front"
         checked={s.auto_hide_fullscreen}
         onchange={(v) => update({ auto_hide_fullscreen: v })}
       />

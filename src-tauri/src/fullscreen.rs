@@ -1,8 +1,8 @@
-//! Auto-hide while a fullscreen app or game owns the foreground on the widget's monitor
+//! Auto-hide while a fullscreen app (a video, a course, a presentation) owns the foreground on the widget's monitor
 //! (`settings.auto_hide_fullscreen`); the widget returns, without taking the focus, when it ends.
 //!
 //! A small thread samples the foreground window every 1.5 s while the setting is on (every 30 s
-//! otherwise, or at once when the setting changes). **Anti-cheat safety (e.g. Riot Vanguard):**
+//! otherwise, or at once when the setting changes). **Safety:**
 //! detection uses window queries only — `GetForegroundWindow`, `GetWindowRect`,
 //! `MonitorFromWindow` / `GetMonitorInfoW`, `GetClassNameW` and `SHQueryUserNotificationState`. It
 //! never opens another process (`OpenProcess`), reads another process's memory, injects code or
@@ -156,7 +156,7 @@ impl Debounce {
 }
 
 /// Auto-hide applies only while the setting is on and click-through ("ghost") is off: ghost mode
-/// is the explicit "keep it over my game or video" choice.
+/// is the explicit "keep it over this fullscreen video or app" choice.
 pub fn auto_hide_active(setting: bool, click_through: bool) -> bool {
     setting && !click_through
 }
@@ -302,9 +302,9 @@ mod tests {
 
     #[test]
     fn borderless_and_exclusive_fullscreen() {
-        let game = fg("UnrealWindow", MONITOR);
-        assert!(is_fullscreen(Some(&game), Quns::Busy, Some(1)));
-        assert!(is_fullscreen(Some(&game), Quns::Other, Some(1)), "exact monitor size");
+        let player = fg("MediaPlayerClassicW", MONITOR);
+        assert!(is_fullscreen(Some(&player), Quns::Busy, Some(1)));
+        assert!(is_fullscreen(Some(&player), Quns::Other, Some(1)), "exact monitor size");
         let exclusive = fg("RiotWindowClass", rect(0, 0, 1280, 720));
         assert!(is_fullscreen(Some(&exclusive), Quns::D3dFullScreen, Some(1)));
         // A window that overshoots the monitor by a pixel on every side still counts.
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn fullscreen_means_the_monitor_rect_within_a_pixel() {
-        // A browser in fullscreen (also maximized: IsZoomed is true) or a borderless game.
+        // A browser in fullscreen (also maximized: IsZoomed is true) or a borderless fullscreen player.
         assert!(is_fullscreen(Some(&fg("Chrome_WidgetWin_1", MONITOR)), Quns::Busy, Some(1)));
         assert!(is_fullscreen(Some(&fg("SDL_app", rect(1, 0, 1920, 1081))), Quns::Other, Some(1)));
         assert!(!is_fullscreen(Some(&fg("SDL_app", rect(-2, 0, 1920, 1080))), Quns::Busy, Some(1)));
@@ -340,7 +340,7 @@ mod tests {
         ours.is_ours = true;
         assert!(!is_fullscreen(Some(&ours), Quns::Busy, Some(1)));
         assert!(!is_fullscreen(Some(&ours), Quns::PresentationMode, Some(1)));
-        // A game on the other monitor leaves the widget alone.
+        // A fullscreen app on the other monitor leaves the widget alone.
         assert!(!is_fullscreen(Some(&fg("UnrealWindow", MONITOR)), Quns::Busy, Some(2)));
         assert!(!is_fullscreen(Some(&fg("UnrealWindow", MONITOR)), Quns::D3dFullScreen, Some(2)));
         // Lock screen / no foreground window.
@@ -411,9 +411,9 @@ mod tests {
     #[test]
     fn ghost_mode_pauses_auto_hide() {
         assert!(auto_hide_active(true, false));
-        assert!(!auto_hide_active(true, true), "click-through keeps the widget over a game");
+        assert!(!auto_hide_active(true, true), "click-through keeps the widget over a fullscreen video");
         assert!(!auto_hide_active(false, false));
-        // Turning ghost mode on over a fullscreen game brings an auto-hidden widget back.
+        // Turning ghost mode on over a fullscreen video brings an auto-hidden widget back.
         let mut d = Debounce::default();
         for _ in 0..3 {
             tick(&mut d, auto_hide_active(true, false), true, || true, || false);

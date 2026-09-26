@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_widget_the_user_brought_back_stays_during_fullscreen() {
-        // Shown by the user while the game is still in front…
+        // Shown by the user while the fullscreen app is still in front…
         let (reason, _) = transition(R::Fullscreen, false, Event::UserToggle);
         // …so the ongoing fullscreen does not hide it again, and its end does not touch it.
         assert_eq!(transition(reason, true, Event::FullscreenOngoing), (R::None, Action::Nothing));

@@ -165,7 +165,7 @@ export interface Settings {
   ctx_thresholds: number[];
   /** Global show/hide shortcut, "" = none (default "Ctrl+Alt+H"). */
   toggle_hotkey: string;
-  /** Hide while a fullscreen app/game has focus (default true). */
+  /** Hide while a fullscreen video or app is in front (default true). */
   auto_hide_fullscreen: boolean;
   /** Opt-in daily GitHub Releases check — the app's only network call (default false). */
   check_updates: boolean;

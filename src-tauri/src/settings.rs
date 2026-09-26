@@ -117,7 +117,7 @@ pub struct Settings {
     pub ctx_thresholds: Vec<u8>,
     /// Global shortcut that shows/hides the widget ("" = none).
     pub toggle_hotkey: String,
-    /// Hide automatically while a fullscreen app or game has focus.
+    /// Hide automatically while a fullscreen video or app is in front.
     pub auto_hide_fullscreen: bool,
     /// Opt-in daily check of GitHub Releases (the app's only network call).
     pub check_updates: bool,

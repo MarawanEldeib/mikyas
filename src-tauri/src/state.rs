@@ -55,7 +55,7 @@ pub enum HiddenReason {
     None,
     /// Hidden with the tray, the show/hide hotkey, or the widget's own × or right-click menu.
     User,
-    /// Hidden automatically while a fullscreen app or game has focus.
+    /// Hidden automatically while a fullscreen video or app is in front.
     Fullscreen,
 }
 
