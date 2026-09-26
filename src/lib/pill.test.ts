@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HOUR, MIN } from "./format";
 import { describeWindow, resetPhrase } from "./pill";
+import { WORKED_SINCE_TIP } from "./worked";
 import type { WindowView } from "./types";
 
 // Thursday 2026-09-24 12:00 UTC.
@@ -53,6 +54,6 @@ describe("describeWindow", () => {
   it("adds a reached limit, stale age and worked-since note", () => {
     const s = describeWindow(win({ limit_reached: true, stale: true, observed_at_ms: NOW - 2 * HOUR }), NOW);
     expect(s).toMatch(/^5-hour limit 42% used, limit reached, resets in 3h 12m, last updated /);
-    expect(describeWindow(win({ worked_since: true }), NOW)).toContain("Claude has worked since this reading");
+    expect(describeWindow(win({ worked_since: true }), NOW)).toContain(WORKED_SINCE_TIP);
   });
 });
