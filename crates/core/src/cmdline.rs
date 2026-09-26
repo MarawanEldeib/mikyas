@@ -49,8 +49,10 @@
 //!   after `| ` a cmdlet, script block or `.ps1` script gets the JSON as pipeline objects (a
 //!   script reading `[Console]::In` sees nothing), and Argv can only spawn programs. Statement
 //!   keywords (`if`, `try`, …), `.ps1` scripts, script blocks, built-in aliases and
-//!   `<approved verb>-<noun>` cmdlet names → `NeedsReview`. So is a `-name:value` token under
-//!   LegacyPowerShell: after `--` PowerShell passes it to the shim as two arguments.
+//!   `<approved verb>-<noun>` cmdlet names → `NeedsReview` (`curl` / `wget` only under
+//!   LegacyPowerShell: they are aliases in 5.1 but native programs in pwsh 7). So is a
+//!   `-name:value` token under LegacyPowerShell: after `--` PowerShell passes it to the shim as
+//!   two arguments.
 //! - cmd.exe also mis-serialises an `if` command on the right of a pipe (`if exist x y` fails
 //!   with "y was unexpected at this time"), so a Cmd original with an `if` command →
 //!   `NeedsReview`.
@@ -376,7 +378,8 @@ fn pwsh_starts_with_command(original: &str, argv: bool) -> bool {
             .take_while(|&&x| !x.is_whitespace() && !matches!(x, '(' | ')' | '{' | '}' | ';' | ',' | '|' | '&'))
             .collect(),
     };
-    pwsh_native_name(&name)
+    // Argv is the LegacyPowerShell form.
+    pwsh_native_name(&name, argv)
 }
 
 /// PowerShell statement keywords: at a statement's start they begin a statement, but after
@@ -391,7 +394,7 @@ const PWSH_KEYWORDS: &[&str] = &[
 /// resolve to cmdlets / script functions rather than native programs.
 const PWSH_ALIASES: &[&str] = &[
     "?", "%", "ac", "asnp", "cat", "cd", "cd..", "cd\\", "cd~", "cfs", "chdir", "clc", "clear", "clhy", "cli", "clp",
-    "cls", "clv", "cnsn", "compare", "copy", "cp", "cpi", "cpp", "curl", "cvpa", "dbp", "del", "diff", "dir", "dnsn",
+    "cls", "clv", "cnsn", "compare", "copy", "cp", "cpi", "cpp", "cvpa", "dbp", "del", "diff", "dir", "dnsn",
     "ebp", "echo", "epal", "epcsv", "epsn", "erase", "etsn", "exsn", "fc", "fhx", "fl", "foreach", "ft", "fw", "gal",
     "gbp", "gc", "gci", "gcm", "gcs", "gdr", "gerr", "ghy", "gi", "gjb", "gl", "gm", "gmo", "gp", "gps", "gpv", "group",
     "gsn", "gsnp", "gsv", "gu", "gv", "gwmi", "h", "help", "history", "icm", "iex", "ihy", "ii",
@@ -400,9 +403,11 @@ const PWSH_ALIASES: &[&str] = &[
     "nv", "ogv", "oh", "oss", "pause", "popd", "prompt", "ps", "pushd", "pwd", "r", "rbp", "rcjb", "rcsn", "rd", "rdr",
     "ren", "ri", "rjb", "rm", "rmdir", "rmo", "rni", "rnp", "rp", "rsn", "rsnp", "rujb", "rv", "rvpa", "rwmi", "sajb",
     "sal", "saps", "sasv", "sbp", "sc", "select", "set", "shcm", "si", "sl", "sleep", "sls", "sort", "sp", "spjb",
-    "spps", "spsv", "start", "sujb", "sv", "swmi", "tabexpansion2", "tee", "trcm", "type", "wget", "where", "wjb",
-    "write",
+    "spps", "spsv", "start", "sujb", "sv", "swmi", "tabexpansion2", "tee", "trcm", "type", "where", "wjb", "write",
 ];
+
+/// Aliases of `Invoke-WebRequest` in Windows PowerShell 5.1 only; pwsh 7 runs curl.exe / wget.exe.
+const LEGACY_ONLY_ALIASES: &[&str] = &["curl", "wget"];
 
 /// PowerShell's approved verbs (`Get-Verb`) plus the unapproved ones built-in commands use
 /// (`ForEach-Object`, `Where-Object`, `Sort-Object`, `Tee-Object`, …): `<verb>-<noun>` names
@@ -422,11 +427,15 @@ const PWSH_VERBS: &[&str] = &[
 
 /// Whether a PowerShell command name can be a native program. Rejected: statement keywords,
 /// `.ps1` scripts (they read the JSON from `[Console]::In`, which the shim has already drained
-/// in the Pipe form and which Argv cannot spawn), built-in aliases / functions, and
-/// `<approved verb>-<noun>` cmdlet names.
-fn pwsh_native_name(name: &str) -> bool {
+/// in the Pipe form and which Argv cannot spawn), built-in aliases / functions (for `legacy`
+/// also [`LEGACY_ONLY_ALIASES`]), and `<approved verb>-<noun>` cmdlet names.
+fn pwsh_native_name(name: &str, legacy: bool) -> bool {
     let lower = name.to_lowercase();
-    if lower.ends_with(".ps1") || PWSH_KEYWORDS.contains(&lower.as_str()) || PWSH_ALIASES.contains(&lower.as_str()) {
+    if lower.ends_with(".ps1")
+        || PWSH_KEYWORDS.contains(&lower.as_str())
+        || PWSH_ALIASES.contains(&lower.as_str())
+        || (legacy && LEGACY_ONLY_ALIASES.contains(&lower.as_str()))
+    {
         return false;
     }
     let cmdlet = lower.split_once('-').is_some_and(|(verb, noun)| {
@@ -1356,6 +1365,26 @@ mod tests {
         ] {
             assert!(w(orig, p).is_ok(), "{orig:?} {p:?}");
         }
+    }
+
+    /// `curl` / `wget` are aliases of `Invoke-WebRequest` only in Windows PowerShell 5.1; pwsh
+    /// 7.6 runs curl.exe / wget.exe. LegacyPowerShell may be 5.1, so it keeps refusing them.
+    #[test]
+    fn curl_and_wget_are_native_programs_in_pwsh() {
+        for orig in ["curl -s https://example.invalid/sl", "wget -qO- x", "CURL -s x", "Wget x", "& curl -s x"] {
+            assert_eq!(w(orig, ShellKind::Pwsh).map(|x| x.mode), Ok(WrapMode::Pipe), "{orig:?}");
+        }
+        for orig in ["curl -s https://example.invalid/sl", "wget -qO- x", "CURL -s x"] {
+            assert_eq!(w(orig, ShellKind::LegacyPowerShell), Err(CmdlineError::NeedsReview), "{orig:?}");
+        }
+        // Still refused: a leading stop-parsing token, separators after one (they are literal
+        // there, but the scan does not model `--%`) and cmd `if` commands.
+        for p in [ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            assert_eq!(w("--% curl -s x", p), Err(CmdlineError::NeedsReview), "{p:?}");
+            assert_eq!(w("curl --% -s a;b", p), Err(CmdlineError::Unsupported), "{p:?}");
+            assert_eq!(w("curl --% -s a & b", p), Err(CmdlineError::Unsupported), "{p:?}");
+        }
+        assert_eq!(w("if exist x curl -s y", ShellKind::Cmd), Err(CmdlineError::NeedsReview));
     }
 
     /// After `--`, PowerShell passes a `-name:value` token to a native program as TWO arguments

@@ -1,7 +1,18 @@
 //! Token-free Claude usage data sources and engine.
 //!
 //! Hard rule for everything in this crate: never read credentials, cookies or browser storage,
-//! and never make network calls. All file reads go through [`saferead::SafeReader`].
+//! and never make network calls. Every read of Claude Code's or Claude Desktop's files goes
+//! through [`saferead::SafeReader`]. The widget's own files under the data root
+//! ([`paths::Paths::data_root`]) may be read directly:
+//! - `history.jsonl`, by [`history::History`] (loading, and the last-byte check before an append);
+//! - `capture/<session_id>.json`, by the shim before it replaces a capture and by
+//!   [`sources::statusline::prune`] ([`sources::statusline::load_captures`] uses the reader);
+//! - in the app and the shim: `settings.json`, `state.json`, `alerts.json`, `update-check.json`,
+//!   `wrap.json`, `bin/cuw-capture.exe` (to skip identical copies), `backups/` (listed for
+//!   rotation) and the shim's `capture/_*.log` files.
+//!
+//! [`paths::Paths::detect`] also lists the entry names in `%LOCALAPPDATA%\Packages` to find
+//! MSIX copies of Claude Desktop; it opens no file there.
 
 pub mod alerts;
 pub mod capture;

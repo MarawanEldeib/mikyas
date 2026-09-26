@@ -10,7 +10,8 @@
 //! - Connect with no `statusLine` key: insert a member `"statusLine": {"type": "command",
 //!   "command": "<wrapped>"}` as the LAST member of the top-level object, formatted to match the
 //!   file's detected indentation and line endings (2-space + LF for `JSON.stringify(x, null, 2)`
-//!   files; handle an empty object `{}`).
+//!   files). An empty object `{` W `}` becomes `{` NL indent MEMBER NL `}`; a non-empty W (`{ }`,
+//!   `{\n}`) is kept in [`WrapRecord::empty_object_ws`] instead of the file.
 //! - `statusLine` present but not `type: "command"` (or not an object) → `UnsupportedStatusLine`.
 //! - Already connected (the command is recognised by `cmdline::unwrap`) with the same shim path
 //!   and a mode valid for `shell` → no change (idempotent: returns the input bytes). Different
@@ -29,20 +30,25 @@
 //!   splice `serde_json::to_string(tail)`.
 //! - Recognised Default form (we inserted the statusLine) → remove the whole `"statusLine"` member
 //!   including its separating comma and the whitespace/newline before it, so a file that was only
-//!   touched by Connect returns to its exact original bytes.
+//!   touched by Connect returns to its exact original bytes. If it is the only member and the
+//!   record has `empty_object_ws`, the object's inside becomes that whitespace again.
 //!
-//! `disconnect(connect(x).bytes) == x` must hold byte-for-byte for every input `x` that connect
-//! accepts (property/round-trip tests with LF, CRLF, BOM, 2/4-space and tab indents, unicode and
-//! escaped characters, `{}` and one-line files).
+//! `disconnect(connect(x).bytes, record) == x` must hold byte-for-byte for every non-blank input
+//! `x` that connect accepts (property/round-trip tests with LF, CRLF, BOM, 2/4-space and tab
+//! indents, unicode and escaped characters, `{}`, `{ }`, `{\n}` and one-line files).
 //!
 //! Details the rules above leave open:
 //! - "Already connected" means `wrap(original, shim, shell)` reproduces the current command
 //!   exactly; anything else is re-wrapped.
-//! - Empty input (missing file) connects like `{}\n`, so disconnecting that result yields `{}\n`
-//!   (a valid settings file) rather than an empty file.
-//! - Connect on an already-connected file cannot see the original literal any more; its record
-//!   then carries the canonical encoding `serde_json::to_string(original)`. Callers should keep
-//!   the record from the first connect when the original is unchanged.
+//! - Blank input — empty (missing file), or only JSON whitespace after an optional BOM — holds no
+//!   settings: status is `NotConfigured`, Disconnect leaves it alone, and Connect writes the same
+//!   file as for `{}\n`, without a BOM (there is no content whose encoding to keep).
+//!   Disconnecting that result yields `{}\n` (a valid settings file) rather than the blank input.
+//! - Connect on an already-connected file cannot see the original literal (or the whitespace of
+//!   an emptied object) any more; its record then carries the canonical encoding
+//!   `serde_json::to_string(original)` and no `empty_object_ws`. Callers should keep the record
+//!   from the first connect when the original is unchanged; without `empty_object_ws`, Disconnect
+//!   leaves `{}` where Connect replaced `{ }` / `{\n}`.
 //! - A Default form that replaced a blank `command` (e.g. `""`) is restored from the record's raw
 //!   literal. Without such a record, a statusLine holding only `type` + `command` is removed, and
 //!   one with other keys keeps them and gets `"command": ""`.
@@ -66,6 +72,10 @@ pub struct WrapRecord {
     pub original_command: Option<String>,
     /// Exact JSON literal of the original command as it appeared in the file (with quotes).
     pub original_command_raw: Option<String>,
+    /// The whitespace inside an empty top-level object (`{ }`, `{\n}`) that Connect replaced
+    /// with the new member's lines. Missing from `wrap.json` files of earlier versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_object_ws: Option<String>,
     pub shim_path: String,
     pub mode: WrapMode,
     pub shell: ShellKind,
@@ -100,9 +110,9 @@ pub enum SettingsError {
     Cmdline(#[from] CmdlineError),
 }
 
-/// Empty input (missing file) → `NotConfigured`.
+/// Blank input (a missing file, or only whitespace after an optional BOM) → `NotConfigured`.
 pub fn status(bytes: &[u8]) -> Result<Status, SettingsError> {
-    if bytes.is_empty() {
+    if is_blank(bytes) {
         return Ok(Status::NotConfigured);
     }
     let doc = Doc::parse(bytes)?;
@@ -120,8 +130,9 @@ pub fn status(bytes: &[u8]) -> Result<Status, SettingsError> {
     })
 }
 
-/// Returns the new file bytes and the record to persist in `wrap.json`. Empty input (missing
-/// file) is treated as `{}` and produces a minimal file `{\n  "statusLine": …\n}\n`.
+/// Returns the new file bytes and the record to persist in `wrap.json`. Blank input (see
+/// [`status`]) is treated as `{}` and produces a minimal file `{\n  "statusLine": …\n}\n`,
+/// without a BOM.
 pub fn connect(
     bytes: &[u8],
     shim_path: &str,
@@ -129,13 +140,14 @@ pub fn connect(
     now_ms: Ms,
 ) -> Result<(Vec<u8>, WrapRecord), SettingsError> {
     cmdline::validate_shim_path(shim_path)?;
-    if bytes.is_empty() {
+    if is_blank(bytes) {
         return connect(b"{}\n", shim_path, shell, now_ms);
     }
     let doc = Doc::parse(bytes)?;
     let record = |original_command: Option<String>, original_command_raw: Option<String>, mode: WrapMode| WrapRecord {
         original_command,
         original_command_raw,
+        empty_object_ws: None,
         shim_path: shim_path.to_owned(),
         mode,
         shell,
@@ -147,7 +159,9 @@ pub fn connect(
             let wrapped = cmdline::wrap(None, shim_path, shell)?;
             let out = doc.insert_status_line(&json_string(&wrapped.command)?)?;
             verify(&doc, &out, Some(&wrapped.command))?;
-            Ok((out, record(None, None, wrapped.mode)))
+            let inside = doc.text_at(doc.top.open + 1..doc.top.close);
+            let empty_object_ws = (doc.top.members.is_empty() && !inside.is_empty()).then(|| inside.to_owned());
+            Ok((out, WrapRecord { empty_object_ws, ..record(None, None, wrapped.mode) }))
         }
         StatusLine::Command { literal, command, .. } => {
             let (original, raw) = if cmdline::unwrap(&command).is_some() {
@@ -169,9 +183,9 @@ pub fn connect(
     }
 }
 
-/// `Ok(None)` when there is nothing of ours to undo.
+/// `Ok(None)` when there is nothing of ours to undo (including blank input).
 pub fn disconnect(bytes: &[u8], wrap: Option<&WrapRecord>) -> Result<Option<Vec<u8>>, SettingsError> {
-    if bytes.is_empty() {
+    if is_blank(bytes) {
         return Ok(None);
     }
     let doc = Doc::parse(bytes)?;
@@ -197,7 +211,7 @@ pub fn disconnect(bytes: &[u8], wrap: Option<&WrapRecord>) -> Result<Option<Vec<
                 verify(&doc, &out, Some(&decode_literal(raw)?))?;
                 out
             } else if object.members.iter().all(|m| m.key == "type" || m.key == "command") {
-                let out = doc.remove_member(index)?;
+                let out = doc.remove_member(index, recorded_empty_ws(wrap))?;
                 verify(&doc, &out, None)?;
                 out
             } else {
@@ -212,6 +226,16 @@ pub fn disconnect(bytes: &[u8], wrap: Option<&WrapRecord>) -> Result<Option<Vec<
 
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 const STATUS_LINE: &str = "statusLine";
+
+/// Only JSON whitespace: space, tab, CR, LF.
+fn is_json_ws(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+}
+
+/// Only JSON whitespace, optionally after a BOM: a file with no settings.
+fn is_blank(bytes: &[u8]) -> bool {
+    is_json_ws(bytes.strip_prefix(BOM).unwrap_or(bytes))
+}
 
 /// A strictly valid settings document with the byte spans of its top-level members.
 struct Doc<'a> {
@@ -308,12 +332,11 @@ impl<'a> Doc<'a> {
         let nl = line_ending(self.text);
         let members = &self.top.members;
         let Some(last) = members.last() else {
-            // `{` W `}` → `{` NL unit MEMBER NL W `}`; removing the member and one line ending
-            // restores W exactly.
+            // `{` W `}` → `{` NL unit MEMBER NL `}`; W goes into the record, so Disconnect can
+            // put it back.
             let unit = indent_unit(self.text, None);
-            let at = self.top.open + 1;
             let member = pretty_member(literal, &unit, nl);
-            return self.splice(at..at, &format!("{nl}{unit}{member}{nl}"));
+            return self.splice(self.top.open + 1..self.top.close, &format!("{nl}{unit}{member}{nl}"));
         };
         let before_last = members.len().checked_sub(2).map_or(self.top.open + 1, |i| members[i].value.end);
         let at = last.value.end;
@@ -333,10 +356,14 @@ impl<'a> Doc<'a> {
     }
 
     /// Removes top-level member `index` together with the separator that joins it to its
-    /// neighbours (the inverse of [`Doc::insert_status_line`]).
-    fn remove_member(&self, index: usize) -> Result<Vec<u8>, SettingsError> {
+    /// neighbours (the inverse of [`Doc::insert_status_line`]). An only member with `empty_ws`
+    /// leaves `{` `empty_ws` `}`.
+    fn remove_member(&self, index: usize, empty_ws: Option<&str>) -> Result<Vec<u8>, SettingsError> {
         let members = &self.top.members;
         let member = members.get(index).ok_or(SettingsError::NotStrictJson)?;
+        if let (1, Some(ws)) = (members.len(), empty_ws) {
+            return self.splice(self.top.open + 1..self.top.close, ws);
+        }
         let span = if members.len() == 1 {
             let tail = self.text_at(member.value.end..self.text.len());
             let eol = if tail.starts_with("\r\n") { 2 } else { usize::from(tail.starts_with('\n')) };
@@ -357,6 +384,11 @@ fn recorded_raw(record: Option<&WrapRecord>, matches: impl Fn(&str) -> bool) -> 
     let original = record.original_command.as_deref().filter(|o| matches(o))?;
     let raw = record.original_command_raw.as_deref()?;
     (decode_literal(raw).ok()? == original).then_some(raw)
+}
+
+/// `record.empty_object_ws` if it is non-empty and only JSON whitespace (it comes from disk too).
+fn recorded_empty_ws(record: Option<&WrapRecord>) -> Option<&str> {
+    record?.empty_object_ws.as_deref().filter(|ws| !ws.is_empty() && is_json_ws(ws.as_bytes()))
 }
 
 /// Decodes a complete JSON string literal (quotes included, nothing around it).
@@ -766,8 +798,23 @@ mod tests {
         assert_eq!(status(b"\"text\""), Err(SettingsError::NotAnObject));
         assert_eq!(status(b"{ // c\n}"), Err(SettingsError::NotStrictJson));
         assert_eq!(status(b"{\"a\": 1,}"), Err(SettingsError::NotStrictJson));
-        assert_eq!(status(b"   "), Err(SettingsError::NotStrictJson));
         assert_eq!(status(b"{\"a\": \"\xff\"}"), Err(SettingsError::NotStrictJson));
+    }
+
+    #[test]
+    fn blank_and_bom_only_files_count_as_missing() {
+        let (fresh, fresh_rec) = connect(b"", SHIM, ShellKind::Bash, NOW).unwrap();
+        for blank in [&b" "[..], b"\n", b"\r\n\t ", BOM, b"\xEF\xBB\xBF\r\n"] {
+            assert_eq!(status(blank), Ok(Status::NotConfigured), "{blank:?}");
+            // No BOM in the result: there was no content whose encoding it described.
+            assert_eq!(connect(blank, SHIM, ShellKind::Bash, NOW), Ok((fresh.clone(), fresh_rec.clone())), "{blank:?}");
+            assert_eq!(disconnect(blank, Some(&fresh_rec)), Ok(None), "{blank:?}");
+        }
+        // Only JSON whitespace counts: a second BOM, a form feed or U+00A0 is still not JSON.
+        for bad in [&b"\xEF\xBB\xBF\xEF\xBB\xBF"[..], b" \x0c", "\u{a0}".as_bytes()] {
+            assert_eq!(status(bad), Err(SettingsError::NotStrictJson), "{bad:?}");
+            assert_eq!(connect(bad, SHIM, ShellKind::Bash, NOW), Err(SettingsError::NotStrictJson), "{bad:?}");
+        }
     }
 
     #[test]
@@ -790,6 +837,7 @@ mod tests {
             WrapRecord {
                 original_command: Some(USER_CMD.into()),
                 original_command_raw: Some(USER_LIT.into()),
+                empty_object_ws: None,
                 shim_path: SHIM.into(),
                 mode: WrapMode::Pipe,
                 shell: ShellKind::Bash,
@@ -862,8 +910,11 @@ mod tests {
         let cases: Vec<(Vec<u8>, String)> = vec![
             (b"{}".to_vec(), format!("{{\n  {}\n}}", pretty("  ", "\n"))),
             (b"{}\n".to_vec(), format!("{{\n  {}\n}}\n", pretty("  ", "\n"))),
-            (b"{ }".to_vec(), format!("{{\n  {}\n }}", pretty("  ", "\n"))),
+            (b"{ }".to_vec(), format!("{{\n  {}\n}}", pretty("  ", "\n"))),
+            (b"{\n}\n".to_vec(), format!("{{\n  {}\n}}\n", pretty("  ", "\n"))),
+            (b"{\n\t}".to_vec(), format!("{{\n\t{}\n}}", pretty("\t", "\n"))),
             (b"{}\r\n".to_vec(), format!("{{\r\n  {}\r\n}}\r\n", pretty("  ", "\r\n"))),
+            (b"{\r\n}\r\n".to_vec(), format!("{{\r\n  {}\r\n}}\r\n", pretty("  ", "\r\n"))),
             (b"{\"a\":1}".to_vec(), format!("{{\"a\":1,\"statusLine\":{{\"type\":\"command\",\"command\":{lit}}}}}")),
             (
                 b"{\"a\": 1, \"b\": [1, 2]}\n".to_vec(),
@@ -889,6 +940,46 @@ mod tests {
             assert_eq!(s(&out), expected, "input {:?}", s(&input));
             assert_eq!((rec.original_command, rec.original_command_raw, rec.mode), (None, None, WrapMode::Default));
         }
+    }
+
+    #[test]
+    fn empty_objects_keep_their_whitespace_in_the_record() {
+        for (input, ws, bare) in [
+            ("{}", None, "{}"),
+            ("{}\n", None, "{}\n"),
+            ("{ }", Some(" "), "{}"),
+            ("{\n}\n", Some("\n"), "{}\n"),
+            ("{\r\n}\r\n", Some("\r\n"), "{}\r\n"),
+            ("  {\n\n  }", Some("\n\n  "), "  {}"),
+        ] {
+            let (out, rec) = round_trip(input.as_bytes(), ShellKind::Pwsh);
+            assert_eq!(rec.empty_object_ws.as_deref(), ws, "{input:?}");
+            // Without the record the object comes back empty; the JSON is the same.
+            assert_eq!(disconnect(&out, None).unwrap().as_deref().map(s), Some(bare), "{input:?}");
+            // The record from the first connect still restores after the shim moved.
+            let (moved, _) = connect(&out, SHIM2, ShellKind::Pwsh, NOW).unwrap();
+            assert_eq!(disconnect(&moved, Some(&rec)).unwrap().as_deref().map(s), Some(input), "{input:?}");
+        }
+        // Once the user added a member, removing ours leaves that member as it is.
+        let (out, rec) = connect(b"{ }", SHIM, ShellKind::Bash, NOW).unwrap();
+        let edited = s(&out).replacen('{', "{\n  \"model\": \"x\",", 1);
+        let restored = disconnect(edited.as_bytes(), Some(&rec)).unwrap().unwrap();
+        assert_eq!(s(&restored), "{\n  \"model\": \"x\"\n}");
+    }
+
+    #[test]
+    fn wrap_records_of_earlier_versions_still_load() {
+        let old = concat!(
+            r#"{"original_command":null,"original_command_raw":null,"#,
+            r#""shim_path":"C:/Users/tester/bin/cuw-capture.exe","mode":"default","shell":"bash","at_ms":1790208000000}"#
+        );
+        let rec: WrapRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(rec.empty_object_ws, None);
+        // Nothing to record → the field is left out, so the file reads the same as before.
+        assert_eq!(serde_json::to_string(&rec).unwrap(), old);
+        let (_, rec) = connect(b"{ }", SHIM, ShellKind::Bash, NOW).unwrap();
+        let back: WrapRecord = serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
+        assert_eq!(back, rec);
     }
 
     #[test]
@@ -959,7 +1050,6 @@ mod tests {
             "{'a': 1}",
             "{\"a\": 1} trailing",
             "{\"a\": NaN}",
-            " ",
             "{\"a\": \"\\ud800\"}",
         ] {
             assert_eq!(connect_err(jsonc.as_bytes()), SettingsError::NotStrictJson, "{jsonc:?}");
@@ -1066,6 +1156,9 @@ mod tests {
             (format!("{{\n  \"a\": 1,\n  {member}\n}}\n"), "{\n  \"a\": 1\n}\n"),
             (format!("{{\n  {member}\n}}\n"), "{}\n"),
             (format!("{{{member}}}"), "{}"),
+            // What earlier versions wrote for `{ }` and `{\n}` still restores without a record.
+            (format!("{{\n  {member}\n }}"), "{ }"),
+            (format!("{{\n  {member}\n\n}}\n"), "{\n}\n"),
         ] {
             assert_eq!(
                 disconnect(connected.as_bytes(), None).unwrap().as_deref().map(s),
@@ -1085,6 +1178,12 @@ mod tests {
         assert_eq!(disconnect(&out, Some(&rec)).unwrap().as_deref().map(s), Some(REALISTIC));
         rec.original_command_raw = Some("{\"injected\": 1}".into());
         assert_eq!(disconnect(&out, Some(&rec)).unwrap().as_deref().map(s), Some(REALISTIC));
+        // Only whitespace is ever put back into an emptied object.
+        let (out, mut rec) = connect(b"{\n}", SHIM, ShellKind::Bash, NOW).unwrap();
+        for bad in ["\"injected\": 1", "\u{a0}", "\u{feff}", ""] {
+            rec.empty_object_ws = Some(bad.into());
+            assert_eq!(disconnect(&out, Some(&rec)).unwrap().as_deref().map(s), Some("{}"), "{bad:?}");
+        }
     }
 
     #[test]
@@ -1225,8 +1324,9 @@ mod tests {
             command,
             any::<(bool, bool, bool, bool, bool)>(),
             0usize..8,
+            prop::sample::select(vec!["", " ", "\n", "\r\n", "\n  ", "\t"]),
         )
-            .prop_map(|(members, layout, command, (crlf_eol, bom, trailing_nl, ascii, padding), pos)| {
+            .prop_map(|(members, layout, command, (crlf_eol, bom, trailing_nl, ascii, padding), pos, empty_ws)| {
                 // Dedupe keys first, then place statusLine (if any) at `pos`.
                 let mut members: Vec<(String, Value)> =
                     members.into_iter().collect::<Map<_, _>>().into_iter().collect();
@@ -1241,6 +1341,11 @@ mod tests {
                 }
                 let canonical = !ascii;
                 let mut text = render(&Value::Object(members.into_iter().collect()), layout);
+                // serde writes an empty object as `{}`; files may also hold `{ }`, `{\n}`, ….
+                let spaced_empty = text == "{}" && !empty_ws.is_empty();
+                if spaced_empty {
+                    text = format!("{{{empty_ws}}}");
+                }
                 if let Some(cmd) = &command {
                     let lit = if ascii { ascii_literal(cmd) } else { json_string(cmd).unwrap() };
                     text = text.replace(&format!("\"{PLACEHOLDER}\""), &lit);
@@ -1252,7 +1357,8 @@ mod tests {
                     text = crlf(&text);
                 }
                 let bytes = if bom { with_bom(&text) } else { text.into_bytes() };
-                (bytes, canonical || command.as_deref().is_none_or(str::is_ascii))
+                // Without the record, an emptied object comes back as `{}`.
+                (bytes, !spaced_empty && (canonical || command.as_deref().is_none_or(str::is_ascii)))
             })
     }
 
