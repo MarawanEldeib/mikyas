@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use cuw_core::alerts::{AlertSettings, AlertState};
 use cuw_core::capture::CaptureRecord;
 use cuw_core::engine::snapshot::{self, EngineInputs};
-use cuw_core::engine::types::{DesktopHealth, Snapshot};
+use cuw_core::engine::types::{DesktopHealth, SessionView, Snapshot};
 use cuw_core::history::History;
 use cuw_core::pace_alerts::PaceSettings;
 use cuw_core::paths::Paths;
@@ -297,10 +297,8 @@ impl Engine {
     }
 
     /// Each listed session paired with its latest turn, for [`FinishedTurns::observe`].
-    /// TODO(stream turns): pair `snap.sessions` with the tails' `TurnInfo`.
     fn finished_inputs(&self, snap: &Snapshot) -> Vec<(FinishedTurn, TurnInfo)> {
-        let _ = (&snap.sessions, &self.tails);
-        Vec::new()
+        pair_turns(&snap.sessions, self.tails.values().filter_map(|c| c.tail.as_ref()))
     }
 
     fn reload_captures(&mut self, now: Ms) {
@@ -565,6 +563,38 @@ pub fn deliver(app: &AppHandle, shared: &Shared, out: TickOutput) {
         crate::tray::update(app, &out.snapshot);
         let _ = app.emit("snapshot", &out.snapshot);
     }
+}
+
+// ---- [B] helpers
+
+/// Pairs each session view with the turn of its transcript (the newest one when several files
+/// share the session id). The view supplies the toast's project (only set while `show_project`
+/// is on), model and surface; sessions without a transcript are left out.
+fn pair_turns<'a>(
+    sessions: &[SessionView],
+    tails: impl Iterator<Item = &'a TranscriptTail>,
+) -> Vec<(FinishedTurn, TurnInfo)> {
+    let mut by_key: HashMap<String, &TranscriptTail> = HashMap::new();
+    for tail in tails {
+        let slot = by_key.entry(snapshot::session_key(&tail.session_id)).or_insert(tail);
+        if tail.last_assistant_ms > slot.last_assistant_ms {
+            *slot = tail;
+        }
+    }
+    sessions
+        .iter()
+        .filter_map(|view| {
+            let tail = by_key.get(&view.key)?;
+            let turn = FinishedTurn {
+                key: view.key.clone(),
+                duration_ms: 0,
+                model: view.display_name.clone(),
+                project: view.project.clone(),
+                entrypoint: view.entrypoint,
+            };
+            Some((turn, tail.turn.clone()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -909,5 +939,106 @@ mod tests {
         let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
         let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
         (if m <= 2 { y + 1 } else { y }, m, d)
+    }
+
+    fn turn_line(kind: &str, ts: Ms, stop: &str, content: &str) -> String {
+        let usage = if kind == "assistant" { r#","model":"claude-opus-5-5","usage":{"input_tokens":1}"# } else { "" };
+        format!(
+            r#"{{"type":"{kind}","sessionId":"s1","entrypoint":"cli","cwd":"C:\\x\\demo-app","timestamp":"{}","message":{{"stop_reason":{stop},"content":{content}{usage}}}}}"#,
+            chrono_like(ts)
+        ) + "\n"
+    }
+
+    #[test]
+    fn finished_turns_are_reported_once() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let dir = paths.projects_dir().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s1.jsonl");
+        let prompt = turn_line("user", now - 5 * MINUTE_MS, "null", r#""fix the build""#);
+        let working = turn_line("assistant", now - 4 * MINUTE_MS, r#""tool_use""#, r#"[{"type":"tool_use"}]"#);
+        let dirty = Dirty {
+            transcripts: vec![path.clone()],
+            ..Dirty::default()
+        };
+
+        for show_project in [false, true] {
+            let settings = Settings {
+                show_project,
+                ..Settings::default()
+            };
+            let mut engine = Engine::new(paths.clone());
+            let finished = |out: TickOutput| -> Vec<FinishedTurn> {
+                out.alerts
+                    .into_iter()
+                    .filter_map(|a| if let Alert::Finished(t) = a { Some(t) } else { None })
+                    .collect()
+            };
+            std::fs::write(&path, format!("{prompt}{working}")).unwrap();
+            assert!(finished(engine.tick(now, &settings, &Dirty::all())).is_empty(), "still working");
+
+            append(&path, &turn_line("assistant", now + 30_000, r#""end_turn""#, r#"[{"type":"text"}]"#));
+            let done = finished(engine.tick(now + 60_000, &settings, &dirty));
+            assert_eq!(done.len(), 1, "show_project={show_project}");
+            assert_eq!(done[0].duration_ms, 5 * MINUTE_MS + 30_000);
+            assert_eq!(done[0].entrypoint, cuw_core::engine::types::Entrypoint::Cli);
+            assert_eq!(done[0].project.as_deref(), show_project.then_some("demo-app"));
+            assert!(finished(engine.tick(now + 90_000, &settings, &dirty)).is_empty(), "reported once");
+        }
+
+        // Turned off: nothing is reported.
+        let settings = Settings {
+            finished_alerts: false,
+            ..Settings::default()
+        };
+        let mut engine = Engine::new(paths.clone());
+        std::fs::write(&path, format!("{prompt}{working}")).unwrap();
+        engine.tick(now, &settings, &Dirty::all());
+        append(&path, &turn_line("assistant", now + 30_000, r#""end_turn""#, r#"[{"type":"text"}]"#));
+        let out = engine.tick(now + 60_000, &settings, &dirty);
+        assert!(!out.alerts.iter().any(|a| matches!(a, Alert::Finished(_))));
+    }
+
+    #[test]
+    fn turns_pair_with_the_newest_tail_of_a_session() {
+        let tail = |path: &str, session: &str, last: Ms, ended: Ms| TranscriptTail {
+            path: PathBuf::from(path),
+            session_id: session.into(),
+            entrypoint: cuw_core::engine::types::Entrypoint::Cowork,
+            model_id: Some("claude-opus-5-5".into()),
+            ctx_tokens: 1,
+            max_ctx_tokens_seen: 1,
+            identity_1m: None,
+            last_assistant_ms: last,
+            project: Some("from-transcript".into()),
+            turn: TurnInfo {
+                ended_ms: Some(ended),
+                started_ms: Some(0),
+                start_is_lower_bound: false,
+            },
+        };
+        let tails = [tail("a1", "a", 10, 10), tail("a2", "a", 20, 20), tail("b", "b", 5, 5)];
+        let view = |session: &str| SessionView {
+            key: snapshot::session_key(session),
+            model_id: Some("claude-opus-5-5".into()),
+            display_name: Some("Opus 5.5".into()),
+            ctx_pct: None,
+            ctx_tokens: None,
+            ctx_size: 200_000,
+            ctx_basis: cuw_core::engine::types::CtxBasis::Default,
+            ctx_is_estimate: true,
+            entrypoint: cuw_core::engine::types::Entrypoint::Cowork,
+            last_active_ms: 20,
+            project: None,
+            concurrent: 1,
+        };
+        let pairs = pair_turns(&[view("a"), view("gone")], tails.iter());
+        assert_eq!(pairs.len(), 1, "sessions without a tail are left out");
+        let (turn, info) = &pairs[0];
+        assert_eq!(turn.key, snapshot::session_key("a"));
+        assert_eq!(info.ended_ms, Some(20), "the newest file of the session");
+        assert_eq!(turn.project, None, "the project comes from the view");
+        assert_eq!(turn.model.as_deref(), Some("Opus 5.5"));
     }
 }

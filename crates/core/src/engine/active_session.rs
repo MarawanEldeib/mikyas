@@ -98,6 +98,7 @@ mod tests {
             identity_1m: None,
             last_assistant_ms: last_ms,
             project: Some("proj".into()),
+            turn: Default::default(),
         }
     }
 

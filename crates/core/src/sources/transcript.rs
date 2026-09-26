@@ -5,12 +5,13 @@
 //! `<desktop_root>/local-agent-mode-sessions/**/.claude/projects/**/<session>.jsonl`
 //! (entrypoint `local-agent`). Files under any directory named `subagents` are ignored.
 //!
-//! Assistant line shape (only these fields are read; message content is NEVER parsed or kept):
+//! Assistant line shape (only these fields are read; message text is NEVER parsed or kept — of
+//! `message.content` only the block `type` fields are read, see [`TurnInfo`]):
 //! ```json
 //! {"type":"assistant","isSidechain":false,"sessionId":"…","entrypoint":"cli","cwd":"C:\\…\\proj",
 //!  "timestamp":"2026-09-24T12:00:00.000Z",
-//!  "message":{"model":"claude-opus-5-5","usage":{"input_tokens":3,"cache_creation_input_tokens":120,
-//!   "cache_read_input_tokens":42000,"output_tokens":800}}}
+//!  "message":{"model":"claude-opus-5-5","stop_reason":"end_turn","usage":{"input_tokens":3,
+//!   "cache_creation_input_tokens":120,"cache_read_input_tokens":42000,"output_tokens":800}}}
 //! ```
 //! Context tokens = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` of the
 //! LAST qualifying assistant line (not a sum). Qualifying: `type == "assistant"`, `isSidechain` not
@@ -24,14 +25,22 @@
 //! `"type":"attachment"`; the last such line in the head counts. `message.model` never has the
 //! suffix, and the head is written once, so the marker only counts while the last line's model is
 //! the identity's model (after `/model` switches to another one it no longer applies).
+//!
+//! Turns ([`TurnInfo`], see `crate::turns`): walking back from the end, the first non-sidechain
+//! assistant line decides whether the tail ends with a finished turn (`stop_reason == "end_turn"`
+//! and not `<synthetic>`). Its start is the last human user line before it in file order: a
+//! `type: "user"` line, not sidechain, whose `message.content` is a string or holds a block whose
+//! `type` is not `tool_result`. For those lines only `type`, `isSidechain`, `timestamp`,
+//! `message.stop_reason` and the content block types are read.
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs::{DirEntry, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::engine::types::Entrypoint;
@@ -39,6 +48,7 @@ use crate::model_names::split_1m;
 use crate::saferead::{ReadError, SafeReader};
 use crate::sources::SourceError;
 use crate::time::{DAY_MS, Ms, json_time_to_ms};
+use crate::turns::TurnInfo;
 
 /// Bytes read from the end of the file on the first attempt.
 pub const TAIL_BYTES: u64 = 256 * 1024;
@@ -78,6 +88,8 @@ pub struct TranscriptTail {
     pub last_assistant_ms: Ms,
     /// Last path component of `cwd` (folder name only), if present.
     pub project: Option<String>,
+    /// The latest turn, as far as the scanned tail shows it.
+    pub turn: TurnInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +131,7 @@ pub fn scan_tail(
         (chunk, chunk_start) = read_tail(&mut file, len, TAIL_RETRY_BYTES)?;
         scan = scan_chunk(&chunk, chunk_start > 0);
     }
-    let Some(TailScan { last, max_ctx_tokens }) = scan else {
+    let Some(TailScan { last, max_ctx_tokens, turn }) = scan else {
         return Ok(None);
     };
 
@@ -154,6 +166,7 @@ pub fn scan_tail(
         identity_1m,
         last_assistant_ms,
         project: last.cwd.as_deref().and_then(project_name),
+        turn,
     }))
 }
 
@@ -290,7 +303,7 @@ pub(crate) fn system_time_ms(t: SystemTime) -> Option<Ms> {
 
 // ---- tail scanning ----
 
-/// The fields of one transcript line that the widget reads. Everything else — notably
+/// The fields of one transcript line that the widget reads. Everything else — notably the text in
 /// `message.content` — is skipped by serde without being materialised.
 #[derive(Deserialize)]
 struct RawLine {
@@ -316,6 +329,151 @@ struct RawMessage {
     model: Option<String>,
     #[serde(default)]
     usage: Option<RawUsage>,
+    #[serde(default, deserialize_with = "lenient")]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    content: Option<ContentKind>,
+}
+
+/// What `message.content` holds, decided from the block `type` fields alone: string contents and
+/// the other block fields are skipped without being kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentKind {
+    /// A string, or blocks of which at least one has a `type` other than `tool_result`: a person
+    /// wrote it.
+    Prompt,
+    /// Only `tool_result` blocks (or none), or an unexpected shape.
+    Other,
+}
+
+/// The `type` of one content block; blocks of any other shape have none.
+struct BlockType(Option<String>);
+
+/// A block's `type` value: a string is kept, anything else becomes `None`.
+struct TypeValue(Option<String>);
+
+/// Visitor methods that accept any JSON scalar as `$value`, so an unexpected shape never fails
+/// the whole line.
+macro_rules! accept_scalars {
+    ($ty:ty, $value:expr) => {
+        fn visit_bool<E>(self, _: bool) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<$ty, E> {
+            Ok($value)
+        }
+        fn visit_unit<E>(self) -> Result<$ty, E> {
+            Ok($value)
+        }
+    };
+}
+
+struct ContentVisitor;
+
+impl<'de> Visitor<'de> for ContentVisitor {
+    type Value = ContentKind;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("message content")
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<ContentKind, E> {
+        Ok(ContentKind::Prompt)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ContentKind, A::Error> {
+        let mut prompt = false;
+        while let Some(BlockType(kind)) = seq.next_element()? {
+            prompt |= kind.is_some_and(|k| k != "tool_result");
+        }
+        Ok(if prompt { ContentKind::Prompt } else { ContentKind::Other })
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<ContentKind, A::Error> {
+        IgnoredAny.visit_map(map).map(|_| ContentKind::Other)
+    }
+
+    accept_scalars!(ContentKind, ContentKind::Other);
+}
+
+impl<'de> Deserialize<'de> for ContentKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(ContentVisitor)
+    }
+}
+
+struct BlockVisitor;
+
+impl<'de> Visitor<'de> for BlockVisitor {
+    type Value = BlockType;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a content block")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<BlockType, A::Error> {
+        let mut kind = None;
+        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+            if key == "type" && kind.is_none() {
+                kind = map.next_value::<TypeValue>()?.0;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(BlockType(kind))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<BlockType, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| BlockType(None))
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<BlockType, E> {
+        Ok(BlockType(None))
+    }
+
+    accept_scalars!(BlockType, BlockType(None));
+}
+
+impl<'de> Deserialize<'de> for BlockType {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(BlockVisitor)
+    }
+}
+
+struct TypeValueVisitor;
+
+impl<'de> Visitor<'de> for TypeValueVisitor {
+    type Value = TypeValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a block type")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<TypeValue, E> {
+        Ok(TypeValue(Some(v.to_owned())))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<TypeValue, A::Error> {
+        IgnoredAny.visit_seq(seq).map(|_| TypeValue(None))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<TypeValue, A::Error> {
+        IgnoredAny.visit_map(map).map(|_| TypeValue(None))
+    }
+
+    accept_scalars!(TypeValue, TypeValue(None));
+}
+
+impl<'de> Deserialize<'de> for TypeValue {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(TypeValueVisitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -341,6 +499,59 @@ struct AssistantLine {
 struct TailScan {
     last: AssistantLine,
     max_ctx_tokens: u64,
+    turn: TurnInfo,
+}
+
+/// Builds [`TurnInfo`] from lines fed newest first (see the module docs).
+#[derive(Default)]
+struct TurnScan {
+    /// The deciding assistant line was seen: `Some(end)` when it finished a turn.
+    decided: Option<Option<Ms>>,
+    /// Timestamp of the prompt that started the finished turn.
+    prompt_ms: Option<Ms>,
+    /// No more lines are needed.
+    done: bool,
+    earliest_ms: Option<Ms>,
+}
+
+impl TurnScan {
+    fn feed(&mut self, line: &RawLine) {
+        let ts = line.timestamp.as_ref().and_then(json_time_to_ms);
+        if let Some(ts) = ts {
+            self.earliest_ms = Some(self.earliest_ms.map_or(ts, |e| e.min(ts)));
+        }
+        if line.is_sidechain == Some(true) {
+            return;
+        }
+        let message = line.message.as_ref();
+        match (line.kind.as_deref(), self.decided) {
+            (Some("assistant"), None) => {
+                let finished = message.is_some_and(|m| {
+                    m.stop_reason.as_deref() == Some("end_turn") && m.model.as_deref() != Some(SYNTHETIC_MODEL)
+                });
+                let end = if finished { ts } else { None };
+                self.decided = Some(end);
+                self.done = end.is_none();
+            }
+            (Some("user"), Some(Some(_))) if message.and_then(|m| m.content) == Some(ContentKind::Prompt) => {
+                self.prompt_ms = ts;
+                self.done = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self) -> TurnInfo {
+        let Some(Some(end)) = self.decided else {
+            return TurnInfo::default();
+        };
+        let lower_bound = self.prompt_ms.is_none() && !self.done;
+        TurnInfo {
+            ended_ms: Some(end),
+            started_ms: if lower_bound { self.earliest_ms } else { self.prompt_ms },
+            start_is_lower_bound: lower_bound,
+        }
+    }
 }
 
 fn qualify(line: RawLine) -> Option<AssistantLine> {
@@ -379,13 +590,19 @@ fn scan_chunk(buf: &[u8], starts_mid_file: bool) -> Option<TailScan> {
     };
     let mut last: Option<AssistantLine> = None;
     let mut max_ctx_tokens = 0;
+    let mut turn = TurnScan::default();
     for raw in body.rsplit(|&b| b == b'\n') {
         let line = raw.trim_ascii(); // also removes the `\r` of CRLF files
-        if line.first() != Some(&b'{') || !contains(line, br#""assistant""#) {
+        // User lines matter only until the turn's prompt is found.
+        let wanted = contains(line, br#""assistant""#) || (!turn.done && contains(line, br#""user""#));
+        if line.first() != Some(&b'{') || !wanted {
             continue;
         }
         // A partial (mid-write) or otherwise malformed line simply fails to parse.
         let Ok(parsed) = serde_json::from_slice::<RawLine>(line) else { continue };
+        if !turn.done {
+            turn.feed(&parsed);
+        }
         let Some(assistant) = qualify(parsed) else { continue };
         // Lines of a model used before a `/model` switch say nothing about the current window.
         if last.as_ref().is_none_or(|l| l.model == assistant.model) {
@@ -395,7 +612,8 @@ fn scan_chunk(buf: &[u8], starts_mid_file: bool) -> Option<TailScan> {
             last = Some(assistant);
         }
     }
-    last.map(|last| TailScan { last, max_ctx_tokens })
+    let turn = turn.finish();
+    last.map(|last| TailScan { last, max_ctx_tokens, turn })
 }
 
 /// Reads the last `n` bytes of a `len`-byte file. When the read starts mid-file it includes one
@@ -736,6 +954,7 @@ mod tests {
                 identity_1m: Some(true),
                 last_assistant_ms: T_NOON + 5 * 60_000,
                 project: Some("proj".into()),
+                turn: TurnInfo::default(),
             }
         );
     }
@@ -1444,5 +1663,156 @@ mod tests {
         assert!(serde_json::from_str::<serde_json::Value>(&line).is_err(), "deeper than serde's limit");
         let path = e.write("p/s.jsonl", format!("{line}\n").as_bytes());
         assert_eq!(e.scan(&path).map(|t| t.ctx_tokens), Some(4_242));
+    }
+
+    // ---- turns ----
+
+    /// `v` with its timestamp `secs` after noon.
+    fn at(v: serde_json::Value, secs: i64) -> serde_json::Value {
+        let ts = chrono::DateTime::from_timestamp_millis(T_NOON + secs * 1000).unwrap();
+        with(v, "/timestamp", json!(ts.to_rfc3339()))
+    }
+
+    fn working(secs: i64) -> serde_json::Value {
+        let v = with(assistant("claude-opus-5-5", 1, 0, 0), "/message/stop_reason", json!("tool_use"));
+        at(with(v, "/message/content", json!([{"type": "tool_use", "name": "Bash", "input": {}}])), secs)
+    }
+
+    fn done(secs: i64) -> serde_json::Value {
+        at(assistant("claude-opus-5-5", 1, 0, 0), secs)
+    }
+
+    fn tool_result(secs: i64) -> serde_json::Value {
+        let blocks = json!([{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}]);
+        at(with(user("x"), "/message/content", blocks), secs)
+    }
+
+    fn prompt(secs: i64) -> serde_json::Value {
+        at(user("please do the thing"), secs)
+    }
+
+    fn turn_of(e: &Env, name: &str, values: &[serde_json::Value]) -> TurnInfo {
+        let path = e.write(&format!("p/{name}.jsonl"), &lines(values));
+        e.scan(&path).unwrap().turn
+    }
+
+    fn finished(start_secs: i64, end_secs: i64, lower_bound: bool) -> TurnInfo {
+        TurnInfo {
+            ended_ms: Some(T_NOON + end_secs * 1000),
+            started_ms: Some(T_NOON + start_secs * 1000),
+            start_is_lower_bound: lower_bound,
+        }
+    }
+
+    #[test]
+    fn finished_turn_spans_prompt_to_end() {
+        let e = env();
+        let values = [
+            prompt(-600),
+            done(-590),
+            prompt(0),
+            working(10),
+            tool_result(20),
+            working(30),
+            tool_result(40),
+            done(700),
+            done(720), // a message split into several lines, all saying end_turn
+        ];
+        assert_eq!(turn_of(&e, "done", &values), finished(0, 720, false));
+    }
+
+    #[test]
+    fn unfinished_turns_have_no_end() {
+        let e = env();
+        let running = [prompt(0), working(10), tool_result(20)];
+        assert_eq!(turn_of(&e, "running", &running), TurnInfo::default());
+        let synthetic = [done(-5), prompt(0), with(done(10), "/message/model", json!("<synthetic>"))];
+        assert_eq!(turn_of(&e, "synthetic", &synthetic), TurnInfo::default());
+        let stopped = [prompt(0), with(done(10), "/message/stop_reason", json!("max_tokens"))];
+        assert_eq!(turn_of(&e, "stopped", &stopped), TurnInfo::default());
+    }
+
+    #[test]
+    fn sidechain_lines_never_end_or_start_a_turn() {
+        let e = env();
+        let side = |v: serde_json::Value| with(v, "/isSidechain", json!(true));
+        // A subagent's end_turn after the main agent's tool call: the main turn is still running.
+        let running = [prompt(0), working(10), side(prompt(11)), side(done(50))];
+        assert_eq!(turn_of(&e, "sub_running", &running), TurnInfo::default());
+        // A subagent's prompt inside a finished turn does not move its start.
+        let values = [prompt(0), working(10), side(prompt(11)), side(done(50)), tool_result(51), done(300)];
+        assert_eq!(turn_of(&e, "sub_done", &values), finished(0, 300, false));
+    }
+
+    #[test]
+    fn prompts_with_text_blocks_count_but_tool_results_do_not() {
+        let e = env();
+        let blocks = json!([{"type": "image", "source": {}}, {"type": "text", "text": "look at this"}]);
+        let with_image = at(with(user("x"), "/message/content", blocks), 0);
+        let mixed = at(
+            with(
+                user("x"),
+                "/message/content",
+                json!([{"type": "tool_result", "content": "ok"}, {"type": "text", "text": "and stop"}]),
+            ),
+            100,
+        );
+        let values = [with_image.clone(), working(10), tool_result(20), done(200)];
+        assert_eq!(turn_of(&e, "image", &values), finished(0, 200, false));
+        let values = [with_image, working(10), mixed, done(200)];
+        assert_eq!(turn_of(&e, "mixed", &values), finished(100, 200, false));
+    }
+
+    #[test]
+    fn prompt_after_the_end_is_not_the_start() {
+        let e = env();
+        // The user typed the next prompt right after the finish (not answered yet).
+        let values = [prompt(0), working(10), done(400), prompt(410)];
+        assert_eq!(turn_of(&e, "next", &values), finished(0, 400, false));
+    }
+
+    #[test]
+    fn prompt_outside_the_tail_gives_a_lower_bound() {
+        let e = env();
+        // No prompt at all: the earliest timestamp in the tail bounds the start.
+        let values = [tool_result(5), working(10), tool_result(20), done(600)];
+        assert_eq!(turn_of(&e, "no_prompt", &values), finished(5, 600, true));
+
+        // The prompt was pushed out of the scanned tail by a long tool result.
+        let mut long = tool_result(30);
+        long["message"]["content"][0]["content"] = json!("r".repeat(TAIL_BYTES as usize));
+        let values = [prompt(0), working(10), long, working(40), tool_result(50), done(900)];
+        assert_eq!(turn_of(&e, "pushed_out", &values), finished(40, 900, true));
+    }
+
+    #[test]
+    fn odd_content_shapes_do_not_break_the_scan() {
+        let e = env();
+        let odd = |content: serde_json::Value, secs: i64| at(with(user("x"), "/message/content", content), secs);
+        let values = [
+            prompt(0),
+            working(10),
+            odd(json!(null), 20),
+            odd(json!(42), 21),
+            odd(json!({"type": "text"}), 22),
+            odd(json!(["text", 1, null, [{"type": "text"}], {"type": 7}, {"type": "tool_result"}]), 23),
+            odd(json!([]), 24),
+            done(300),
+        ];
+        // None of the odd lines is a prompt (a block needs a string `type`), and none fails the scan.
+        assert_eq!(turn_of(&e, "odd", &values), finished(0, 300, false));
+    }
+
+    #[test]
+    fn turns_in_crlf_files() {
+        let e = env();
+        let body = [prompt(0), working(10), tool_result(20), done(200)]
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\r\n")
+            + "\r\n";
+        let path = e.write("p/crlf.jsonl", body.as_bytes());
+        assert_eq!(e.scan(&path).unwrap().turn, finished(0, 200, false));
     }
 }

@@ -6,6 +6,7 @@
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { WindowView } from "../types";
+  import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
   import Ring from "./Ring.svelte";
 
@@ -35,6 +36,7 @@
   function describe(w: WindowView): string {
     const parts = [`${windowLabel(w.kind)} limit ${formatPct(w.pct)}% used`];
     if (w.limit_reached) parts.push("limit reached");
+    if (showWorkedSince(w)) parts.push(WORKED_SINCE_TIP);
     parts.push(`resets in ${pillCountdown(w, app.now)}`);
     if (w.stale) parts.push(`last updated ${formatAge(w.observed_at_ms, app.now)}`);
     const est = estimateTooltip(w.reset);
@@ -63,7 +65,7 @@
           <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
           <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={barColor(w)}></span></span>
           <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
-            {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{/if}
+            {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
           </span>
           <span class="count bcount" class:crit={w.limit_reached} data-under-controls={i === 0 ? "" : undefined}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
         </div>
@@ -75,7 +77,7 @@
       <div class="win" role="img" aria-label={describe(w)}>
         <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
-          <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag" data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span>{/if}</span>
+          <span class="label">{windowShort(w.kind)}{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{#if w.stale}<span class="stale-tag" data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span>{/if}</span>
           <span class="count" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
         </div>
       </div>
@@ -126,6 +128,13 @@
   .stale-tag {
     margin-left: 4px;
     font-weight: 400;
+  }
+  /* "▲": Claude worked after this reading (ring mode: after the label, the % is in the ring). */
+  .worked {
+    margin-left: 2px;
+    font-size: 8px;
+    font-weight: 400;
+    color: var(--fg-2);
   }
   .count {
     font-family: var(--font-display);

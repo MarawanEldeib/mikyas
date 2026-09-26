@@ -10,6 +10,9 @@
 //! 4. `History::spark`: 96 buckets over 24 h (five_hour) or 7 d (weekly kinds). The range end is
 //!    aligned up to the bucket step so the buckets do not shift on every recompute (which would
 //!    make every snapshot look changed).
+//! 5. `worked_since`: the newest transcript assistant activity (any session) is at least
+//!    [`WORKED_SINCE_MS`] newer than the value's `observed_at_ms` (a Desktop value or an old
+//!    capture), so the real % is probably higher.
 //!
 //! Session: `active_session::pick` over the transcript tails; the capture with the same
 //! `session_id` and the Desktop Code-tab session whose `cli_session_id` matches feed
@@ -48,7 +51,7 @@ use crate::sources::desktop_sessions::DesktopSession;
 use crate::sources::desktop_usage::{self, DesktopUsage};
 use crate::sources::statusline;
 use crate::sources::transcript::TranscriptTail;
-use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
+use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, SECOND_MS};
 
 /// Samples further in the future than this (clock skew, corrupt files) are ignored.
 pub const FUTURE_SLACK_MS: Ms = 5 * MINUTE_MS;
@@ -71,6 +74,9 @@ pub const ACCOUNT_MISMATCH_AFTER_MS: Ms = 30 * MINUTE_MS;
 pub const SESSIONS_WINDOW_MS: Ms = 12 * HOUR_MS;
 /// At most this many sessions are listed.
 pub const MAX_SESSIONS: usize = 8;
+
+/// A window value this much older than the newest transcript activity is marked `worked_since`.
+pub const WORKED_SINCE_MS: Ms = 90 * SECOND_MS;
 
 /// Burn and reset estimation never look further back than this.
 const SAMPLE_LOOKBACK_MS: Ms = 8 * DAY_MS;
@@ -115,6 +121,7 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         .collect();
     let exact = merged_exact_resets(inputs.last_exact_resets, inputs.captures);
 
+    let newest_activity = inputs.tails.iter().map(|t| t.last_assistant_ms).max();
     let mut windows = Vec::new();
     for kind in &kinds {
         let desktop_series = desktop_samples(inputs, kind, now_ms);
@@ -138,9 +145,8 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         let burn_samples = all_samples(inputs, kind, now_ms);
         let burn = burn::compute(kind, &burn_samples, &state, now_ms);
         let spark = spark(inputs.history, kind, now_ms);
-        // TODO(stream turns): set when the value is >= 90 s older than the newest transcript
-        // assistant activity.
-        let worked_since = false;
+        let worked_since = newest_activity
+            .is_some_and(|newest| newest.saturating_sub(state.observed_at_ms) >= WORKED_SINCE_MS);
         windows.push(WindowView {
             state,
             burn,
@@ -153,7 +159,7 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
     let health = SourceHealth {
         desktop: inputs.desktop_health.clone(),
         cli_last_capture_ms: statusline::last_capture_ms(inputs.captures),
-        transcripts_last_activity_ms: inputs.tails.iter().map(|t| t.last_assistant_ms).max(),
+        transcripts_last_activity_ms: newest_activity,
     };
 
     let mut warnings = Vec::new();
@@ -470,6 +476,7 @@ mod tests {
     use crate::history::History;
     use crate::sources::desktop_usage::synth;
     use crate::time::SECOND_MS;
+    use crate::turns::TurnInfo;
     use pretty_assertions::assert_eq;
 
     const NOW: Ms = 1_790_000_000_000;
@@ -565,6 +572,7 @@ mod tests {
             identity_1m: None,
             last_assistant_ms: last_ms,
             project: Some("secret-project".into()),
+            turn: TurnInfo::default(),
         }
     }
 
@@ -986,5 +994,28 @@ mod tests {
         }
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains(synth::ORG_A) && !json.contains(synth::ORG_B), "org never serialised");
+    }
+
+    #[test]
+    fn worked_since_marks_values_older_than_transcript_activity() {
+        let f = Fixture::new();
+        let seen = NOW - 10 * MINUTE_MS;
+        let caps = [capture("s1", seen, &[("five_hour", 22.0, NOW + HOUR_MS)])];
+        let d = desktop(&[], &[(seen - HOUR_MS, 40.0)]);
+        // [five_hour (CLI, seen), seven_day (Desktop, an hour older)].
+        let marked = |tails: &[TranscriptTail]| -> Vec<bool> {
+            let s = build_snapshot(&f.inputs(&caps, Some(&d), tails), NOW);
+            assert_eq!(s.windows.len(), 2);
+            s.windows.iter().map(|w| w.worked_since).collect()
+        };
+        assert_eq!(marked(&[]), vec![false, false], "no transcripts");
+        let just_under = [tail("s1", seen + WORKED_SINCE_MS - 1)];
+        assert_eq!(marked(&just_under), vec![false, true]);
+        // The newest tail of any session counts.
+        let at = [tail("old", seen - HOUR_MS), tail("s2", seen + WORKED_SINCE_MS)];
+        assert_eq!(marked(&at), vec![true, true]);
+        // Activity older than the value: nothing to add.
+        let older = [tail("s1", seen - 2 * HOUR_MS)];
+        assert_eq!(marked(&older), vec![false, false]);
     }
 }
