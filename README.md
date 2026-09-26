@@ -50,7 +50,9 @@ The UI can be developed in a plain browser with a mock backend: `npm run dev`, t
 `http://localhost:1420/?scenario=normal&view=card`.
 
 Development overrides: `CUW_DATA_DIR` (widget data dir), `CLAUDE_CONFIG_DIR` (Claude Code dir, as
-Claude Code itself honours it), `CUW_X` / `CUW_Y` (initial window position in physical pixels).
+Claude Code itself honours it), `CUW_X` / `CUW_Y` (initial window position in physical pixels), `CUW_MEMORY_NORMAL` (skip the
+WebView2 low memory target), `CUW_BROWSER_ARGS` (replace the WebView2 browser arguments; repeat
+wry's defaults `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`).
 
 ## Connect Claude Code (optional, but gives exact numbers)
 
@@ -88,9 +90,12 @@ uninstaller hook).
 
 ## Performance
 
-Measured on the development laptop (Ryzen 7 5800H, 125 % scaling) with real data: idle CPU for
-the app plus its WebView2 processes ≈ 0.03 % of all cores; private working set ≈ 20–35 MB with
-WebView2's low memory target (≈ 85–100 MB without it). Measure with `scripts\measure-ram.ps1`.
+Measured on the development laptop (Ryzen 7 5800H, 16 threads, 125 % scaling) with real data,
+**idle with the display locked** (WebView2 was not compositing, so expect somewhat more while the
+widget is visible): idle CPU for the app plus its WebView2 processes ≈ 0.03–0.06 % of all cores;
+private working set ≈ 20–45 MB with WebView2's low memory target (83–99 MB without it; commit
+≈ 130 MB either way). Set `CUW_MEMORY_NORMAL=1` to keep WebView2's normal memory target. Measure
+with `scripts\measure-ram.ps1`.
 
 ## Layout
 
