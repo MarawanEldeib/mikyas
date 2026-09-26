@@ -404,36 +404,60 @@ mod tests {
     }
 
     #[test]
-    fn prune_deletes_captures_written_more_than_a_day_ahead() {
+    fn prune_deletes_files_stamped_more_than_a_day_ahead() {
         let (_tmp, _reader, dir) = setup();
         let far_ahead = dir.join(format!("{SID1}.json"));
         write_json(&far_ahead, &record(SID1, NOW + DAY_MS + 1, &[]));
         let hours_ahead = dir.join(format!("{SID2}.json"));
         write_json(&hours_ahead, &record(SID2, NOW + 12 * HOUR_MS, &[]));
-        assert_eq!(prune(&dir, NOW).unwrap(), 1);
-        assert_eq!(names(&dir), [format!("{SID2}.json")]);
+
+        // Files without a readable stamp are judged by mtime, with the same limits.
+        let corrupt_far_ahead = dir.join("corrupt.json");
+        fs::write(&corrupt_far_ahead, b"nope").unwrap();
+        set_mtime(&corrupt_far_ahead, NOW + DAY_MS + 1);
+        let tmp_far_ahead = dir.join(format!(".{SID1}.1.2.tmp"));
+        fs::write(&tmp_far_ahead, b"{").unwrap();
+        set_mtime(&tmp_far_ahead, NOW + DAY_MS + 1);
+        let tmp_hours_ahead = dir.join(format!(".{SID2}.1.2.tmp"));
+        fs::write(&tmp_hours_ahead, b"{").unwrap();
+        set_mtime(&tmp_hours_ahead, NOW + 12 * HOUR_MS);
+
+        assert_eq!(prune(&dir, NOW).unwrap(), 3);
+        assert_eq!(
+            names(&dir),
+            [format!(".{SID2}.1.2.tmp"), format!("{SID2}.json")]
+        );
     }
 
     #[test]
     fn prune_keeps_a_capture_replaced_after_it_was_judged_expired() {
         let (_tmp, _reader, dir) = setup();
         let path = dir.join(format!("{SID1}.json"));
-        write_json(&path, &record(SID1, NOW - 8 * DAY_MS, &[]));
-        set_mtime(&path, NOW - 8 * DAY_MS);
-        let fresh = record(SID1, NOW, &[("five_hour", 10.0, 1_790_210_000)]);
+        let expired = record(SID1, NOW - 8 * DAY_MS, &[]);
+        let larger = record(SID1, NOW, &[("five_hour", 10.0, 1_790_210_000)]);
+        let same_size = record(SID1, NOW, &[]);
+        assert_eq!(
+            serde_json::to_vec(&same_size).unwrap().len(),
+            serde_json::to_vec(&expired).unwrap().len(),
+            "only the modification time tells this replacement apart"
+        );
 
-        // The shim renames a fresh capture over the file between prune's read and its delete.
-        let removed = prune_with(&dir, NOW, |p| {
-            let tmp = dir.join(format!(".{SID1}.1.2.tmp"));
-            write_json(&tmp, &fresh);
-            fs::rename(&tmp, p).unwrap();
-        })
-        .unwrap();
-        assert_eq!(removed, 0);
-        assert_eq!(read_capture_file(&path), Some(fresh));
+        for fresh in [larger, same_size] {
+            write_json(&path, &expired);
+            set_mtime(&path, NOW - 8 * DAY_MS);
+            // The shim renames a fresh capture over the file between prune's read and its delete.
+            let removed = prune_with(&dir, NOW, |p| {
+                let tmp = dir.join(format!(".{SID1}.1.2.tmp"));
+                write_json(&tmp, &fresh);
+                fs::rename(&tmp, p).unwrap();
+            })
+            .unwrap();
+            assert_eq!(removed, 0);
+            assert_eq!(read_capture_file(&path), Some(fresh));
+        }
 
         // Untouched, the same expired capture is removed.
-        write_json(&path, &record(SID1, NOW - 8 * DAY_MS, &[]));
+        write_json(&path, &expired);
         assert_eq!(prune_with(&dir, NOW, |_| {}).unwrap(), 1);
         assert!(names(&dir).is_empty());
     }
