@@ -159,6 +159,16 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
     // [stream B] appearance hooks (ui_scale, card_rows, dock) go here.
 
     // [stream C] system hooks (toggle_hotkey, auto_hide_fullscreen, check_updates) go here.
+    // (A changed `hotkey` above already re-registered both shortcuts.)
+    if new.toggle_hotkey != old.toggle_hotkey && new.hotkey == old.hotkey {
+        crate::hotkey::register_all(app, shared);
+    }
+    if new.auto_hide_fullscreen != old.auto_hide_fullscreen {
+        crate::fullscreen::wake(app);
+    }
+    if new.check_updates != old.check_updates {
+        crate::updates::wake(app);
+    }
 
     let view_patched = patch.get("view").is_some() && new.view != shared.ui().view;
     if view_patched {

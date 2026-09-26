@@ -1,13 +1,25 @@
 # Privacy
 
-Claude Usage Widget is **token-free** and **offline**:
+Claude Usage Widget is **token-free** and **offline by default**:
 
 - It never reads `~/.claude/.credentials.json`, `~/.claude.json`, Claude Desktop's `config.json`,
   cookies, `Local Storage`, `IndexedDB`, `Session Storage`, keychains or any other credential or
   browser-storage file. These names are hard-denied in code (`crates/core/src/saferead.rs`) even
   inside otherwise allowed folders.
-- It makes **no network calls** (no Anthropic API, no claude.ai, no telemetry, no update checks).
-  The UI has no file-system, shell or HTTP access; it can only call the app's own commands.
+- It makes **no network calls unless you enable the update check** (no Anthropic API, no
+  claude.ai, no telemetry). With **Settings → System → Check for updates daily** on (off by
+  default), it asks `https://api.github.com/repos/MarawanEldeib/claude-usage-widget/releases/latest`
+  at most once a day, plus whenever you click **Check now** (which works even with the daily
+  check off). The request is made by Windows' own `%SystemRoot%\System32\curl.exe`; the app links
+  no HTTP client. It sends only the app version (in the User-Agent header) — no account, token,
+  usage data or identifier — and uses only the release's version tag and page address from the
+  answer. **View** opens that release page in your default browser; no other address can be
+  opened.
+- The UI has no file-system, shell or HTTP access; it can only call the app's own commands.
+- **Fullscreen auto-hide** only asks Windows which window is in front, its size, class name and
+  monitor, and whether the shell reports a fullscreen / presentation state. It never opens other
+  processes, reads their memory, injects code or installs hooks; the class name is compared in
+  memory and never stored.
 - Nothing leaves your machine. Everything it stores stays in the folders listed below.
 
 ## Files read (read-only)
@@ -35,6 +47,7 @@ All reads go through one allowlist; anything not listed here cannot be opened.
 | `state.json` | newest exact reset time per window, the newest Desktop sample already copied into the history, learned model display names (e.g. `claude-opus-5-5 → Opus 5.5`), last maintenance time. |
 | `alerts.json` | which alert thresholds already fired for the current window, so alerts fire once. |
 | `settings.json` | your widget settings. |
+| `update-check.json` | only if you use the update check: time of the last successful check and the newest version already announced. |
 | `wrap.json` | after Connect: your original statusline command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
 | `bin\cuw-capture.exe` | the capture shim your statusline command points to. |
@@ -44,10 +57,16 @@ Other locations:
 - `%APPDATA%\io.github.marawaneldeib.claude-usage-widget\.window-state.json` — the widget's screen
   position.
 - `%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget\EBWebView\` — the WebView2 profile
-  used to render the widget UI (contains no Claude data).
+  used to render the widget UI (contains no Claude data; its local storage only remembers which
+  update notice you dismissed).
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — only if you enable "Start with Windows".
 
 ## Uninstalling
 
-Disconnect first (tray → Disconnect Claude Code, or `claude-usage-widget.exe --disconnect --quiet`)
-to restore your statusline, then delete the folders above.
+The uninstaller (Windows Settings → Apps) restores your statusline first — it runs
+`claude-usage-widget.exe --disconnect --quiet` — and removes the "Start with Windows" entry. Ticking
+**"Delete the application data"** also removes `%APPDATA%\io.github.marawaneldeib.claude-usage-widget`,
+`%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget` and, once the statusline no longer
+points at the shim inside it, `%LOCALAPPDATA%\ClaudeUsageWidget`. Updating to a newer version
+keeps all of this. If you remove the app by hand instead, Disconnect first (tray → Disconnect
+Claude Code, or `claude-usage-widget.exe --disconnect --quiet`), then delete the folders above.

@@ -34,6 +34,10 @@ windows-core = "0.61"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # Fullscreen auto-hide: window queries only (see src/fullscreen.rs).
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

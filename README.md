@@ -7,8 +7,13 @@ even when no Claude Code terminal is open:
 - **Weekly limit** usage with a reset countdown (plus per-model weekly limits when reported)
 - **Current model** and **context-window %** of your most recently active Claude Code / Cowork session
 - Extras: 80 % / 95 % / reset notifications, a burn-rate forecast ("at this pace you hit 100 % at
-  15:40"), 24 h / 7 d sparklines, a compact pill view, and a click-through "ghost" mode toggled with
-  a global hotkey (default **Ctrl+Alt+U**)
+  15:40"), 24 h / 7 d sparklines, a compact pill view, a click-through "ghost" mode toggled with
+  a global hotkey (default **Ctrl+Alt+U**), a show / hide hotkey (default **Ctrl+Alt+H**), and
+  automatic hiding while a fullscreen game or app is in front
+
+**Install:** download the installer from the
+[Releases page](https://github.com/MarawanEldeib/claude-usage-widget/releases) — see
+[INSTALL.md](INSTALL.md) for the SmartScreen prompt, first run and uninstalling.
 
 It runs beside Claude Desktop, sits in the tray, and uses little memory (WebView2 is asked to keep
 its memory use low; see *Performance*).
@@ -16,8 +21,10 @@ its memory use low; see *Performance*).
 ## Privacy: token-free by design
 
 The widget **never** reads `~/.claude/.credentials.json`, cookies, browser storage or keychains,
-**never** calls `api.anthropic.com`, claude.ai or `claude -p /usage`, and **makes no network calls
-at all**. Every file it reads goes through an allowlist (`crates/core/src/saferead.rs`) that
+**never** calls `api.anthropic.com`, claude.ai or `claude -p /usage`, and makes **no network calls
+unless you enable the update check**; then it asks only `api.github.com` (once a day, or when you
+click "Check now") whether a newer release exists, through Windows' own `curl.exe` — the app
+itself contains no HTTP client. Every file it reads goes through an allowlist (`crates/core/src/saferead.rs`) that
 hard-denies credential, cookie and browser-storage files. Each person only ever sees their own
 numbers, computed from files already on their own machine:
 
@@ -41,8 +48,25 @@ WebView2 runtime.
 npm ci
 .\scripts\build-sidecar.ps1          # builds cuw-capture.exe → src-tauri\binaries\ (required once, and after shim changes)
 npx tauri build --no-bundle          # → <target>\release\claude-usage-widget.exe (+ cuw-capture.exe next to it)
-npx tauri build                      # per-user NSIS installer with the shim as a sidecar
+npx tauri build                      # per-user NSIS installer → <target>\release\bundle\nsis\*-setup.exe
 ```
+
+### Installer
+
+`npx tauri build` makes a per-user NSIS installer (no admin rights; installs to
+`%LOCALAPPDATA%\Claude Usage Widget`) that ships `cuw-capture.exe` as a sidecar. Its hooks
+(`src-tauri/windows/hooks.nsh`) make a real uninstall run `claude-usage-widget.exe --disconnect
+--quiet`, which restores the user's Claude Code statusline, and remove the "Start with Windows"
+entry; with "Delete the application data" ticked, the widget's data folder goes too (only once the
+statusline no longer points at the shim in it). When the uninstaller only runs as part of an update
+or reinstall — started with `/UPDATE`, or in place by a newer installer's "uninstall before
+installing" step — the connection and autostart are kept.
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the installer with
+`tauri-apps/tauri-action` and creates a **draft** GitHub release with the installer and
+`SHA256SUMS`. The versions in `package.json`, `Cargo.toml` and `src-tauri/tauri.conf.json` must
+equal the tag. `.github/workflows/ci.yml` runs gitleaks, clippy, the Rust and UI tests,
+svelte-check, the UI build and a check that no HTTP client crate entered the dependency tree.
 
 Tests: `cargo test -p cuw-core -p cuw-capture -p claude-usage-widget`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `npm test`, `npm run check`.
@@ -80,7 +104,18 @@ uninstaller hook).
 
 - **Fullscreen games / Vanguard:** the widget is an ordinary topmost window. It uses no injection
   or overlay hooks, so it is safe alongside kernel anti-cheat (e.g. Riot Vanguard), but it cannot
-  appear over *exclusive* fullscreen games — use borderless/windowed fullscreen to keep it visible.
+  appear over *exclusive* fullscreen games.
+- **Fullscreen auto-hide** (Settings → System, on by default): every 1.5 s the widget asks Windows
+  which window is in front (`GetForegroundWindow`, `GetWindowRect`, `MonitorFromWindow` /
+  `GetMonitorInfoW`, `GetClassNameW`) and whether the shell reports a fullscreen / presentation
+  state (`SHQueryUserNotificationState`). When a fullscreen app covers the monitor the widget is
+  on, the widget hides, and it comes back — without taking the focus — once that app leaves the
+  foreground. Window queries only: it never opens other processes, reads their memory, injects
+  code or installs hooks. A widget you hid yourself stays hidden, and one you brought back with the
+  show / hide hotkey during a game stays visible.
+- **Update check** (Settings → System, off by default): see *Privacy*. A newer release shows a
+  dismissible "Update vX.Y.Z available · View" line on the widget and one notification; "View"
+  opens the release page in your browser (only this repository's release pages can be opened).
 - **SmartScreen:** the installer is not code-signed yet, so Windows may show "Windows protected your
   PC" on first run (More info → Run anyway).
 - **Backdrop effects:** Mica/Acrylic/Blur are selectable, but because the widget never takes focus,
@@ -102,5 +137,7 @@ with `scripts\measure-ram.ps1`.
 - `crates/core` — token-free parsers and the engine (merge, reset estimation, burn rate, context,
   history, alerts, Connect/Disconnect file edits). No Tauri; most tests live here.
 - `crates/capture` — `cuw-capture.exe`, the statusline tee shim.
-- `src-tauri` — the app shell: pipeline thread, file watchers, window, tray, hotkey, notifications.
+- `src-tauri` — the app shell: pipeline thread, file watchers, window, tray, hotkeys, fullscreen
+  auto-hide, the opt-in update check, notifications, and the NSIS installer hooks
+  (`src-tauri/windows/hooks.nsh`).
 - `src` — Svelte 5 UI.

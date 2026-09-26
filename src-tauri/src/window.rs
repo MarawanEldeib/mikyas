@@ -262,15 +262,6 @@ pub fn set_click_through(app: &AppHandle, on: bool, effect: EffectName) {
     }
 }
 
-pub fn toggle_visible(app: &AppHandle) {
-    let Some(w) = get(app) else { return };
-    if w.is_visible().unwrap_or(false) {
-        let _ = w.hide();
-    } else {
-        show(app);
-    }
-}
-
 pub fn show(app: &AppHandle) {
     if let Some(w) = get(app) {
         ensure_on_screen(&w);

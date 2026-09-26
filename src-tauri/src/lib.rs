@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod connect;
 mod dock;
+mod fullscreen;
 mod history_view;
 mod hotkey;
 mod notify;
@@ -14,6 +15,7 @@ mod settings;
 mod state;
 mod tray;
 mod updates;
+mod visibility;
 mod watcher;
 mod window;
 
@@ -48,7 +50,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         // Must be registered first: a second launch just surfaces the running widget.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            window::show(app);
+            let shared = app.state::<Arc<Shared>>().inner().clone();
+            visibility::apply(app, &shared, visibility::Event::UserShow);
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(
@@ -90,7 +93,9 @@ pub fn run() {
             let settings = shared.settings().clone();
             tray::create(&handle, &shared)?;
             window::create(&handle, &settings)?;
-            hotkey::register(&handle, &shared, &settings.hotkey);
+            hotkey::register_all(&handle, &shared);
+            fullscreen::start(&handle, shared.clone())?;
+            updates::start(&handle, shared.clone())?;
 
             let (tx, rx) = mpsc::channel();
             *state::lock(&shared.pipeline) = Some(tx);

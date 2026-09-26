@@ -1,4 +1,6 @@
-//! Tray icon: colour by usage, tooltip "5h 22% · 7d 61%", and the menu.
+//! Tray icon: colour by usage, tooltip "5h 22% · 7d 61%", and the menu. Left click and the
+//! Show/Hide item share the show/hide hotkey's path (`visibility`), and the item's label follows
+//! `UiState.hidden_reason`.
 
 use std::sync::Arc;
 
@@ -9,7 +11,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::settings::ViewMode;
-use crate::state::Shared;
+use crate::state::{HiddenReason, Shared};
+use crate::visibility::{self, Event};
 
 pub const TRAY_ID: &str = "main";
 
@@ -28,6 +31,7 @@ pub enum Level {
 
 /// Handles to menu items whose state mirrors the app.
 pub struct TrayItems {
+    show_hide: MenuItem<Wry>,
     pin: CheckMenuItem<Wry>,
     click_through: CheckMenuItem<Wry>,
     compact: MenuItem<Wry>,
@@ -84,7 +88,7 @@ fn icon(level: Level) -> Option<Image<'static>> {
 pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
     let settings = shared.settings().clone();
     let ui = shared.ui().clone();
-    let show_hide = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
+    let show_hide = MenuItem::with_id(app, "show", show_hide_label(ui.hidden_reason), true, None::<&str>)?;
     let pin = CheckMenuItem::with_id(app, "pin", "Pin on top", true, ui.pinned, None::<&str>)?;
     let click_through =
         CheckMenuItem::with_id(app, "click_through", "Click-through", true, ui.click_through, None::<&str>)?;
@@ -135,7 +139,9 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
                 ..
             } = event
             {
-                crate::window::toggle_visible(tray.app_handle());
+                let app = tray.app_handle();
+                let shared = app.state::<Arc<Shared>>().inner().clone();
+                visibility::apply(app, &shared, Event::UserToggle);
             }
         });
     if let Some(img) = icon(level(&snapshot)) {
@@ -143,6 +149,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
     }
     builder.build(app)?;
     app.manage(TrayItems {
+        show_hide,
         pin,
         click_through,
         compact,
@@ -155,10 +162,14 @@ fn compact_label(view: ViewMode) -> &'static str {
     if view == ViewMode::Pill { "Expanded" } else { "Compact" }
 }
 
+fn show_hide_label(reason: HiddenReason) -> &'static str {
+    if reason == HiddenReason::None { "Hide widget" } else { "Show widget" }
+}
+
 fn on_menu(app: &AppHandle, event: MenuEvent) {
     let shared = app.state::<Arc<Shared>>().inner().clone();
     match event.id().as_ref() {
-        "show" => crate::window::toggle_visible(app),
+        "show" => visibility::apply(app, &shared, Event::UserToggle),
         "pin" => {
             let pinned = !shared.ui().pinned;
             crate::commands::apply_pinned(app, &shared, pinned);
@@ -166,11 +177,11 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
         "click_through" => crate::commands::apply_click_through_toggle(app, &shared),
         "compact" => {
             let view = if shared.ui().view == ViewMode::Pill { ViewMode::Card } else { ViewMode::Pill };
-            crate::window::show(app);
+            visibility::apply(app, &shared, Event::UserShow);
             crate::commands::apply_view(app, &shared, view);
         }
         "settings" => {
-            crate::window::show(app);
+            visibility::apply(app, &shared, Event::UserShow);
             crate::commands::apply_view(app, &shared, ViewMode::Settings);
         }
         "autostart" => {
@@ -209,11 +220,12 @@ pub fn update(app: &AppHandle, snapshot: &Snapshot) {
     let _ = tray.set_icon(icon(level(snapshot)));
 }
 
-/// Mirrors pin / click-through / view / autostart into the menu.
+/// Mirrors visibility / pin / click-through / view / autostart into the menu.
 pub fn sync_checks(app: &AppHandle, shared: &Shared) {
     let Some(items) = app.try_state::<TrayItems>() else { return };
     let ui = shared.ui().clone();
     let autostart = shared.settings().start_with_windows;
+    let _ = items.show_hide.set_text(show_hide_label(ui.hidden_reason));
     let _ = items.pin.set_checked(ui.pinned);
     let _ = items.click_through.set_checked(ui.click_through);
     let _ = items.compact.set_text(compact_label(ui.view));
@@ -267,6 +279,9 @@ mod tests {
         assert_eq!(level(&snap(&[])), Level::Grey);
         assert_eq!(tooltip(&snap(&[])), "Claude Usage — no data yet");
         assert_eq!(tooltip(&snap(&[(WindowKind::FiveHour, 5.0, true)])), "5h 5%?");
+        assert_eq!(show_hide_label(HiddenReason::None), "Hide widget");
+        assert_eq!(show_hide_label(HiddenReason::User), "Show widget");
+        assert_eq!(show_hide_label(HiddenReason::Fullscreen), "Show widget");
         for l in [Level::Green, Level::Orange, Level::Red, Level::Grey] {
             assert!(icon(l).is_some());
         }
