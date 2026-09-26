@@ -40,6 +40,8 @@ export interface WindowView {
   burn: Burn | null;
   /** 96 points: last 24 h for five_hour, last 7 d for seven_day. */
   spark: SparkPoint[];
+  /** Claude worked after this reading, so the real % is higher (shown as "38% ▲"). */
+  worked_since: boolean;
 }
 
 export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";
@@ -130,6 +132,8 @@ export type GaugeStyle = "ring" | "bar";
 export type DockEdge = "off" | "left" | "right" | "top";
 /** What the widget's × does: hide to the tray, or quit the app. */
 export type CloseAction = "hide" | "quit";
+/** Which % the tray icon shows; "worst" = the higher of 5-hour and weekly, "off" = coloured dot. */
+export type TrayNumber = "worst" | "five_hour" | "seven_day" | "off";
 
 export interface CardRows {
   sparklines: boolean;
@@ -177,6 +181,22 @@ export interface Settings {
   dock: DockEdge;
   /** Default "hide". */
   close_action: CloseAction;
+  /** Toast when the current pace reaches a limit before it resets (default true). */
+  pace_alerts: boolean;
+  /** Toast shortly before a capped limit reopens (default true). */
+  reset_heads_up: boolean;
+  /** One summary toast when the weekly limit resets (default true). */
+  weekly_recap: boolean;
+  /** Toast when a long Claude turn ends (default true). */
+  finished_alerts: boolean;
+  /** Minimum turn length for that toast, 1..60 (default 3). */
+  finished_min_minutes: number;
+  /** Warn when Claude Code's status line stops running the capture (default true). */
+  connection_watchdog: boolean;
+  /** Remember the position per monitor setup (default true). */
+  per_display_position: boolean;
+  /** Default "worst". */
+  tray_number: TrayNumber;
   /** Internal: the first-hide toast was shown. No UI control; update_settings ignores it. */
   hide_hint_shown: boolean;
 }
@@ -203,6 +223,8 @@ export interface UiState {
   hidden_reason: HiddenReason;
   /** A newer release, when the update checker found one. */
   update: UpdateInfo | null;
+  /** Connect had wrapped the status line and it no longer does (Reconnect / Dismiss banner). */
+  connection_lost: boolean;
 }
 
 export type ShellKind = "bash" | "cmd" | "pwsh" | "legacy_power_shell";
@@ -247,6 +269,7 @@ export interface ConnectPreview {
  *                                   (pointer enter/leave while docked; force: the card's "–")
  *  check_updates_now() -> UpdateInfo | null              (explicit click; network)
  *  open_url({ url: string }) -> void                     (GitHub release pages only)
+ *  dismiss_connection_warning() -> void                  (the connection-lost banner's Dismiss)
  * Events: "snapshot" (Snapshot), "ui-state" (UiState).
  */
 export type CommandName =
@@ -267,4 +290,5 @@ export type CommandName =
   | "get_history"
   | "set_dock_expanded"
   | "check_updates_now"
-  | "open_url";
+  | "open_url"
+  | "dismiss_connection_warning";

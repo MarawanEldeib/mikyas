@@ -14,6 +14,7 @@ const ui = (over: Partial<UiState> = {}): UiState => ({
   dock_expanded: false,
   hidden_reason: "none",
   update: UPDATE,
+  connection_lost: false,
   ...over,
 });
 

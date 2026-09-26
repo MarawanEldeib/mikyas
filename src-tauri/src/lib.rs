@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod connect;
 mod context_menu;
+mod display_positions;
 mod dock;
 mod fullscreen;
 mod history_view;
@@ -15,8 +16,10 @@ mod platform;
 mod settings;
 mod state;
 mod tray;
+mod tray_icon;
 mod updates;
 mod visibility;
+mod watchdog;
 mod watcher;
 mod window;
 
@@ -86,6 +89,7 @@ pub fn run() {
             dock::set_dock_expanded,
             updates::check_updates_now,
             updates::open_url,
+            watchdog::dismiss_connection_warning,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -99,6 +103,8 @@ pub fn run() {
             hotkey::register_all(&handle, &shared);
             fullscreen::start(&handle, shared.clone())?;
             updates::start(&handle, shared.clone())?;
+            watchdog::start(&handle, shared.clone())?;
+            display_positions::start(&handle, shared.clone())?;
 
             let (tx, rx) = mpsc::channel();
             *state::lock(&shared.pipeline) = Some(tx);

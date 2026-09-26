@@ -11,7 +11,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 
-use crate::settings::ViewMode;
+use crate::settings::{TrayNumber, ViewMode};
 use crate::state::{HiddenReason, Shared};
 use crate::visibility::{self, Event};
 
@@ -221,7 +221,11 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 pub fn update(app: &AppHandle, snapshot: &Snapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let _ = tray.set_tooltip(Some(tooltip(snapshot)));
-    let _ = tray.set_icon(icon(level(snapshot)));
+    let mode = app
+        .try_state::<Arc<Shared>>()
+        .map_or(TrayNumber::Off, |shared| shared.settings().tray_number);
+    let image = crate::tray_icon::number_icon(snapshot, mode).or_else(|| icon(level(snapshot)));
+    let _ = tray.set_icon(image);
 }
 
 /// Mirrors visibility / pin / click-through / view / autostart into the menu.
@@ -259,6 +263,7 @@ mod tests {
                     },
                     burn: None,
                     spark: vec![],
+                    worked_since: false,
                 })
                 .collect(),
             session: None,

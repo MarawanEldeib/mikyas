@@ -112,7 +112,7 @@ fn next_local_hour<Tz: TimeZone>(now_ms: Ms, tz: &Tz) -> Ms {
 
 /// Local midnights of every calendar day from the one containing `from_ms` to the one containing
 /// `last_ms`, ascending.
-fn local_day_starts<Tz: TimeZone>(from_ms: Ms, last_ms: Ms, tz: &Tz) -> Vec<Ms> {
+pub(crate) fn local_day_starts<Tz: TimeZone>(from_ms: Ms, last_ms: Ms, tz: &Tz) -> Vec<Ms> {
     let date_of = |t: Ms| tz.timestamp_millis_opt(t).single().map(|dt| dt.date_naive());
     let (Some(mut day), Some(last)) = (date_of(from_ms), date_of(last_ms)) else {
         return Vec::new();

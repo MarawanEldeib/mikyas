@@ -8,7 +8,8 @@
 //!   every 5 min. Every 30 s the snapshot is recomputed anyway (stale flags, reset phases).
 //! - A snapshot is emitted only when it differs from the last one (ignoring `generated_ms`).
 //! - Limit alerts (`alerts.json`) and, when enabled, context alerts over `Snapshot::sessions`
-//!   (persisted in `state.json`) are evaluated on every tick.
+//!   (persisted in `state.json`) are evaluated on every tick, then the enabled pace alerts and
+//!   weekly recap (hook region [A], state in `state.json`) and finished turns (region [B]).
 //!
 //! [`Engine`] holds all state and does no Tauri work, so it is unit-tested against temp dirs.
 
@@ -23,6 +24,7 @@ use cuw_core::capture::CaptureRecord;
 use cuw_core::engine::snapshot::{self, EngineInputs};
 use cuw_core::engine::types::{DesktopHealth, Snapshot};
 use cuw_core::history::History;
+use cuw_core::pace_alerts::PaceSettings;
 use cuw_core::paths::Paths;
 use cuw_core::saferead::SafeReader;
 use cuw_core::sources::desktop_sessions::{self, DesktopSession};
@@ -31,8 +33,10 @@ use cuw_core::sources::statusline;
 use cuw_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
 use cuw_core::sources::SourceError;
 use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, SECOND_MS, now_ms};
+use cuw_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 use tauri::{AppHandle, Emitter};
 
+use crate::history_view::local_day_starts;
 use crate::notify::Alert;
 use crate::settings::Settings;
 use crate::state::{PersistedState, Shared, load_json, lock, save_json};
@@ -87,7 +91,7 @@ pub struct TickOutput {
     pub snapshot: Snapshot,
     /// Differs from the previous snapshot (ignoring `generated_ms`).
     pub changed: bool,
-    /// Limit alerts first, then context alerts.
+    /// Limit alerts first, then context, pace, weekly-recap and finished-turn alerts.
     pub alerts: Vec<Alert>,
 }
 
@@ -115,6 +119,10 @@ pub struct Engine {
     mismatch_since: Option<Ms>,
     last: Option<Snapshot>,
     first_eval: bool,
+    /// Turns already reported as finished.
+    finished: FinishedTurns,
+    /// Time of the first tick: only turns that end after it are reported.
+    started_ms: Option<Ms>,
 }
 
 impl Engine {
@@ -145,6 +153,8 @@ impl Engine {
             mismatch_since: None,
             last: None,
             first_eval: true,
+            finished: FinishedTurns::default(),
+            started_ms: None,
             paths,
         }
     }
@@ -219,9 +229,39 @@ impl Engine {
             alerts.extend(ctx.into_iter().map(Alert::Context));
         }
 
+        // [A] pace alerts + weekly recap ------------------------------------------------------
+        // Stream alerts owns this region. Their state lives in `self.persisted`, so the
+        // `state.json` save below persists it.
+        let pace = PaceSettings {
+            forecast: settings.pace_alerts,
+            heads_up: settings.reset_heads_up,
+        };
+        if pace.forecast || pace.heads_up {
+            let events = self.persisted.pace_alerts.evaluate(&snap.windows, pace, now);
+            alerts.extend(events.into_iter().map(Alert::Pace));
+        }
+        if settings.weekly_recap {
+            let day_starts = local_day_starts(now.saturating_sub(8 * DAY_MS), now, &chrono::Local);
+            if let Some(recap) = self.persisted.recap.evaluate(&self.history, &day_starts, now) {
+                alerts.push(Alert::Recap(recap));
+            }
+        }
+        // [/A] -----------------------------------------------------------------------------------
+
         if now.saturating_sub(self.persisted.last_maintenance_ms) >= MAINTENANCE_EVERY_MS {
             self.maintenance(now);
         }
+
+        // [B] finished turns -----------------------------------------------------------------
+        // Stream turns owns this region (and `finished_inputs`). Dedupe is in memory only.
+        let started_ms = *self.started_ms.get_or_insert(now);
+        if settings.finished_alerts {
+            let min_duration_ms = Ms::from(settings.finished_min_minutes) * MINUTE_MS;
+            let sessions = self.finished_inputs(&snap);
+            let done = self.finished.observe(&sessions, started_ms, min_duration_ms, now);
+            alerts.extend(done.into_iter().map(Alert::Finished));
+        }
+        // [/B] -----------------------------------------------------------------------------------
         if self.persisted != before {
             if let Err(e) = save_json(&self.paths.state_file(), &self.persisted) {
                 log(&format!("state.json write failed: {e}"));
@@ -254,6 +294,13 @@ impl Engine {
             account_mismatch_since_ms: self.mismatch_since,
         };
         snapshot::build_snapshot(&inputs, now)
+    }
+
+    /// Each listed session paired with its latest turn, for [`FinishedTurns::observe`].
+    /// TODO(stream turns): pair `snap.sessions` with the tails' `TurnInfo`.
+    fn finished_inputs(&self, snap: &Snapshot) -> Vec<(FinishedTurn, TurnInfo)> {
+        let _ = (&snap.sessions, &self.tails);
+        Vec::new()
     }
 
     fn reload_captures(&mut self, now: Ms) {
@@ -647,7 +694,7 @@ mod tests {
             .iter()
             .filter_map(|a| match a {
                 Alert::Context(e) => Some(e),
-                Alert::Limit(_) => None,
+                _ => None,
             })
             .collect()
     }

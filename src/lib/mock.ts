@@ -351,6 +351,7 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
         gaps: w.gaps,
         seed: hashSeed(`${scenario}:${i}`),
       }),
+      worked_since: false,
     };
   });
   const session = spec.session(t0);
@@ -418,6 +419,14 @@ export function createMockBackend(params: URLSearchParams): Backend {
     dock: pick(params.get("dock"), ["off", "left", "right", "top"] as const, "off"),
     // ?close=quit: the × quits instead of hiding.
     close_action: pick(params.get("close"), ["hide", "quit"] as const, "hide"),
+    pace_alerts: true,
+    reset_heads_up: true,
+    weekly_recap: true,
+    finished_alerts: true,
+    finished_min_minutes: 3,
+    connection_watchdog: true,
+    per_display_position: true,
+    tray_number: "worst",
     hide_hint_shown: false,
   };
   let ui: UiState = {
@@ -431,6 +440,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
     dock_expanded: settings.dock !== "off" && (params.get("expanded") === "1" || (view !== "pill" && view !== "card")),
     hidden_reason: pick(params.get("hidden"), HIDDEN, "none"),
     update: updateMode === "1" ? MOCK_UPDATE : null,
+    // ?lost=1: the status line was rewritten after Connect (the card's reconnect banner).
+    connection_lost: params.get("lost") === "1",
   };
   const connParam = params.get("conn");
   let connection: ConnectionStatus =
@@ -554,6 +565,10 @@ export function createMockBackend(params: URLSearchParams): Backend {
       return ui.update;
     },
     open_url: (args) => console.info("[mock] open_url", args.url),
+    dismiss_connection_warning: () => {
+      ui = { ...ui, connection_lost: false };
+      emit("ui-state", ui);
+    },
   };
 
   return {

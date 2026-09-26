@@ -49,9 +49,9 @@ Handy defaults:
 
 - **Ctrl+Alt+H** shows / hides the widget; **Ctrl+Alt+U** makes it click-through ("ghost" mode).
   Both can be changed or removed in Settings.
-- While a fullscreen game or app is in front on the widget's screen, the widget hides itself and
-  comes back when you leave it. It only checks which window is in front — no process access or
-  hooks — so it is safe next to anti-cheat such as Riot Vanguard.
+- While a fullscreen video, course or app is in front on the widget's screen, the widget hides
+  itself and comes back when you leave it. It only checks which window is in front, and never
+  reads, injects into or hooks other programs.
 - **Start with Windows** is off until you switch it on (Settings or the tray menu).
 
 ## What it reads (and what it never touches)

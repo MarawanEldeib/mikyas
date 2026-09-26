@@ -9,7 +9,7 @@ even when no Claude Code terminal is open:
 - Extras: 80 % / 95 % / reset notifications, a burn-rate forecast ("at this pace you hit 100 % at
   15:40"), 24 h / 7 d sparklines, a compact pill view, a click-through "ghost" mode toggled with
   a global hotkey (default **Ctrl+Alt+U**), a show / hide hotkey (default **Ctrl+Alt+H**), and
-  automatic hiding while a fullscreen game or app is in front
+  automatic hiding while a fullscreen video, course or app is in front
 
 **Install:** download the installer from the
 [Releases page](https://github.com/MarawanEldeib/claude-usage-widget/releases) — see
@@ -102,17 +102,15 @@ uninstaller hook).
 
 ## Notes
 
-- **Fullscreen games / Vanguard:** the widget is an ordinary topmost window. It uses no injection
-  or overlay hooks, so it is safe alongside kernel anti-cheat (e.g. Riot Vanguard), but it cannot
-  appear over *exclusive* fullscreen games.
-- **Fullscreen auto-hide** (Settings → System, on by default): every 1.5 s the widget asks Windows
-  which window is in front (`GetForegroundWindow`, `GetWindowRect`, `MonitorFromWindow` /
-  `GetMonitorInfoW`, `GetClassNameW`) and whether the shell reports a fullscreen / presentation
-  state (`SHQueryUserNotificationState`). When a fullscreen app covers the monitor the widget is
+- **Fullscreen auto-hide** (Settings → System, on by default): the widget hides while a fullscreen
+  video, course or app is in front. Every 1.5 s it asks Windows which window is in front
+  (`GetForegroundWindow`, `GetWindowRect`, `MonitorFromWindow` / `GetMonitorInfoW`,
+  `GetClassNameW`) and whether the shell reports a fullscreen / presentation state
+  (`SHQueryUserNotificationState`). When a fullscreen app covers the monitor the widget is
   on, the widget hides, and it comes back — without taking the focus — once that app leaves the
-  foreground. Window queries only: it never opens other processes, reads their memory, injects
-  code or installs hooks. A widget you hid yourself stays hidden, and one you brought back with the
-  show / hide hotkey during a game stays visible.
+  foreground. Window queries only: the widget never reads, injects into or hooks other programs. A
+  widget you hid yourself stays hidden, and one you brought back with the show / hide hotkey while
+  something is fullscreen stays visible.
 - **Update check** (Settings → System, off by default): see *Privacy*. A newer release shows a
   dismissible "Update vX.Y.Z available · View" line on the widget and one notification; "View"
   opens the release page in your browser (only this repository's release pages can be opened).

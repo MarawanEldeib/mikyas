@@ -74,6 +74,7 @@ export const api = {
   setDockExpanded: (expanded: boolean, force = false) => call<void>("set_dock_expanded", { expanded, force }),
   checkUpdatesNow: () => call<UpdateInfo | null>("check_updates_now"),
   openUrl: (url: string) => call<void>("open_url", { url }),
+  dismissConnectionWarning: () => call<void>("dismiss_connection_warning"),
 };
 
 /** Subscribes to `snapshot` events. */

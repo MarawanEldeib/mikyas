@@ -198,6 +198,10 @@ pub struct WindowView {
     pub state: WindowState,
     pub burn: Option<Burn>,
     pub spark: Vec<SparkPoint>,
+    /// The value is older than Claude activity seen since in the transcripts, so the real % is
+    /// probably higher (the UI marks it "▲").
+    #[serde(default)]
+    pub worked_since: bool,
 }
 
 /// Which Claude surface a session belongs to.
@@ -350,10 +354,17 @@ mod tests {
             },
             burn: None,
             spark: vec![],
+            worked_since: false,
         };
         let v = serde_json::to_value(&view).unwrap();
         assert_eq!(v["kind"], "five_hour");
         assert_eq!(v["phase"], "active");
+        assert_eq!(v["worked_since"], false);
         assert!(v.get("state").is_none());
+        // Older serialised views (no marker) still load.
+        let mut old = v.clone();
+        old.as_object_mut().unwrap().remove("worked_since");
+        let back: WindowView = serde_json::from_value(old).unwrap();
+        assert_eq!(back, view);
     }
 }

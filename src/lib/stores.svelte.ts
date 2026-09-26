@@ -18,6 +18,7 @@ class AppState {
     dock_expanded: false,
     hidden_reason: "none",
     update: null,
+    connection_lost: false,
   });
   connection = $state.raw<ConnectionStatus | null>(null);
   /** Wall clock used by every countdown/age; advanced by the tick scheduler. */

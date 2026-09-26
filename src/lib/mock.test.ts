@@ -117,6 +117,30 @@ describe("createMockBackend", () => {
     info.mockRestore();
   });
 
+  it("defaults the automations, and dismisses the connection-lost banner (?lost=1)", async () => {
+    vi.useFakeTimers();
+    const b = createMockBackend(new URLSearchParams("lost=1"));
+    const s = await b.invoke<Settings>("get_settings");
+    expect(s).toMatchObject({
+      pace_alerts: true,
+      reset_heads_up: true,
+      weekly_recap: true,
+      finished_alerts: true,
+      finished_min_minutes: 3,
+      connection_watchdog: true,
+      per_display_position: true,
+      tray_number: "worst",
+    });
+    const snap = await b.invoke<Snapshot>("get_snapshot");
+    expect(snap.windows.every((w) => w.worked_since === false)).toBe(true);
+    expect((await b.invoke<UiState>("get_ui_state")).connection_lost).toBe(true);
+    const states: UiState[] = [];
+    await b.listen<UiState>("ui-state", (u) => states.push(u));
+    await b.invoke("dismiss_connection_warning");
+    expect(states.at(-1)?.connection_lost).toBe(false);
+    expect((await createMockBackend(new URLSearchParams()).invoke<UiState>("get_ui_state")).connection_lost).toBe(false);
+  });
+
   it("starts a docked pill or card slid out with ?expanded=1", async () => {
     vi.useFakeTimers();
     const ui = (q: string) => createMockBackend(new URLSearchParams(q)).invoke<UiState>("get_ui_state");

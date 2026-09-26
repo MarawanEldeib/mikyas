@@ -86,6 +86,7 @@ describe("liveWindow", () => {
     phase: "active",
     burn: { slope_pct_per_h: 3, t100_ms: null, pct_at_reset: 110, hits_limit_before_reset: false },
     spark: [],
+    worked_since: false,
   };
   it("returns the window unchanged before its reset", () => {
     expect(liveWindow(w, NOW)).toBe(w);

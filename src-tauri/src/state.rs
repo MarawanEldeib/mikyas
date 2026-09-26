@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use cuw_core::ctx_alerts::CtxAlertState;
 use cuw_core::engine::types::{Snapshot, WindowKind};
+use cuw_core::pace_alerts::PaceAlertState;
 use cuw_core::paths::Paths;
+use cuw_core::recap::RecapState;
 use cuw_core::time::Ms;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +35,10 @@ pub struct PersistedState {
     pub last_maintenance_ms: Ms,
     /// Context-alert thresholds already announced, by session key (so restarts do not re-fire).
     pub ctx_alerts: CtxAlertState,
+    /// Window instances whose pace forecast / reset heads-up was already shown.
+    pub pace_alerts: PaceAlertState,
+    /// End of the last weekly window a recap was shown for.
+    pub recap: RecapState,
 }
 
 impl PersistedState {
@@ -80,6 +86,9 @@ pub struct UiState {
     pub dock_expanded: bool,
     pub hidden_reason: HiddenReason,
     pub update: Option<UpdateInfo>,
+    /// Connect had wrapped Claude Code's status line, and it no longer does (the card shows a
+    /// Reconnect / Dismiss banner).
+    pub connection_lost: bool,
 }
 
 /// Everything commands, tray, hotkey and pipeline share.
@@ -106,6 +115,7 @@ impl Shared {
             dock_expanded: false,
             hidden_reason: HiddenReason::None,
             update: None,
+            connection_lost: false,
         };
         Self {
             paths,
@@ -200,6 +210,14 @@ mod tests {
         resets.insert(WindowKind::Other("seven_day_opus".into()), 7);
         s.set_exact_resets(&resets);
         s.desktop_watermark_ms = 9;
+        s.recap.last_recapped_end_ms = Some(13);
+        s.pace_alerts.kinds.insert(
+            "five_hour".into(),
+            cuw_core::pace_alerts::KindPaceState {
+                forecast_fired_for: Some(17),
+                heads_up_fired_for: None,
+            },
+        );
         s.learned_models.insert("claude-opus-5-5".into(), "Opus 5.5".into());
         s.ctx_alerts.sessions.insert(
             "af63dc4c8601ec8c".into(),
@@ -224,6 +242,8 @@ mod tests {
         let s: PersistedState = load_json(&p);
         assert_eq!(s.desktop_watermark_ms, 5);
         assert_eq!(s.ctx_alerts, CtxAlertState::default());
+        assert_eq!(s.pace_alerts, PaceAlertState::default());
+        assert_eq!(s.recap, RecapState::default());
     }
 
     #[test]

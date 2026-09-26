@@ -166,6 +166,7 @@ mod tests {
             dock_expanded: false,
             hidden_reason: HiddenReason::None,
             update: None,
+            connection_lost: false,
         }
     }
 

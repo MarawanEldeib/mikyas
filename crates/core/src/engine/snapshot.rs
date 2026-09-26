@@ -138,7 +138,15 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         let burn_samples = all_samples(inputs, kind, now_ms);
         let burn = burn::compute(kind, &burn_samples, &state, now_ms);
         let spark = spark(inputs.history, kind, now_ms);
-        windows.push(WindowView { state, burn, spark });
+        // TODO(stream turns): set when the value is >= 90 s older than the newest transcript
+        // assistant activity.
+        let worked_since = false;
+        windows.push(WindowView {
+            state,
+            burn,
+            spark,
+            worked_since,
+        });
     }
 
     let (session, sessions) = session_views(inputs, now_ms);

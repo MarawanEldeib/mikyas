@@ -305,7 +305,7 @@ mod tests {
         let player = fg("MediaPlayerClassicW", MONITOR);
         assert!(is_fullscreen(Some(&player), Quns::Busy, Some(1)));
         assert!(is_fullscreen(Some(&player), Quns::Other, Some(1)), "exact monitor size");
-        let exclusive = fg("RiotWindowClass", rect(0, 0, 1280, 720));
+        let exclusive = fg("D3DPresenterWindow", rect(0, 0, 1280, 720));
         assert!(is_fullscreen(Some(&exclusive), Quns::D3dFullScreen, Some(1)));
         // A window that overshoots the monitor by a pixel on every side still counts.
         assert!(is_fullscreen(Some(&fg("SDL_app", rect(-1, -1, 1921, 1081))), Quns::Busy, None));

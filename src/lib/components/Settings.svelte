@@ -8,6 +8,7 @@
   import HotkeyField from "./HotkeyField.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import SettingsAutomations from "./SettingsAutomations.svelte";
   import SettingsContext from "./SettingsContext.svelte";
   import SettingsLayout from "./SettingsLayout.svelte";
   import SettingsSystem from "./SettingsSystem.svelte";
@@ -142,6 +143,8 @@
       </div>
 
       <SettingsContext />
+
+      <SettingsAutomations />
 
       <h2 class="section">Appearance</h2>
       <div class="group">

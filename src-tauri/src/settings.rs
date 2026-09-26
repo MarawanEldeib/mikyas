@@ -73,6 +73,18 @@ pub enum CloseAction {
     Quit,
 }
 
+/// Which live % the tray icon shows (`Off` = the coloured dot icons).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayNumber {
+    /// The highest of the 5-hour and weekly %.
+    #[default]
+    Worst,
+    FiveHour,
+    SevenDay,
+    Off,
+}
+
 /// Which optional rows the card shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -128,6 +140,21 @@ pub struct Settings {
     pub card_rows: CardRows,
     pub dock: DockEdge,
     pub close_action: CloseAction,
+    /// Toast when the current pace reaches a limit before it resets.
+    pub pace_alerts: bool,
+    /// Toast shortly before a capped limit reopens.
+    pub reset_heads_up: bool,
+    /// One summary toast when the weekly limit resets.
+    pub weekly_recap: bool,
+    /// Toast when a Claude turn that ran at least `finished_min_minutes` ends.
+    pub finished_alerts: bool,
+    /// 1..=60.
+    pub finished_min_minutes: u32,
+    /// Warn when Claude Code's status line no longer runs the widget's capture.
+    pub connection_watchdog: bool,
+    /// Remember the widget position per monitor setup.
+    pub per_display_position: bool,
+    pub tray_number: TrayNumber,
     /// The one-time "still running" toast after the first hide from the widget was shown.
     /// Internal: no UI control, and settings patches never change it.
     pub hide_hint_shown: bool,
@@ -164,6 +191,14 @@ impl Default for Settings {
             card_rows: CardRows::default(),
             dock: DockEdge::Off,
             close_action: CloseAction::Hide,
+            pace_alerts: true,
+            reset_heads_up: true,
+            weekly_recap: true,
+            finished_alerts: true,
+            finished_min_minutes: 3,
+            connection_watchdog: true,
+            per_display_position: true,
+            tray_number: TrayNumber::Worst,
             hide_hint_shown: false,
         }
     }
@@ -189,6 +224,7 @@ impl Settings {
         self.stale_min = self.stale_min.clamp(1, 24 * 60);
         self.hotkey = self.hotkey.trim().to_owned();
         self.ctx_overrides.retain(|k, v| !k.trim().is_empty() && *v > 0);
+        self.finished_min_minutes = self.finished_min_minutes.clamp(1, 60);
         self
     }
 
@@ -271,7 +307,36 @@ mod tests {
         );
         assert_eq!(v["dock"], "off");
         assert_eq!(v["close_action"], "hide");
+        assert_eq!(v["pace_alerts"], true);
+        assert_eq!(v["reset_heads_up"], true);
+        assert_eq!(v["weekly_recap"], true);
+        assert_eq!(v["finished_alerts"], true);
+        assert_eq!(v["finished_min_minutes"], 3);
+        assert_eq!(v["connection_watchdog"], true);
+        assert_eq!(v["per_display_position"], true);
+        assert_eq!(v["tray_number"], "worst");
         assert_eq!(v["hide_hint_shown"], false);
+    }
+
+    #[test]
+    fn automation_settings_patch_clamp_and_default_for_older_files() {
+        let s = apply_patch(&Settings::default(), &serde_json::json!({"finished_min_minutes": 0})).unwrap();
+        assert_eq!(s.finished_min_minutes, 1);
+        let s = apply_patch(&s, &serde_json::json!({"finished_min_minutes": 999})).unwrap();
+        assert_eq!(s.finished_min_minutes, 60);
+        let s = apply_patch(&s, &serde_json::json!({"tray_number": "five_hour", "pace_alerts": false})).unwrap();
+        assert_eq!(s.tray_number, TrayNumber::FiveHour);
+        assert!(!s.pace_alerts);
+        assert!(apply_patch(&s, &serde_json::json!({"tray_number": "best"})).is_err());
+        assert!(apply_patch(&s, &serde_json::json!({"finished_min_minutes": -1})).is_err());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("settings.json");
+        std::fs::write(&p, br#"{"view":"card"}"#).unwrap();
+        let old = load(&p);
+        assert!(old.pace_alerts && old.reset_heads_up && old.weekly_recap && old.finished_alerts);
+        assert!(old.connection_watchdog && old.per_display_position);
+        assert_eq!(old.finished_min_minutes, 3);
+        assert_eq!(old.tray_number, TrayNumber::Worst);
     }
 
     #[test]
