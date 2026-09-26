@@ -1,9 +1,7 @@
 # Installing Claude Usage Widget
 
-A small always-on-top widget for Windows 10/11 that shows your Claude 5-hour and weekly usage,
-when each limit resets, and the model and context % of your latest Claude Code session. It reads
-files that Claude Code and Claude Desktop already keep on your PC. **It never asks for your
-Claude account, password or token, and never reads your Claude login.**
+Step-by-step install, update and uninstall guide for Windows 10/11. For what the widget does, see
+the [README](README.md); for every file it reads and writes, see [PRIVACY.md](PRIVACY.md).
 
 ## 1. Download
 
@@ -40,30 +38,18 @@ It fills in by itself from two sources — use either or both:
 - **Claude Desktop:** open it once. Its usage history is picked up automatically (updated about
   every 15 minutes while Desktop runs; reset times are estimated and shown with "~").
 - **Claude Code (exact numbers):** open **Settings** (the sliders icon) → **Claude Code** →
-  **Connect**. You first see a preview of the one change it makes: your `statusLine` command in
-  `~/.claude/settings.json` gets a tiny pass-through in front of it, so your statusline looks
-  exactly as before. A backup of the file is saved first, and **Disconnect** undoes the change
-  exactly.
+  **Connect**. You see a preview of the one change first; **Disconnect** undoes it exactly. See
+  [Connect Claude Code](README.md#connect-claude-code) for what it changes.
 
 Handy defaults:
 
 - **Ctrl+Alt+H** shows / hides the widget; **Ctrl+Alt+U** makes it click-through ("ghost" mode).
   Both can be changed or removed in Settings.
 - While a fullscreen video, course or app is in front on the widget's screen, the widget hides
-  itself and comes back when you leave it. It only checks which window is in front, and never
-  reads, injects into or hooks other programs.
+  itself and comes back when you leave it (not while ghost mode is on). It only checks which
+  window is in front, and never reads, injects into or hooks other programs.
 - **Start with Windows** is off until you switch it on (Settings or the tray menu).
-
-## What it reads (and what it never touches)
-
-- Claude Code's statusline data (after Connect), Claude Desktop's usage history file and the
-  token counts of your recent Claude Code / Cowork sessions. Message text is never read.
-- It never opens `~/.claude/.credentials.json`, cookies, browser storage or keychains.
-- No network access at all — unless you switch on **Settings → System → Check for updates
-  daily**. Then, once a day, it asks GitHub (api.github.com) whether a newer release exists, using
-  Windows' own `curl.exe`. Nothing about you or your usage is sent.
-
-Everything is listed in [PRIVACY.md](PRIVACY.md).
+- No network access unless you switch on **Settings → System → Check for updates daily**.
 
 ## Updating
 
@@ -74,13 +60,15 @@ settings, history, Claude Code connection and "Start with Windows" are all kept.
 
 **Windows Settings → Apps → Installed apps → Claude Usage Widget → Uninstall.**
 
-The uninstaller first restores your original Claude Code statusline (the same as Disconnect) and
+The uninstaller first restores your original Claude Code status line (the same as Disconnect) and
 removes the "Start with Windows" entry. Tick **"Delete the application data"** to also remove the
-widget's data folder `%LOCALAPPDATA%\ClaudeUsageWidget` (history, settings, backups).
+widget's data folders (history, settings, backups; the full list is in
+[PRIVACY.md](PRIVACY.md#uninstalling)).
 
-If your `~/.claude/settings.json` contains comments, the uninstaller cannot edit it safely and
-leaves it alone (the data folder is then kept too, because your statusline still uses the helper
-inside it). Remove the `cuw-capture.exe … |` part from `statusLine.command` by hand, or click
+If the status line cannot be restored — for example because comments were added to
+`~/.claude/settings.json` after you connected — the uninstaller leaves that file alone and keeps
+the data folder `%LOCALAPPDATA%\ClaudeUsageWidget`, because your status line still uses the helper
+inside it. Remove the `cuw-capture.exe … |` part from `statusLine.command` by hand, or click
 **Disconnect** in the widget before uninstalling.
 
 ## Troubleshooting
@@ -89,3 +77,5 @@ inside it). Remove the `cuw-capture.exe … |` part from `statusLine.command` by
   Settings and press a different combination.
 - **No numbers yet:** open Claude Desktop once, or Connect Claude Code and send a message.
 - **"Accounts may differ":** Claude Desktop and Claude Code are signed in to different accounts.
+- **Connect says settings.json is not strict JSON:** your `~/.claude/settings.json` has comments
+  or trailing commas. Remove them, then Connect again.

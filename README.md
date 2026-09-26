@@ -45,14 +45,15 @@ doing: coding, watching a course, reading docs, or working in Claude Desktop.
 
 **Notifications**
 - Limits at 80% / 95%, and when a limit resets
-- **Pace alert** — warned *before* you run out, plus a heads-up 10 minutes before a capped window
-  reopens
+- **Pace alert** — warned *before* you run out, plus a heads-up shortly before a capped limit
+  reopens (10 minutes for the 5-hour limit, 1 hour for the weekly one)
 - **Claude finished** — when a long Claude Code turn completes while you are elsewhere
 - Context-window alerts ("Opus 5.5 at 90% context — consider /compact")
 - A **weekly recap** when the weekly limit resets
 - A warning if something rewrites your Claude Code status line, with one-click Reconnect
 
-Every notification can be switched off in **Settings → Automations**.
+Every notification can be switched off in **Settings** (under Alerts, Context alerts or
+Automations).
 
 ## Screenshots
 
@@ -71,13 +72,12 @@ Every notification can be switched off in **Settings → Automations**.
 2. Run it. No admin rights needed — it installs for your user only.
    The installer is not code-signed yet, so Windows may say *"Windows protected your PC"*:
    click **More info → Run anyway**.
-3. The widget appears in the corner of your screen and in the tray. It already works from
-   Claude Desktop's own usage data.
+3. The widget appears in the bottom-right corner of your screen and in the tray. It already works
+   from Claude Desktop's own usage data.
 4. For exact, live numbers, open **Settings → Claude Code → Connect**
    (see [Connect Claude Code](#connect-claude-code)).
 
-Uninstalling (Windows Settings → Apps) puts your Claude Code status line back exactly as it was.
-Full guide: [INSTALL.md](INSTALL.md).
+Checksum verification, updating, uninstalling and troubleshooting: [INSTALL.md](INSTALL.md).
 
 ## Privacy — token-free by design
 
@@ -95,8 +95,7 @@ Everything it shows is computed from files already on your computer:
 | Claude Code / Cowork session files (`~/.claude/projects/**/*.jsonl`) | model, context size and turn timing — message text is never read |
 
 Every file read goes through an allowlist that hard-blocks credential, cookie and browser-storage
-files. Each person only ever sees their own numbers; nothing is uploaded anywhere.
-[PRIVACY.md](PRIVACY.md) lists every file read and written.
+files. Nothing is uploaded anywhere. [PRIVACY.md](PRIVACY.md) lists every file read and written.
 
 > Claude Desktop *chat* conversations don't store their model or context size on disk, so for
 > those the widget shows your most recent Claude Code / Cowork session instead.
@@ -109,14 +108,16 @@ Connecting makes the numbers exact and live. It is optional and fully reversible
 
 1. The widget shows you the exact change first.
 2. It copies a tiny helper, `cuw-capture.exe`, into `%LOCALAPPDATA%\ClaudeUsageWidget\bin\`.
-3. It changes **only** `statusLine.command` in `~/.claude/settings.json` so Claude Code's
-   status-line data passes through the helper first. Your own status line keeps working and looks
-   exactly the same; a backup of the file is kept.
+3. It changes **only** `statusLine.command` in `~/.claude/settings.json` (or adds a `statusLine`
+   entry if you have none) so Claude Code's status-line data passes through the helper first.
+   Your own status line keeps working and looks exactly the same; a backup of the file is kept.
 4. The helper saves a few whitelisted numbers (usage %, reset times, model, context) — no prompts,
    no credentials.
 5. A self-test compares your status line's output before and after.
 
-**Disconnect** (Settings or the tray menu) restores the original command byte-for-byte.
+**Disconnect** (Settings or the tray menu) restores the original command byte-for-byte, and so
+does uninstalling. Connect needs a plain-JSON `settings.json`; if yours has comments, it shows an
+error and changes nothing.
 
 <br clear="right">
 

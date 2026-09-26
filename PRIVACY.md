@@ -2,10 +2,10 @@
 
 Claude Usage Widget is **token-free** and **offline by default**:
 
-- It never reads `~/.claude/.credentials.json`, `~/.claude.json`, Claude Desktop's `config.json`,
-  cookies, `Local Storage`, `IndexedDB`, `Session Storage`, keychains or any other credential or
-  browser-storage file. These names are hard-denied in code (`crates/core/src/saferead.rs`) even
-  inside otherwise allowed folders.
+- It never reads `~/.claude/.credentials.json`, `~/.claude.json`, Claude Desktop's `config.json`
+  or `claude_desktop_config.json`, cookies, `Local Storage`, `IndexedDB`, `Session Storage`,
+  keychains or any other credential or browser-storage file. These names are hard-denied in code
+  (`crates/core/src/saferead.rs`) even inside otherwise allowed folders.
 - It makes **no network calls unless you enable the update check** (no Anthropic API, no
   claude.ai, no telemetry). With **Settings → System → Check for updates daily** on (off by
   default), it asks `https://api.github.com/repos/MarawanEldeib/claude-usage-widget/releases/latest`
@@ -24,15 +24,16 @@ Claude Usage Widget is **token-free** and **offline by default**:
 
 ## Files read (read-only)
 
-All reads go through one allowlist; anything not listed here cannot be opened.
+All reads of Claude Code's and Claude Desktop's files go through one allowlist; anything not
+listed here cannot be opened.
 
 | File | What is used |
 |---|---|
 | `%APPDATA%\Claude\plan-usage-history.json` (and MSIX copies under `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) | per-sample time and the 5-hour / weekly percentages. The `org` identifier in that file is only compared in memory (to keep one account's samples) and is never stored, logged or shown. |
 | `%APPDATA%\Claude\claude-code-sessions\**\local_*.json` (Desktop Code tab) | only `cliSessionId`, `model`, `lastFocusedAt`, `lastActivityAt`. The account/org folder names are not stored. |
-| `~/.claude/projects/**/*.jsonl` (Claude Code transcripts; `CLAUDE_CONFIG_DIR` is honoured) | the last 256 KiB (1 MiB if needed) and the first 64 KiB of recent files. Only these fields of assistant lines: `type`, `isSidechain`, `sessionId`, `entrypoint`, `timestamp`, `cwd` (folder name only, shown only if you enable "show project"), `message.model` and `message.usage` token counts; plus the 1M-context marker of the model identity line. **Message content is never parsed or kept.** Files under `subagents` folders are ignored. |
+| `~/.claude/projects/**/*.jsonl` (Claude Code transcripts; `CLAUDE_CONFIG_DIR` is honoured) | the last 256 KiB (1 MiB if needed) and the first 64 KiB (512 KiB if needed) of recent files. Only these fields of assistant lines: `type`, `isSidechain`, `sessionId`, `entrypoint`, `timestamp`, `cwd` (folder name only, shown only if you enable "Show project name"), `message.model` and `message.usage` token counts; plus the 1M-context marker of the model identity line. **Message content is never parsed or kept.** Files under `subagents` folders are ignored. |
 | `%APPDATA%\Claude\local-agent-mode-sessions\**\.claude\projects\**\*.jsonl` (Cowork transcripts) | same as above. Other files in that tree — e.g. a session's `.claude\history.jsonl` prompt history — are not readable. |
-| `~/.claude/settings.json` | only to show the current `statusLine` and to Connect / Disconnect. It is **written** only when you click Connect or Disconnect (or run `--disconnect`). |
+| `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`). |
 | `%LOCALAPPDATA%\ClaudeUsageWidget\**` | the widget's own data (below). |
 
 ## Files written
@@ -41,16 +42,23 @@ All reads go through one allowlist; anything not listed here cannot be opened.
 
 | File | Contents |
 |---|---|
-| `capture\<session_id>.json` | written by the capture shim after you Connect, one per Claude Code session, deleted after 7 days: session id, write/change times, a change fingerprint, `transcript_path`, model id and display name, context-window used % / size / "exceeds 200k" flag, each rate-limit window's used % and reset time, total API duration, Claude Code version. Everything else in the statusline JSON (working directory, workspace, cost, output style, …) is dropped. Note: `transcript_path` contains your Windows user name as part of the path; it stays on your machine. |
-| `capture\_errors.log`, `capture\_diag.log` | at most one short line per shim failure / diagnostic run (names only, never values), size-capped. |
-| `history.jsonl` | usage history for sparklines, burn rate and reset estimation, kept 14 days: time, window (`5h`, `7d`, …), %, reset time, source (`cli`/`desktop`), "estimated" flag. |
-| `state.json` | newest exact reset time per window, the newest Desktop sample already copied into the history, learned model display names (e.g. `claude-opus-5-5 → Opus 5.5`), last maintenance time. |
-| `alerts.json` | which alert thresholds already fired for the current window, so alerts fire once. |
+| `capture\<session_id>.json` | written by the capture helper after you Connect, one per Claude Code session, deleted after 7 days: session id, write/change times, a change fingerprint, `transcript_path`, model id and display name, context-window used % / size / "exceeds 200k" flag, each rate-limit window's used % and reset time (except `spend_limit`, which is dropped), total API duration, Claude Code version. Everything else in the status-line JSON (working directory, workspace, cost, output style, …) is dropped. Note: `transcript_path` contains your Windows user name as part of the path; it stays on your machine. |
+| `capture\_errors.log`, `capture\_diag.log` | at most one short line per helper failure / diagnostic run (names only, never values), size-capped. |
+| `history.jsonl` | usage history for sparklines, burn rate, reset estimation, the History view and the weekly recap, kept 14 days: time, window (`5h`, `7d`, …), %, reset time, source (`cli`/`desktop`), "estimated" flag. |
+| `state.json` | newest exact reset time per window, the newest Desktop sample already copied into the history, learned model display names (e.g. `claude-opus-5-5 → Opus 5.5`), last maintenance time, and which notifications were already shown so a restart does not repeat them: context-% thresholds per session (keyed by an opaque hash of the session id), pace / heads-up alerts per limit window, and the last weekly window recapped. |
+| `alerts.json` | which usage thresholds (e.g. 80% / 95%) already fired for the current window, so alerts fire once. |
+| `positions.json` | while **Settings → Automations → Remember position per display** is on (default): for up to 16 monitor setups, a signature of the setup (monitor positions, sizes and scale factors) and the widget's window rectangle and last-used time there. |
+| `watchdog.json` | while **Settings → Automations → Warn if the connection breaks** is on (default): fingerprints of status-line changes you dismissed (newest 32) and of the one already warned about — never the command itself. |
 | `settings.json` | your widget settings. |
 | `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, and the newer release that check found (version and release page, so the notice survives a restart). |
-| `wrap.json` | after Connect: your original statusline command, so Disconnect can restore it exactly. |
+| `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
-| `bin\cuw-capture.exe` | the capture shim your statusline command points to. |
+| `bin\cuw-capture.exe` | the capture helper your status-line command points to. |
+
+Files are written atomically through a short-lived `.tmp` file next to them. If `history.jsonl`
+cannot be read, a fresh history is started in `history.jsonl.unreadable` (or, if that fails too,
+`%TEMP%\cuw-history-fallback.jsonl`). Connect's self-test writes its test capture to a temporary
+folder.
 
 Other locations:
 
@@ -63,10 +71,10 @@ Other locations:
 
 ## Uninstalling
 
-The uninstaller (Windows Settings → Apps) restores your statusline first — it runs
+The uninstaller (Windows Settings → Apps) restores your status line first — it runs
 `claude-usage-widget.exe --disconnect --quiet` — and removes the "Start with Windows" entry. Ticking
 **"Delete the application data"** also removes `%APPDATA%\io.github.marawaneldeib.claude-usage-widget`,
-`%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget` and, once the statusline no longer
-points at the shim inside it, `%LOCALAPPDATA%\ClaudeUsageWidget`. Updating to a newer version
+`%LOCALAPPDATA%\io.github.marawaneldeib.claude-usage-widget` and, once the status line no longer
+points at the helper inside it, `%LOCALAPPDATA%\ClaudeUsageWidget`. Updating to a newer version
 keeps all of this. If you remove the app by hand instead, Disconnect first (tray → Disconnect
 Claude Code, or `claude-usage-widget.exe --disconnect --quiet`), then delete the folders above.
