@@ -167,7 +167,12 @@ fn valid_override(path: &Path) -> bool {
         Some(Component::RootDir) => !cfg!(windows),
         _ => false,
     };
-    local && path.is_absolute() && !path.components().any(|c| c == Component::ParentDir)
+    // A verbatim (`\\?\`) path is not normalised: its `.` stays a plain component, so compare the
+    // text as well.
+    let dots = |c: Component<'_>| {
+        matches!(c, Component::ParentDir | Component::CurDir) || c.as_os_str() == ".." || c.as_os_str() == "."
+    };
+    local && path.is_absolute() && !path.components().any(dots)
 }
 
 /// `<config_dir>/Claude` on every OS (`%APPDATA%\Claude`, `~/Library/Application Support/Claude`,
@@ -242,6 +247,9 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(data_root_from(Some(r"\rooted-no-drive".into()), local), default);
             assert_eq!(data_root_from(Some(r"C:relative".into()), local), default);
+            // Verbatim paths are not normalised: `.` and `..` there are refused all the same.
+            assert_eq!(data_root_from(Some(r"\\?\C:\x\..\y".into()), local), default);
+            assert_eq!(data_root_from(Some(r"\\?\C:\x\.\y".into()), local), default);
             let verbatim = PathBuf::from(r"\\?\C:\cuw");
             assert_eq!(data_root_from(Some(verbatim.clone().into()), local), verbatim);
         }

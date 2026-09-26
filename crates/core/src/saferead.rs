@@ -19,6 +19,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use crate::paths::Paths;
 
@@ -64,13 +65,23 @@ enum Rule {
     CoworkTranscripts(PathBuf),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SafeReader {
     /// Lexically normalised rules, matched against the requested path.
     rules: Vec<Rule>,
-    /// The same rules with symlinks/junctions in their roots resolved (computed once), matched
-    /// against the resolved target of an existing file.
-    canonical: Vec<Rule>,
+    /// The same rules with symlinks/junctions in their roots resolved, matched against the
+    /// resolved target of an existing file. Computed once, and replaced when resolving them again
+    /// after a miss gives a different result.
+    canonical: RwLock<Vec<Rule>>,
+}
+
+impl Clone for SafeReader {
+    fn clone(&self) -> Self {
+        Self {
+            rules: self.rules.clone(),
+            canonical: RwLock::new(self.canonical_rules().clone()),
+        }
+    }
 }
 
 impl SafeReader {
@@ -86,7 +97,7 @@ impl SafeReader {
             rules.push(Rule::CoworkTranscripts(root.join("local-agent-mode-sessions")));
         }
         let rules: Vec<Rule> = rules.iter().map(|r| r.map(normalize)).collect();
-        let canonical = rules.iter().map(canonical_rule).collect();
+        let canonical = RwLock::new(rules.iter().map(canonical_rule).collect());
         Self { rules, canonical }
     }
 
@@ -106,8 +117,25 @@ impl SafeReader {
     /// `real` (normalised, fully resolved) matches a resolved rule. The cached rules are tried
     /// first; on a miss they are resolved afresh, for a root that appeared after construction.
     fn allows_resolved(&self, real: &Path) -> bool {
-        self.canonical.iter().any(|r| rule_matches(r, real))
-            || self.rules.iter().map(canonical_rule).any(|r| rule_matches(&r, real))
+        if self.canonical_rules().iter().any(|r| rule_matches(r, real)) {
+            return true;
+        }
+        let fresh: Vec<Rule> = self.rules.iter().map(canonical_rule).collect();
+        let allowed = fresh.iter().any(|r| rule_matches(r, real));
+        if allowed {
+            // Keep them, so later reads below that root do not resolve every rule again.
+            *self.canonical.write().unwrap_or_else(PoisonError::into_inner) = fresh;
+        }
+        allowed
+    }
+
+    fn canonical_rules(&self) -> RwLockReadGuard<'_, Vec<Rule>> {
+        self.canonical.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    fn cached_match(&self, real: &Path) -> bool {
+        self.canonical_rules().iter().any(|r| rule_matches(r, real))
     }
 
     /// True if `dir` may be listed (it is, or is inside, an allowed tree root).
@@ -325,7 +353,7 @@ mod tests {
         let f = p.capture_dir().join("s.json");
         std::fs::write(&f, b"{}").unwrap();
         let r = SafeReader::new(&p);
-        assert_eq!(r.rules.len(), r.canonical.len());
+        assert_eq!(r.rules.len(), r.canonical_rules().len());
         assert!(r.allows(&f));
     }
 
@@ -399,6 +427,28 @@ mod tests {
         std::fs::write(&f, b"{}").unwrap();
         assert!(r.allows(&f));
         assert_eq!(r.read(&f, 100).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn rules_resolved_again_after_a_miss_are_kept() {
+        // A missing root component that later appears as a link: the first read resolves the
+        // rules again, and later reads use the refreshed rules instead of resolving every time.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let p = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("later").join("cuw"));
+        let r = SafeReader::new(&p);
+        if !dir_link(&real, &tmp.path().join("later")) {
+            return;
+        }
+        std::fs::create_dir_all(p.capture_dir()).unwrap();
+        let f = p.capture_dir().join("s.json");
+        std::fs::write(&f, b"{}").unwrap();
+        let resolved = normalize(&std::fs::canonicalize(&f).unwrap());
+        assert!(!r.cached_match(&resolved), "stale before the first read");
+        assert!(r.allows(&f));
+        assert!(r.cached_match(&resolved), "the refreshed rules are cached");
+        assert_eq!(r.clone().read(&f, 100).unwrap(), b"{}");
     }
 
     #[test]

@@ -8,7 +8,18 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Raw-read patterns counted in non-test code.
-const PATTERNS: &[&str] = &["File::open(", "fs::read(", "fs::read_to_string(", "fs::read_dir(", ".read(true)"];
+const PATTERNS: &[&str] = &[
+    "File::open(",
+    "fs::read(",
+    "fs::read_to_string(",
+    "fs::read_dir(",
+    "fs::copy(",
+    ".read(true)",
+];
+
+/// `std::fs` functions that read contents (or list a directory). Importing one by name would let a
+/// bare call (`read_dir(x)`) slip past [`PATTERNS`], so non-test code may not import them.
+const READ_FNS: &[&str] = &["read", "read_to_string", "read_dir", "copy"];
 
 /// `(file below src/, pattern, count)`: every raw read the crate is allowed to make.
 const ALLOWED: &[(&str, &str, usize)] = &[
@@ -43,6 +54,49 @@ fn raw_file_reads_are_only_the_documented_exceptions() {
     let allowed: BTreeMap<(String, &str), usize> =
         ALLOWED.iter().map(|&(file, pattern, n)| ((file.to_owned(), pattern), n)).collect();
     assert_eq!(found, allowed, "raw file reads outside SafeReader changed; see the module docs");
+}
+
+#[test]
+fn std_fs_read_functions_are_not_imported_by_name() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for file in rust_files(&src) {
+        let code = without_test_code(&std::fs::read_to_string(&file).unwrap());
+        if imports_read_fn(&code) {
+            offenders.push(file.display().to_string());
+        }
+    }
+    assert!(offenders.is_empty(), "import std::fs::File/fs instead: {offenders:?}");
+}
+
+#[test]
+fn read_fn_imports_are_detected() {
+    assert!(imports_read_fn("use std::fs::read_dir;"));
+    assert!(imports_read_fn("use std::fs::{self, read};"));
+    assert!(imports_read_fn("use std::{fs::{File, read_to_string}, io};"));
+    assert!(imports_read_fn("use std::fs::copy as cp;"));
+    assert!(!imports_read_fn("use std::fs::{self, File, OpenOptions, DirEntry};"));
+    assert!(!imports_read_fn("use std::io::Read;"));
+}
+
+/// True if a `use` declaration of `code` names a [`READ_FNS`] function of `std::fs`.
+fn imports_read_fn(code: &str) -> bool {
+    let mut rest = code;
+    while let Some(at) = rest.find("use ") {
+        let is_keyword = rest[..at].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let stmt = &rest[at..];
+        let stmt = &stmt[..stmt.find(';').unwrap_or(stmt.len())];
+        if is_keyword {
+            if let Some(fs) = stmt.find("fs::") {
+                let names = stmt[fs + 4..].split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+                if names.into_iter().any(|name| READ_FNS.contains(&name)) {
+                    return true;
+                }
+            }
+        }
+        rest = &rest[at + 4..];
+    }
+    false
 }
 
 #[test]
