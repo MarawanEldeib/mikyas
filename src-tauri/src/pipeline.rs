@@ -2,16 +2,23 @@
 //! the UI, the tray and the notifier.
 //!
 //! - File-system events (capture dir, transcripts, Cowork) arrive as [`Msg`]s and are coalesced:
-//!   work starts 250 ms after the last event, and at most 1 s after the first one.
+//!   work starts 250 ms after the last event, and at most 1 s after the first one. A watcher
+//!   error or overflow ([`Msg::Rescan`]) reloads everything.
 //! - The Desktop usage file is polled by mtime every 60 s (Electron churns its data dir, so it is
-//!   never watched), Desktop Code-tab sessions every 30 s, and a full transcript rescan runs
-//!   every 5 min. Every 30 s the snapshot is recomputed anyway (stale flags, reset phases).
+//!   never watched), Desktop Code-tab sessions every 30 s (reparsed only when a file's mtime or
+//!   length changed), and a full transcript rescan runs every 5 min. Every 30 s the snapshot is
+//!   recomputed anyway (stale flags, reset phases) and the captures are reloaded, so a missing or
+//!   dead watcher only delays updates. All periods run on the monotonic clock ([`Schedule`]), so
+//!   a wall-clock jump never stalls them.
 //! - A snapshot is emitted only when it differs from the last one (ignoring `generated_ms`).
-//! - Limit alerts (`alerts.json`) and, when enabled, context alerts over `Snapshot::sessions`
-//!   (persisted in `state.json`) are evaluated on every tick, then the enabled pace alerts and
-//!   weekly recap (hook region [A], state in `state.json`) and finished turns (region [B]).
+//! - Every tick evaluates the limit alerts (`alerts.json`) and, when enabled, context alerts over
+//!   `Snapshot::sessions`, pace alerts, the weekly recap and finished turns (their state lives
+//!   in `state.json`, except the in-memory finished-turn dedupe).
+//! - `history.jsonl` that cannot be opened (e.g. locked by another program) is retried on every
+//!   tick; until then nothing is recorded, and nothing is written anywhere else.
 //!
-//! [`Engine`] holds all state and does no Tauri work, so it is unit-tested against temp dirs.
+//! [`PipelineState`] holds all state and does no Tauri work, so it is unit-tested against temp
+//! dirs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 use cuw_core::alerts::{AlertSettings, AlertState};
 use cuw_core::capture::CaptureRecord;
 use cuw_core::engine::snapshot::{self, EngineInputs};
-use cuw_core::engine::types::{DesktopHealth, SessionView, Snapshot};
+use cuw_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind};
 use cuw_core::history::History;
 use cuw_core::pace_alerts::PaceSettings;
 use cuw_core::paths::Paths;
@@ -32,26 +39,33 @@ use cuw_core::sources::desktop_usage::{self, DesktopUsage};
 use cuw_core::sources::statusline;
 use cuw_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
 use cuw_core::sources::SourceError;
-use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, SECOND_MS, now_ms};
+use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
 use cuw_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 use tauri::{AppHandle, Emitter};
 
-use crate::history_view::local_day_starts;
-use crate::notify::Alert;
+pub use crate::diag::log;
+use crate::localtime::local_day_starts;
+use crate::toast::Alert;
 use crate::settings::Settings;
 use crate::state::{PersistedState, Shared, load_json, lock, save_json};
 
 pub const COALESCE_QUIET: Duration = Duration::from_millis(250);
 pub const COALESCE_MAX: Duration = Duration::from_secs(1);
-pub const RECOMPUTE_EVERY_MS: Ms = 30 * SECOND_MS;
-pub const DESKTOP_POLL_MS: Ms = 60 * SECOND_MS;
-pub const SESSIONS_POLL_MS: Ms = 30 * SECOND_MS;
-pub const FULL_SCAN_MS: Ms = 5 * MINUTE_MS;
+pub const RECOMPUTE_EVERY: Duration = Duration::from_secs(30);
+pub const DESKTOP_POLL: Duration = Duration::from_secs(60);
+pub const SESSIONS_POLL: Duration = Duration::from_secs(30);
+pub const FULL_SCAN: Duration = Duration::from_secs(5 * 60);
 pub const MAINTENANCE_EVERY_MS: Ms = DAY_MS;
 /// Transcripts older than this are not considered for the active session.
 pub const TRANSCRIPT_MAX_AGE_MS: Ms = 7 * DAY_MS;
 /// At most this many transcripts are tracked.
 pub const MAX_TAILS: usize = 40;
+/// Attempts to open `history.jsonl` at startup before running without it for a while.
+const HISTORY_OPEN_ATTEMPTS: u32 = 3;
+/// Local days the weekly recap needs (its window plus the day it started on).
+const RECAP_DAYS: usize = 8;
+/// Depth of Desktop Code-tab session files below a sessions dir (as `desktop_sessions` walks).
+const SESSIONS_MAX_DEPTH: usize = desktop_sessions::MAX_WALK_DEPTH;
 
 /// Pipeline input.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,13 +74,15 @@ pub enum Msg {
     Captures,
     /// A transcript (or Cowork file) changed.
     Transcript(PathBuf),
+    /// The file watcher lost events (error or overflow): reload everything.
+    Rescan,
     /// Settings that affect the snapshot or alerts changed.
     SettingsChanged,
     Shutdown,
 }
 
 /// Which sources to reload on the next tick.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Dirty {
     pub captures: bool,
     pub transcripts: Vec<PathBuf>,
@@ -88,7 +104,7 @@ impl Dirty {
 }
 
 pub struct TickOutput {
-    pub snapshot: Snapshot,
+    pub snapshot: Arc<Snapshot>,
     /// Differs from the previous snapshot (ignoring `generated_ms`).
     pub changed: bool,
     /// Limit alerts first, then context, pace, weekly-recap and finished-turn alerts.
@@ -103,21 +119,41 @@ struct CachedTail {
     identity: HeadIdentity,
 }
 
+/// (path, mtime, length) of every file a poll depends on; a poll reloads only when it changed.
+type Stamp = Vec<(PathBuf, Option<SystemTime>, u64)>;
+
+/// What the weekly recap last looked at: it can only change when the history does, or when the
+/// latest weekly reset time passes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RecapKey {
+    rows: usize,
+    newest_ms: Option<Ms>,
+    /// Latest exact weekly reset known, and whether it had passed.
+    weekly_reset: Option<(Ms, bool)>,
+}
+
 /// All pipeline state; pure except for reading sources and writing its own data files.
-pub struct Engine {
+pub struct PipelineState {
     paths: Paths,
     reader: SafeReader,
     history: History,
+    /// `history` is the real `history.jsonl`; while false it is an empty stand-in that is never
+    /// written, and the real file is retried every tick.
+    history_ok: bool,
     persisted: PersistedState,
     alerts: AlertState,
     captures: Vec<CaptureRecord>,
     tails: HashMap<PathBuf, CachedTail>,
+    /// The tails of `tails`, rebuilt only when a transcript changed.
+    tail_list: Vec<TranscriptTail>,
     desktop: Option<DesktopUsage>,
     desktop_health: DesktopHealth,
-    desktop_stamp: Vec<(PathBuf, Option<SystemTime>, u64)>,
+    desktop_stamp: Stamp,
     desktop_sessions: Vec<DesktopSession>,
+    sessions_stamp: Option<Stamp>,
+    recap_checked: Option<RecapKey>,
     mismatch_since: Option<Ms>,
-    last: Option<Snapshot>,
+    last: Option<Arc<Snapshot>>,
     first_eval: bool,
     /// Turns already reported as finished.
     finished: FinishedTurns,
@@ -125,31 +161,47 @@ pub struct Engine {
     started_ms: Option<Ms>,
 }
 
-impl Engine {
+/// Opens `path`, retrying a few times with a short backoff (another program, e.g. a virus
+/// scanner or a sync client, may hold it briefly). Logs the failure when `log_failure`.
+fn open_history(path: &Path, attempts: u32, log_failure: bool) -> Option<History> {
+    for attempt in 1..=attempts {
+        match History::open(path.to_path_buf()) {
+            Ok(history) => return Some(history),
+            Err(e) if attempt == attempts => {
+                if log_failure {
+                    log(&format!("history.jsonl unreadable ({e}); retrying every tick"));
+                }
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(50 * u64::from(attempt))),
+        }
+    }
+    None
+}
+
+impl PipelineState {
     pub fn new(paths: Paths) -> Self {
         let reader = SafeReader::new(&paths);
-        let history = History::open(paths.history_file()).unwrap_or_else(|e| {
-            log(&format!("history unreadable ({e}); starting a fresh one"));
-            let mut aside = paths.history_file().into_os_string();
-            aside.push(".unreadable");
-            History::open(PathBuf::from(aside)).unwrap_or_else(|_| {
-                History::open(std::env::temp_dir().join("cuw-history-fallback.jsonl"))
-                    .expect("fallback history")
-            })
-        });
+        let (history, history_ok) = match open_history(&paths.history_file(), HISTORY_OPEN_ATTEMPTS, true) {
+            Some(history) => (history, true),
+            None => (empty_history(&paths), false),
+        };
         let persisted: PersistedState = load_json(&paths.state_file());
         let alerts: AlertState = load_json(&paths.alerts_file());
         Self {
             reader,
             history,
+            history_ok,
             persisted,
             alerts,
             captures: Vec::new(),
             tails: HashMap::new(),
+            tail_list: Vec::new(),
             desktop: None,
             desktop_health: DesktopHealth::NotFound,
             desktop_stamp: Vec::new(),
             desktop_sessions: Vec::new(),
+            sessions_stamp: None,
+            recap_checked: None,
             mismatch_since: None,
             last: None,
             first_eval: true,
@@ -163,9 +215,25 @@ impl Engine {
         &self.paths
     }
 
+    /// A snapshot of what is loaded so far (the history only, before the first tick); reads and
+    /// writes nothing.
+    pub fn preview(&self, now: Ms, settings: &Settings) -> Snapshot {
+        self.build(now, settings)
+    }
+
     /// Reloads what `dirty` names, rebuilds the snapshot, records history and evaluates alerts.
     pub fn tick(&mut self, now: Ms, settings: &Settings, dirty: &Dirty) -> TickOutput {
         let before = self.persisted.clone();
+        if !self.history_ok {
+            // Logged once, at startup, not on every retry.
+            if let Some(history) = open_history(&self.paths.history_file(), 1, false) {
+                log("history.jsonl readable again");
+                self.history = history;
+                self.history_ok = true;
+                // Desktop samples not copied in meanwhile are backfilled on this poll.
+                self.desktop_stamp.clear();
+            }
+        }
         if dirty.captures {
             self.reload_captures(now);
         }
@@ -175,12 +243,14 @@ impl Engine {
         for path in &dirty.transcripts {
             self.update_transcript(path, now);
         }
+        if dirty.full_scan || !dirty.transcripts.is_empty() {
+            self.tail_list = self.tails.values().filter_map(|c| c.tail.clone()).collect();
+        }
         if dirty.desktop {
             self.poll_desktop(now);
         }
         if dirty.sessions {
-            self.desktop_sessions =
-                desktop_sessions::load_all(&self.reader, &self.paths.desktop_sessions_dirs());
+            self.poll_desktop_sessions();
         }
 
         if snapshot::account_mismatch_now(&self.captures, self.desktop.as_ref(), now) {
@@ -189,38 +259,13 @@ impl Engine {
             self.mismatch_since = None;
         }
 
-        let tails: Vec<TranscriptTail> = self.tails.values().filter_map(|c| c.tail.clone()).collect();
-        let mut snap = self.build(now, settings, &tails);
-        let mut recorded = false;
-        for w in &snap.windows {
-            match self.history.record(&w.state) {
-                Ok(appended) => recorded |= appended,
-                Err(e) => log(&format!("history append failed: {e}")),
-            }
-        }
-        if recorded {
+        let mut snap = self.build(now, settings);
+        if self.record_history(&snap) {
             // The sparklines should include the value just recorded.
-            snap = self.build(now, settings, &tails);
+            snap = self.build(now, settings);
         }
 
-        let states: Vec<_> = snap.windows.iter().map(|w| w.state.clone()).collect();
-        let alert_settings = AlertSettings {
-            thresholds: settings.thresholds.clone(),
-            notify_reset: settings.notify_reset,
-        };
-        let alerts_before = self.alerts.clone();
-        let mut alerts: Vec<Alert> = self
-            .alerts
-            .evaluate(&states, &alert_settings, self.first_eval)
-            .into_iter()
-            .map(Alert::Limit)
-            .collect();
-        self.first_eval = false;
-        if self.alerts != alerts_before {
-            if let Err(e) = save_json(&self.paths.alerts_file(), &self.alerts) {
-                log(&format!("alerts.json write failed: {e}"));
-            }
-        }
+        let mut alerts = self.limit_alerts(&snap, settings);
         if settings.ctx_alerts {
             let ctx = self
                 .persisted
@@ -228,63 +273,37 @@ impl Engine {
                 .evaluate(&snap.sessions, &settings.ctx_thresholds, now);
             alerts.extend(ctx.into_iter().map(Alert::Context));
         }
-
-        // [A] pace alerts + weekly recap ------------------------------------------------------
-        // Stream alerts owns this region. Their state lives in `self.persisted`, so the
-        // `state.json` save below persists it.
-        let pace = PaceSettings {
-            forecast: settings.pace_alerts,
-            heads_up: settings.reset_heads_up,
-        };
-        if pace.forecast || pace.heads_up {
-            let events = self.persisted.pace_alerts.evaluate(&snap.windows, pace, now);
-            alerts.extend(events.into_iter().map(Alert::Pace));
-        }
-        if settings.weekly_recap {
-            let day_starts = local_day_starts(now.saturating_sub(8 * DAY_MS), now, &chrono::Local);
-            if let Some(recap) = self.persisted.recap.evaluate(&self.history, &day_starts, now) {
-                alerts.push(Alert::Recap(recap));
-            }
-        }
-        // [/A] -----------------------------------------------------------------------------------
+        self.pace_and_recap_alerts(&snap, settings, now, &mut alerts);
 
         if now.saturating_sub(self.persisted.last_maintenance_ms) >= MAINTENANCE_EVERY_MS {
             self.maintenance(now);
         }
 
-        // [B] finished turns -----------------------------------------------------------------
-        // Stream turns owns this region (and `finished_inputs`). Dedupe is in memory only.
-        let started_ms = *self.started_ms.get_or_insert(now);
-        if settings.finished_alerts {
-            let min_duration_ms = Ms::from(settings.finished_min_minutes) * MINUTE_MS;
-            let sessions = self.finished_inputs(&snap);
-            let done = self.finished.observe(&sessions, started_ms, min_duration_ms, now);
-            alerts.extend(done.into_iter().map(Alert::Finished));
-        }
-        // [/B] -----------------------------------------------------------------------------------
+        self.finished_turn_alerts(&snap, settings, now, &mut alerts);
         if self.persisted != before {
             if let Err(e) = save_json(&self.paths.state_file(), &self.persisted) {
                 log(&format!("state.json write failed: {e}"));
             }
         }
 
-        let changed = self.last.as_ref().is_none_or(|last| !same_content(last, &snap));
-        self.last = Some(snap.clone());
+        let changed = self.last.as_deref().is_none_or(|last| !same_content(last, &snap));
+        let snapshot = Arc::new(snap);
+        self.last = Some(snapshot.clone());
         TickOutput {
-            snapshot: snap,
+            snapshot,
             changed,
             alerts,
         }
     }
 
-    fn build(&self, now: Ms, settings: &Settings, tails: &[TranscriptTail]) -> Snapshot {
+    fn build(&self, now: Ms, settings: &Settings) -> Snapshot {
         let exact = self.persisted.exact_resets();
         let inputs = EngineInputs {
             captures: &self.captures,
             desktop: self.desktop.as_ref(),
             desktop_health: &self.desktop_health,
             history: &self.history,
-            tails,
+            tails: &self.tail_list,
             desktop_sessions: &self.desktop_sessions,
             last_exact_resets: &exact,
             learned_names: &self.persisted.learned_models,
@@ -296,9 +315,96 @@ impl Engine {
         snapshot::build_snapshot(&inputs, now)
     }
 
-    /// Each listed session paired with its latest turn, for [`FinishedTurns::observe`].
-    fn finished_inputs(&self, snap: &Snapshot) -> Vec<(FinishedTurn, TurnInfo)> {
-        pair_turns(&snap.sessions, self.tails.values().filter_map(|c| c.tail.as_ref()))
+    /// Appends the snapshot's window states to the history; true when a row was added.
+    fn record_history(&mut self, snap: &Snapshot) -> bool {
+        if !self.history_ok {
+            return false;
+        }
+        let mut recorded = false;
+        for w in &snap.windows {
+            match self.history.record(&w.state) {
+                Ok(appended) => recorded |= appended,
+                Err(e) => log(&format!("history append failed: {e}")),
+            }
+        }
+        recorded
+    }
+
+    /// Threshold and reset alerts (`alerts.json`).
+    fn limit_alerts(&mut self, snap: &Snapshot, settings: &Settings) -> Vec<Alert> {
+        let states: Vec<_> = snap.windows.iter().map(|w| w.state.clone()).collect();
+        let alert_settings = AlertSettings {
+            thresholds: settings.thresholds.clone(),
+            notify_reset: settings.notify_reset,
+        };
+        let alerts_before = self.alerts.clone();
+        let alerts = self
+            .alerts
+            .evaluate(&states, &alert_settings, self.first_eval)
+            .into_iter()
+            .map(Alert::Limit)
+            .collect();
+        self.first_eval = false;
+        if self.alerts != alerts_before {
+            if let Err(e) = save_json(&self.paths.alerts_file(), &self.alerts) {
+                log(&format!("alerts.json write failed: {e}"));
+            }
+        }
+        alerts
+    }
+
+    /// Pace forecasts, reset heads-ups and the weekly recap (state in `self.persisted`).
+    fn pace_and_recap_alerts(&mut self, snap: &Snapshot, settings: &Settings, now: Ms, alerts: &mut Vec<Alert>) {
+        let pace = PaceSettings {
+            forecast: settings.pace_alerts,
+            heads_up: settings.reset_heads_up,
+        };
+        if pace.forecast || pace.heads_up {
+            let events = self.persisted.pace_alerts.evaluate(&snap.windows, pace, now);
+            alerts.extend(events.into_iter().map(Alert::Pace));
+        }
+        if !settings.weekly_recap {
+            // Turned back on, the recap looks again at once.
+            self.recap_checked = None;
+            return;
+        }
+        // The recap scans the whole history; only look again when its answer can have changed.
+        let key = self.recap_key(now);
+        if self.recap_checked == Some(key) {
+            return;
+        }
+        self.recap_checked = Some(key);
+        let day_starts = local_day_starts(now.saturating_sub(RECAP_DAYS as Ms * DAY_MS), now, RECAP_DAYS, &chrono::Local);
+        if let Some(recap) = self.persisted.recap.evaluate(&self.history, &day_starts, now) {
+            alerts.push(Alert::Recap(recap));
+        }
+    }
+
+    fn recap_key(&self, now: Ms) -> RecapKey {
+        let rows = self.history.rows();
+        let weekly_reset = rows
+            .iter()
+            .rev()
+            // As the recap: only exact reset times count, never estimated ones.
+            .filter(|r| !r.e && WindowKind::from_short(&r.w) == WindowKind::SevenDay)
+            .find_map(|r| r.r)
+            .map(|r| (r, r <= now));
+        RecapKey {
+            rows: rows.len(),
+            newest_ms: rows.last().map(|r| r.t),
+            weekly_reset,
+        }
+    }
+
+    /// Long turns that ended (in-memory dedupe; only turns that end after the first tick).
+    fn finished_turn_alerts(&mut self, snap: &Snapshot, settings: &Settings, now: Ms, alerts: &mut Vec<Alert>) {
+        let started_ms = *self.started_ms.get_or_insert(now);
+        if settings.finished_alerts {
+            let min_duration_ms = Ms::from(settings.finished_min_minutes) * MINUTE_MS;
+            let sessions = pair_turns(&snap.sessions, self.tails.values().filter_map(|c| c.tail.as_ref()));
+            let done = self.finished.observe(&sessions, started_ms, min_duration_ms, now);
+            alerts.extend(done.into_iter().map(Alert::Finished));
+        }
     }
 
     fn reload_captures(&mut self, now: Ms) {
@@ -341,11 +447,7 @@ impl Engine {
             self.tails.remove(path);
             return;
         };
-        let modified_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_millis() as Ms);
+        let modified_ms = mtime_ms(meta.modified().ok());
         if now.saturating_sub(modified_ms) > TRANSCRIPT_MAX_AGE_MS {
             return;
         }
@@ -370,36 +472,38 @@ impl Engine {
             return c.clone();
         }
         let mut identity = cached.as_ref().and_then(|c| c.identity.clone());
-        let tail = match transcript::scan_tail(&self.reader, path, &mut identity) {
-            Ok(Some(tail)) => Some(tail),
+        match transcript::scan_tail(&self.reader, path, &mut identity) {
+            Ok(Some(tail)) => CachedTail {
+                modified_ms,
+                len,
+                tail: Some(tail),
+                identity,
+            },
             // A line longer than the tail scan reads (a huge paste or tool result) can follow the
             // last assistant line. While the file only grows, the last tail seen still describes
             // the session; it keeps its timestamp, so the session ages out of the list as usual.
-            Ok(None) => cached.filter(|c| len > c.len).and_then(|c| c.tail),
-            Err(_) => None,
-        };
-        CachedTail {
-            modified_ms,
-            len,
-            tail,
-            identity,
+            Ok(None) => CachedTail {
+                modified_ms,
+                len,
+                tail: cached.filter(|c| len > c.len).and_then(|c| c.tail),
+                identity,
+            },
+            // Unreadable for now (e.g. locked mid-write): keep what was known, with the old
+            // stamps so the next event or scan reads it again. A deleted file is dropped by
+            // `update_transcript` / the full scan.
+            Err(_) => cached.unwrap_or(CachedTail {
+                modified_ms: 0,
+                len: 0,
+                tail: None,
+                identity,
+            }),
         }
     }
 
     /// Reloads the Desktop usage file when any candidate's mtime or length changed.
     /// Samples dated more than `FUTURE_SLACK_MS` after `now` (a clock that ran ahead) are ignored.
     fn poll_desktop(&mut self, now: Ms) {
-        let stamp: Vec<(PathBuf, Option<SystemTime>, u64)> = self
-            .paths
-            .desktop_usage_files()
-            .into_iter()
-            .map(|p| {
-                let meta = std::fs::metadata(&p).ok();
-                let modified = meta.as_ref().and_then(|m| m.modified().ok());
-                let len = meta.map_or(0, |m| m.len());
-                (p, modified, len)
-            })
-            .collect();
+        let stamp = stamp_of(self.paths.desktop_usage_files());
         if stamp == self.desktop_stamp && !self.desktop_stamp.is_empty() {
             return;
         }
@@ -410,12 +514,14 @@ impl Engine {
                 self.desktop_health = DesktopHealth::Ok {
                     last_sample_ms: usage.last_sample_ms,
                 };
-                match self
-                    .history
-                    .backfill_desktop(&usage, self.persisted.desktop_watermark_ms)
-                {
-                    Ok(w) => self.persisted.desktop_watermark_ms = w,
-                    Err(e) => log(&format!("history backfill failed: {e}")),
+                if self.history_ok {
+                    match self
+                        .history
+                        .backfill_desktop(&usage, self.persisted.desktop_watermark_ms)
+                    {
+                        Ok(w) => self.persisted.desktop_watermark_ms = w,
+                        Err(e) => log(&format!("history backfill failed: {e}")),
+                    }
                 }
                 self.desktop = Some(usage);
             }
@@ -437,14 +543,94 @@ impl Engine {
         }
     }
 
+    /// Reparses the Desktop Code-tab session files only when one was added, removed or changed.
+    fn poll_desktop_sessions(&mut self) {
+        let dirs = self.paths.desktop_sessions_dirs();
+        let mut files = Vec::new();
+        for dir in &dirs {
+            session_files(&self.reader, dir, 1, &mut files);
+        }
+        files.sort();
+        let stamp = stamp_of(files);
+        if self.sessions_stamp.as_ref() == Some(&stamp) {
+            return;
+        }
+        self.desktop_sessions = desktop_sessions::load_all(&self.reader, &dirs);
+        self.sessions_stamp = Some(stamp);
+    }
+
     fn maintenance(&mut self, now: Ms) {
         if let Err(e) = statusline::prune(&self.paths.capture_dir(), now) {
             log(&format!("capture prune failed: {e}"));
         }
-        if let Err(e) = self.history.compact(now) {
-            log(&format!("history compact failed: {e}"));
+        if self.history_ok {
+            if let Err(e) = self.history.compact(now) {
+                log(&format!("history compact failed: {e}"));
+            }
         }
         self.persisted.last_maintenance_ms = now;
+    }
+}
+
+/// The stand-in history used while `history.jsonl` cannot be opened: empty, and never written.
+/// Opening a path that does not exist yields an empty history; the path is only ever read.
+fn empty_history(paths: &Paths) -> History {
+    let mut beside = paths.history_file().into_os_string();
+    beside.push(".unopened");
+    let unique = format!("cuw-no-history-{}-{}", std::process::id(), now_ms());
+    let candidates = [
+        PathBuf::from(beside),
+        paths.data_root().join(&unique).join("history.jsonl"),
+        std::env::temp_dir().join(&unique).join("history.jsonl"),
+    ];
+    let mut last_error = None;
+    for path in candidates {
+        match History::open(path) {
+            Ok(history) => return history,
+            Err(e) => last_error = Some(e),
+        }
+    }
+    // A missing file inside a missing directory reads as "not found" everywhere; getting here
+    // would mean the file system refuses even that.
+    panic!("no empty history could be created: {last_error:?}")
+}
+
+fn mtime_ms(modified: Option<SystemTime>) -> Ms {
+    modified
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as Ms)
+}
+
+fn stamp_of(files: Vec<PathBuf>) -> Stamp {
+    files
+        .into_iter()
+        .map(|p| {
+            let meta = std::fs::metadata(&p).ok();
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            let len = meta.map_or(0, |m| m.len());
+            (p, modified, len)
+        })
+        .collect()
+}
+
+/// `local_*.json` files below `dir` (the files `desktop_sessions::load_all` reads), without
+/// following links; only names and metadata are looked at here.
+fn session_files(reader: &SafeReader, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > SESSIONS_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = reader.read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        let path = entry.path();
+        if kind.is_dir() {
+            session_files(reader, &path, depth + 1, out);
+        } else if kind.is_file()
+            && entry.file_name().to_str().is_some_and(|n| n.starts_with("local_"))
+            && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        {
+            out.push(path);
+        }
     }
 }
 
@@ -465,43 +651,92 @@ fn transcript_event_path(path: &Path) -> bool {
             .any(|c| c.as_os_str().eq_ignore_ascii_case("subagents"))
 }
 
-pub fn log(msg: &str) {
-    if cfg!(debug_assertions) {
-        eprintln!("[cuw] {msg}");
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Thread
 
+/// When the periodic work is due, on the monotonic clock.
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    next_recompute: Instant,
+    next_desktop: Instant,
+    next_sessions: Instant,
+    next_full_scan: Instant,
+}
+
+/// What a [`Schedule::take_due`] found due.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Due {
+    /// A tick is due (the 30 s recompute, or a poll).
+    pub tick: bool,
+    /// Re-arm the file watches.
+    pub rearm_watches: bool,
+}
+
+impl Schedule {
+    pub fn new(start: Instant) -> Self {
+        Self {
+            next_recompute: start + RECOMPUTE_EVERY,
+            next_desktop: start + DESKTOP_POLL,
+            next_sessions: start + SESSIONS_POLL,
+            next_full_scan: start + FULL_SCAN,
+        }
+    }
+
+    /// Time until the next periodic job.
+    pub fn wait(&self, now: Instant) -> Duration {
+        [self.next_recompute, self.next_desktop, self.next_sessions, self.next_full_scan]
+            .into_iter()
+            .min()
+            .map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+    }
+
+    /// Marks in `dirty` what is due at `now` and schedules the next run of it.
+    pub fn take_due(&mut self, now: Instant, dirty: &mut Dirty) -> Due {
+        let mut due = Due::default();
+        if now >= self.next_recompute {
+            self.next_recompute = now + RECOMPUTE_EVERY;
+            // Cheap (one read_dir), and keeps limits current when no watcher reports changes.
+            dirty.captures = true;
+            due.tick = true;
+            due.rearm_watches = true;
+        }
+        if now >= self.next_desktop {
+            self.next_desktop = now + DESKTOP_POLL;
+            dirty.desktop = true;
+            due.tick = true;
+        }
+        if now >= self.next_sessions {
+            self.next_sessions = now + SESSIONS_POLL;
+            dirty.sessions = true;
+            due.tick = true;
+        }
+        if now >= self.next_full_scan {
+            self.next_full_scan = now + FULL_SCAN;
+            dirty.full_scan = true;
+            due.tick = true;
+            due.rearm_watches = true;
+        }
+        due
+    }
+}
+
 /// Runs the pipeline until [`Msg::Shutdown`] or the channel closes.
-pub fn run(app: AppHandle, shared: Arc<Shared>, mut engine: Engine, rx: Receiver<Msg>) {
-    let mut watcher = crate::watcher::Watcher::new(shared.clone(), engine.paths().clone());
+pub fn run(app: AppHandle, shared: Arc<Shared>, mut state: PipelineState, rx: Receiver<Msg>) {
+    let mut watcher = crate::watcher::Watcher::new(shared.clone(), state.paths().clone());
     let mut dirty = Dirty::default();
     let mut first_event: Option<Instant> = None;
     let mut last_event = Instant::now();
-    let start = now_ms();
-    let mut next_recompute = start + RECOMPUTE_EVERY_MS;
-    let mut next_desktop = start + DESKTOP_POLL_MS;
-    let mut next_sessions = start + SESSIONS_POLL_MS;
-    let mut next_full_scan = start + FULL_SCAN_MS;
+    let mut schedule = Schedule::new(Instant::now());
 
     loop {
-        let now = now_ms();
-        let periodic_in = [next_recompute, next_desktop, next_sessions, next_full_scan]
-            .into_iter()
-            .min()
-            .unwrap_or(now)
-            .saturating_sub(now)
-            .max(0);
-        let mut timeout = Duration::from_millis(periodic_in as u64);
+        let mut timeout = schedule.wait(Instant::now());
         if let Some(first) = first_event {
             let due = (last_event + COALESCE_QUIET).min(first + COALESCE_MAX);
             timeout = timeout.min(due.saturating_duration_since(Instant::now()));
         }
 
         match rx.recv_timeout(timeout) {
-            Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => break,
             Ok(msg) => {
                 match msg {
                     Msg::Captures => dirty.captures = true,
@@ -510,7 +745,12 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, mut engine: Engine, rx: Receiver
                             dirty.transcripts.push(p);
                         }
                     }
-                    Msg::SettingsChanged | Msg::Shutdown => {}
+                    Msg::Rescan => {
+                        let transcripts = std::mem::take(&mut dirty.transcripts);
+                        dirty = Dirty { transcripts, ..Dirty::all() };
+                    }
+                    Msg::SettingsChanged => {}
+                    Msg::Shutdown => break,
                 }
                 last_event = Instant::now();
                 first_event.get_or_insert(last_event);
@@ -519,36 +759,21 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, mut engine: Engine, rx: Receiver
             Err(RecvTimeoutError::Timeout) => {}
         }
 
-        let now = now_ms();
-        let coalesced_due = first_event.is_some_and(|first| {
-            let n = Instant::now();
-            n >= last_event + COALESCE_QUIET || n >= first + COALESCE_MAX
-        });
-        let periodic_due = now >= next_recompute;
-        if now >= next_desktop {
-            dirty.desktop = true;
-            next_desktop = now + DESKTOP_POLL_MS;
-        }
-        if now >= next_sessions {
-            dirty.sessions = true;
-            next_sessions = now + SESSIONS_POLL_MS;
-        }
-        if now >= next_full_scan {
-            dirty.full_scan = true;
-            next_full_scan = now + FULL_SCAN_MS;
-            watcher.ensure();
-        }
-        if !(coalesced_due || periodic_due || dirty.desktop || dirty.sessions || dirty.full_scan) {
+        let n = Instant::now();
+        let coalesced_due =
+            first_event.is_some_and(|first| n >= last_event + COALESCE_QUIET || n >= first + COALESCE_MAX);
+        let due = schedule.take_due(n, &mut dirty);
+        if !(coalesced_due || due.tick) {
             continue;
         }
-        if periodic_due {
-            next_recompute = now + RECOMPUTE_EVERY_MS;
+        if due.rearm_watches {
             watcher.ensure();
         }
         first_event = None;
 
         let settings = shared.settings().clone();
-        let out = engine.tick(now, &settings, &std::mem::take(&mut dirty));
+        // The wall clock is only the data timestamp; scheduling above never uses it.
+        let out = state.tick(now_ms(), &settings, &std::mem::take(&mut dirty));
         deliver(&app, &shared, out);
     }
 }
@@ -556,16 +781,14 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, mut engine: Engine, rx: Receiver
 /// Publishes a tick's results: snapshot event, tray, notifications.
 pub fn deliver(app: &AppHandle, shared: &Shared, out: TickOutput) {
     for event in &out.alerts {
-        crate::notify::show_alert(app, event);
+        crate::toast::show_alert(app, event);
     }
     if out.changed {
         *lock(&shared.snapshot) = out.snapshot.clone();
         crate::tray::update(app, &out.snapshot);
-        let _ = app.emit("snapshot", &out.snapshot);
+        let _ = app.emit("snapshot", &*out.snapshot);
     }
 }
-
-// ---- [B] helpers
 
 /// Pairs each session view with the turn of its transcript (the newest one when several files
 /// share the session id). The view supplies the toast's project (only set while `show_project`
@@ -664,7 +887,7 @@ mod tests {
         let ts = chrono_like(now - 60_000);
         write_transcript(&paths, "s1", &ts);
 
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let settings = Settings::default();
         let out = engine.tick(now, &settings, &Dirty::all());
         assert!(out.changed);
@@ -695,7 +918,7 @@ mod tests {
     fn transcript_events_update_the_session_and_alerts_fire_once() {
         let (_t, paths) = setup();
         let now = now_ms();
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let settings = Settings::default();
         let first = engine.tick(now, &settings, &Dirty::all());
         assert!(first.snapshot.session.is_none());
@@ -738,7 +961,7 @@ mod tests {
         // 900K tokens: a 1M window (more than 200K were seen), 90% full.
         write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 899_990);
         let settings = Settings::default();
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &settings, &Dirty::all());
         let fired = context_alerts(&out);
         assert_eq!(fired.len(), 1, "{:?}", out.alerts);
@@ -749,7 +972,7 @@ mod tests {
 
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.ctx_alerts.sessions.len(), 1);
-        let mut restarted = Engine::new(paths.clone());
+        let mut restarted = PipelineState::new(paths.clone());
         assert!(restarted.tick(now + 2, &settings, &Dirty::all()).alerts.is_empty(), "no re-fire");
 
         // Turned off: a second session at 90% stays quiet.
@@ -774,7 +997,7 @@ mod tests {
         let now = now_ms();
         // 180K tokens and no capture: 90% of the 200K default, but it may well be a 1M session.
         write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 179_990);
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert!(out.snapshot.sessions[0].ctx_pct.is_some_and(|p| p >= 89.9));
         assert!(context_alerts(&out).is_empty(), "{:?}", out.alerts);
@@ -802,7 +1025,7 @@ mod tests {
             &paths,
             &[(now - 20 * MINUTE_MS, 30, 60), (now - 5 * MINUTE_MS, 31, 61), (now + 3 * DAY_MS, 99, 99)],
         );
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert_eq!(out.snapshot.windows[0].state.pct, 31.0);
         assert_eq!(
@@ -818,7 +1041,7 @@ mod tests {
         let (_t, paths) = setup();
         let now = now_ms();
         write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 499_990); // 50% of 1M
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).alerts.is_empty());
         let low = Settings {
             ctx_thresholds: vec![40, 45],
@@ -833,7 +1056,7 @@ mod tests {
         let (_t, paths) = setup();
         let now = now_ms();
         write_transcript(&paths, "s1", &chrono_like(now - 1_000));
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).changed);
         // An older second session changes only the list, not the header session.
         let path = write_transcript(&paths, "s2", &chrono_like(now - 3_600_000));
@@ -858,8 +1081,8 @@ mod tests {
         let now = now_ms();
         let path = write_transcript(&paths, "s1", &chrono_like(now - 60_000));
         let settings = Settings::default();
-        let mut engine = Engine::new(paths.clone());
-        let before = engine.tick(now, &settings, &Dirty::all()).snapshot.session.expect("session");
+        let mut engine = PipelineState::new(paths.clone());
+        let before = engine.tick(now, &settings, &Dirty::all()).snapshot.session.clone().expect("session");
         let dirty = Dirty {
             transcripts: vec![path.clone()],
             ..Dirty::default()
@@ -895,9 +1118,9 @@ mod tests {
         let identity = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}"#;
         std::fs::write(&path, format!("{identity}\n{}", line("claude-opus-5-5", now - 2_000))).unwrap();
         let settings = Settings::default();
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &settings, &Dirty::all());
-        assert_eq!(out.snapshot.session.map(|s| s.ctx_size), Some(1_000_000));
+        assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(1_000_000));
 
         append(&path, &line("claude-sonnet-5", now - 1_000));
         let dirty = Dirty {
@@ -905,7 +1128,91 @@ mod tests {
             ..Dirty::default()
         };
         let out = engine.tick(now + 1, &settings, &dirty);
-        assert_eq!(out.snapshot.session.map(|s| s.ctx_size), Some(200_000), "identity was for opus");
+        assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(200_000), "identity was for opus");
+    }
+
+    #[test]
+    fn an_unopenable_history_is_retried_and_never_redirected() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        write_desktop(&paths, &[(now - 20 * MINUTE_MS, 30, 60), (now - 5 * MINUTE_MS, 31, 61)]);
+        // A directory where the file should be: every open fails.
+        std::fs::create_dir_all(paths.history_file()).unwrap();
+        let mut engine = PipelineState::new(paths.clone());
+        let out = engine.tick(now, &Settings::default(), &Dirty::all());
+        assert_eq!(out.snapshot.windows[0].state.pct, 31.0, "the widget still works");
+        let names: Vec<String> = std::fs::read_dir(paths.data_root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.starts_with("history.jsonl.")), "{names:?}");
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.desktop_watermark_ms, 0, "nothing was backfilled into a stand-in");
+
+        // The file becomes readable: the next ticks open it and backfill it.
+        std::fs::remove_dir(paths.history_file()).unwrap();
+        engine.tick(now + 1, &Settings::default(), &Dirty::default());
+        engine.tick(now + 2, &Settings::default(), &Dirty { desktop: true, ..Dirty::default() });
+        let history = History::open(paths.history_file()).unwrap();
+        assert!(!history.rows().is_empty(), "rows written to the real file");
+    }
+
+    #[test]
+    fn a_transient_read_error_keeps_the_session() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let path = write_transcript(&paths, "s1", &chrono_like(now - 1_000));
+        let engine = PipelineState::new(paths.clone());
+        let meta = std::fs::metadata(&path).unwrap();
+        let fresh = engine.scan(&path, 5, meta.len(), None);
+        assert!(fresh.tail.is_some());
+        // The same path now fails to read (here: a directory stands in for a locked file).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let kept = engine.scan(&path, 6, meta.len() + 10, Some(fresh.clone()));
+        assert_eq!(kept.tail, fresh.tail, "the last known tail survives");
+        assert_eq!((kept.modified_ms, kept.len), (5, meta.len()), "stamps not advanced: reread next time");
+    }
+
+    #[test]
+    fn desktop_sessions_are_reparsed_only_when_a_file_changed() {
+        let (_t, paths) = setup();
+        let dir = paths.desktop_roots()[0].join("claude-code-sessions").join("acct").join("org");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("local_1.json");
+        std::fs::write(&file, r#"{"cliSessionId":"s1","model":"claude-opus-5-5","lastActivityAt":5}"#).unwrap();
+        let mut engine = PipelineState::new(paths.clone());
+        engine.poll_desktop_sessions();
+        assert_eq!(engine.desktop_sessions.len(), 1);
+        let stamp = engine.sessions_stamp.clone();
+        engine.desktop_sessions.clear(); // marker: an unchanged poll does not reload
+        engine.poll_desktop_sessions();
+        assert!(engine.desktop_sessions.is_empty());
+        assert_eq!(engine.sessions_stamp, stamp);
+        std::fs::write(dir.join("local_2.json"), r#"{"cliSessionId":"s2","lastActivityAt":6}"#).unwrap();
+        engine.poll_desktop_sessions();
+        assert_eq!(engine.desktop_sessions.len(), 2);
+    }
+
+    #[test]
+    fn the_schedule_runs_on_the_monotonic_clock_and_reloads_captures() {
+        let t0 = Instant::now();
+        let mut schedule = Schedule::new(t0);
+        assert_eq!(schedule.wait(t0), RECOMPUTE_EVERY);
+        let mut dirty = Dirty::default();
+        assert_eq!(schedule.take_due(t0 + Duration::from_secs(1), &mut dirty), Due::default());
+        assert_eq!(dirty, Dirty::default());
+
+        let due = schedule.take_due(t0 + RECOMPUTE_EVERY, &mut dirty);
+        assert!(due.tick && due.rearm_watches);
+        assert!(dirty.captures, "captures are reloaded without any watcher event");
+        assert!(dirty.sessions);
+        assert!(!dirty.desktop && !dirty.full_scan);
+        assert_eq!(schedule.wait(t0 + RECOMPUTE_EVERY), RECOMPUTE_EVERY);
+
+        let mut dirty = Dirty::default();
+        schedule.take_due(t0 + FULL_SCAN, &mut dirty);
+        assert_eq!(dirty, Dirty::all());
     }
 
     #[test]
@@ -970,7 +1277,7 @@ mod tests {
                 show_project,
                 ..Settings::default()
             };
-            let mut engine = Engine::new(paths.clone());
+            let mut engine = PipelineState::new(paths.clone());
             let finished = |out: TickOutput| -> Vec<FinishedTurn> {
                 out.alerts
                     .into_iter()
@@ -994,7 +1301,7 @@ mod tests {
             finished_alerts: false,
             ..Settings::default()
         };
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         std::fs::write(&path, format!("{prompt}{working}")).unwrap();
         engine.tick(now, &settings, &Dirty::all());
         append(&path, &turn_line("assistant", now + 30_000, r#""end_turn""#, r#"[{"type":"text"}]"#));
@@ -1051,8 +1358,6 @@ mod tests {
     }
 }
 
-// ---- [A] helpers
-
 #[cfg(test)]
 mod pace_recap_tests {
     use super::*;
@@ -1105,7 +1410,7 @@ mod pace_recap_tests {
             reset_heads_up: false,
             ..Settings::default()
         };
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         assert!(pace(&engine.tick(now, &off, &Dirty::all())).is_empty(), "turned off");
 
         let settings = Settings::default();
@@ -1119,7 +1424,7 @@ mod pace_recap_tests {
 
         let persisted: PersistedState = load_json(&paths.state_file());
         assert!(persisted.pace_alerts.kinds["five_hour"].heads_up_fired_for.is_some());
-        let mut restarted = Engine::new(paths.clone());
+        let mut restarted = PipelineState::new(paths.clone());
         assert!(pace(&restarted.tick(now + 3, &settings, &Dirty::all())).is_empty(), "no re-fire");
     }
 
@@ -1143,7 +1448,7 @@ mod pace_recap_tests {
             weekly_recap: false,
             ..Settings::default()
         };
-        let mut engine = Engine::new(paths.clone());
+        let mut engine = PipelineState::new(paths.clone());
         assert_eq!(recaps(&engine.tick(now, &off, &Dirty::all())), 0);
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.recap.last_recapped_end_ms, None, "off: state untouched");
@@ -1160,7 +1465,36 @@ mod pace_recap_tests {
 
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.recap.last_recapped_end_ms, Some(end));
-        let mut restarted = Engine::new(paths.clone());
+        let mut restarted = PipelineState::new(paths.clone());
         assert_eq!(recaps(&restarted.tick(now + 3, &settings, &Dirty::all())), 0);
+    }
+
+    #[test]
+    fn weekly_recap_fires_when_the_exact_reset_passes_after_an_estimated_row() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let end = now + HOUR_MS;
+        let mut text = String::new();
+        for i in 0..8_i64 {
+            let t = end - 7 * DAY_MS + HOUR_MS + i * 20 * HOUR_MS;
+            text.push_str(&format!(
+                "{{\"t\":{t},\"w\":\"7d\",\"p\":{},\"r\":{end},\"s\":\"cli\",\"e\":false}}\n",
+                10 * (i + 1)
+            ));
+        }
+        // The newest row carries only an estimated reset, which the recap ignores.
+        let estimated = end + 7 * DAY_MS;
+        text.push_str(&format!(
+            "{{\"t\":{},\"w\":\"7d\",\"p\":85,\"r\":{estimated},\"s\":\"desktop\",\"e\":true}}\n",
+            end - 2 * HOUR_MS
+        ));
+        std::fs::create_dir_all(paths.history_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.history_file(), text).unwrap();
+
+        let settings = Settings::default();
+        let mut engine = PipelineState::new(paths.clone());
+        assert_eq!(recaps(&engine.tick(now, &settings, &Dirty::default())), 0, "not reset yet");
+        // No new rows: only the exact reset time passing can make the recap due.
+        assert_eq!(recaps(&engine.tick(end + 1, &settings, &Dirty::default())), 1);
     }
 }

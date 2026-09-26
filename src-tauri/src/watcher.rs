@@ -1,11 +1,14 @@
 //! File-system watches on the capture dir, the Claude Code projects dir and the Cowork session
 //! dirs. Events become pipeline [`Msg`]s; coalescing happens in the pipeline. Directories that do
-//! not exist yet are retried by [`Watcher::ensure`] (the pipeline calls it every 30 s).
+//! not exist yet, or that were removed and created again, are (re)watched by [`Watcher::ensure`]
+//! (the pipeline calls it every 30 s). A watcher error or an overflow ("rescan") event asks the
+//! pipeline to reload everything and makes the next `ensure` set every watch up again.
 //! The Desktop data dir is deliberately NOT watched (Electron churns it); it is polled.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cuw_core::paths::Paths;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -17,14 +20,29 @@ pub struct Watcher {
     inner: Option<RecommendedWatcher>,
     paths: Paths,
     watched: HashSet<PathBuf>,
+    /// Set by the event handler when events may have been lost.
+    broken: Arc<AtomicBool>,
 }
 
 impl Watcher {
     pub fn new(shared: Arc<Shared>, paths: Paths) -> Self {
         let capture_dir = paths.capture_dir();
         let _ = std::fs::create_dir_all(&capture_dir);
+        let broken = Arc::new(AtomicBool::new(false));
+        let flag = broken.clone();
         let handler = move |res: notify::Result<notify::Event>| {
-            let Ok(event) = res else { return };
+            let event = match res {
+                Ok(event) if !event.need_rescan() => event,
+                other => {
+                    if let Err(e) = other {
+                        // The kind only: the error's display lists the paths involved.
+                        log(&format!("file watcher error ({:?}); rescanning", e.kind));
+                    }
+                    flag.store(true, Ordering::SeqCst);
+                    shared.send(Msg::Rescan);
+                    return;
+                }
+            };
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
             }
@@ -45,14 +63,25 @@ impl Watcher {
             inner,
             paths,
             watched: HashSet::new(),
+            broken,
         };
         w.ensure();
         w
     }
 
-    /// Adds watches for directories that exist now and are not watched yet.
+    /// Adds watches for directories that exist now and are not watched yet; after a watcher
+    /// error, sets every watch up again.
     pub fn ensure(&mut self) {
         let Some(inner) = self.inner.as_mut() else { return };
+        let rearm_all = self.broken.swap(false, Ordering::SeqCst);
+        // A watched dir that was deleted (and maybe recreated) no longer reports anything.
+        self.watched.retain(|dir| {
+            let keep = !rearm_all && dir.is_dir();
+            if !keep {
+                let _ = inner.unwatch(dir);
+            }
+            keep
+        });
         let mut wanted = vec![
             (self.paths.capture_dir(), RecursiveMode::NonRecursive),
             (self.paths.projects_dir(), RecursiveMode::Recursive),

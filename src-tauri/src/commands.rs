@@ -20,7 +20,7 @@ type Shr<'a> = State<'a, Arc<Shared>>;
 
 #[tauri::command]
 pub fn get_snapshot(shared: Shr<'_>) -> Snapshot {
-    lock(&shared.snapshot).clone()
+    Snapshot::clone(&lock(&shared.snapshot))
 }
 
 #[tauri::command]
@@ -53,27 +53,43 @@ pub fn toggle_click_through(app: AppHandle, shared: Shr<'_>) {
     apply_click_through_toggle(&app, &shared);
 }
 
-#[tauri::command]
-pub async fn connection_status(shared: Shr<'_>) -> Result<ConnectionStatus, String> {
-    Ok(connect::status(&shared.paths))
+/// Runs file and process work on a blocking worker, never on an async-runtime thread.
+pub async fn blocking<T: Send + 'static>(job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
-/// Async so the shell detection and self-test never block the UI thread.
+#[tauri::command]
+pub async fn connection_status(shared: Shr<'_>) -> Result<ConnectionStatus, String> {
+    let paths = shared.paths.clone();
+    blocking(move || Ok(connect::status(&paths))).await
+}
+
+/// The shell detection and self-test run on a blocking worker (they can take seconds).
 #[tauri::command]
 pub async fn connect_claude_code(shared: Shr<'_>, dry_run: bool) -> Result<ConnectPreview, String> {
-    let _guard = lock(&shared.connect_lock);
-    let env = ConnectEnv::detect(shared.paths.clone());
-    if dry_run {
-        connect::preview(&env, now_ms())
-    } else {
-        connect::connect(&env, now_ms())
-    }
+    let shared = shared.inner().clone();
+    blocking(move || {
+        let _guard = lock(&shared.connect_lock);
+        let env = ConnectEnv::detect(shared.paths.clone());
+        if dry_run {
+            connect::preview(&env, now_ms())
+        } else {
+            connect::connect(&env, now_ms())
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn disconnect_claude_code(shared: Shr<'_>) -> Result<ConnectionStatus, String> {
-    let _guard = lock(&shared.connect_lock);
-    connect::disconnect(&shared.paths, now_ms())
+    let shared = shared.inner().clone();
+    blocking(move || {
+        let _guard = lock(&shared.connect_lock);
+        connect::disconnect(&shared.paths, now_ms())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -105,9 +121,14 @@ pub fn apply_view(app: &AppHandle, shared: &Shared, view: ViewMode) {
     crate::window::set_view(app, from, view);
     shared.ui().view = view;
     if matches!(view, ViewMode::Pill | ViewMode::Card) {
-        let mut s = shared.settings();
-        if s.view != view {
-            s.view = view;
+        let changed = {
+            let mut s = shared.settings();
+            (s.view != view).then(|| {
+                s.view = view;
+                s.clone()
+            })
+        };
+        if let Some(s) = changed {
             save(shared, &s);
         }
     }
@@ -117,11 +138,12 @@ pub fn apply_view(app: &AppHandle, shared: &Shared, view: ViewMode) {
 pub fn apply_pinned(app: &AppHandle, shared: &Shared, pinned: bool) {
     crate::window::set_pinned(app, pinned);
     shared.ui().pinned = pinned;
-    {
+    let s = {
         let mut s = shared.settings();
         s.pinned = pinned;
-        save(shared, &s);
-    }
+        s.clone()
+    };
+    save(shared, &s);
     crate::window::emit_ui(app, shared);
 }
 
@@ -134,16 +156,17 @@ pub fn hide_from_widget(app: &AppHandle, shared: &Shared) {
     crate::visibility::apply(app, shared, Event::UserHide);
     // A show/hide shortcut that failed to register can't bring it back.
     let hotkey_works = shared.ui().toggle_hotkey_error.is_none();
-    let (title, body) = {
+    let s = {
         let mut s = shared.settings();
         if !crate::visibility::hide_hint_due(Event::UserHide, s.hide_hint_shown) {
             return;
         }
         s.hide_hint_shown = true;
-        save(shared, &s);
-        crate::notify::hide_hint_text(if hotkey_works { &s.toggle_hotkey } else { "" })
+        s.clone()
     };
-    crate::notify::show(app, &title, &body);
+    save(shared, &s);
+    let (title, body) = crate::toast::hide_hint_text(if hotkey_works { &s.toggle_hotkey } else { "" });
+    crate::toast::show(app, &title, &body);
 }
 
 /// Ghost mode is never persisted.
@@ -157,24 +180,32 @@ pub fn apply_click_through_toggle(app: &AppHandle, shared: &Shared) {
     crate::fullscreen::wake(app);
 }
 
+/// Validates the patch and runs `side_effect(old, new)` (e.g. the autostart registration), and
+/// only when both succeed replaces the settings: a patch applies completely or not at all.
+fn commit_patch(
+    shared: &Shared,
+    patch: &serde_json::Value,
+    side_effect: impl FnOnce(&Settings, &Settings) -> Result<(), String>,
+) -> Result<(Settings, Settings), String> {
+    let mut s = shared.settings();
+    let old = s.clone();
+    let new = settings::apply_patch(&old, patch)?;
+    side_effect(&old, &new)?;
+    *s = new.clone();
+    Ok((old, new))
+}
+
 /// Validates, persists and applies a settings patch.
 pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json::Value) -> Result<Settings, String> {
-    let (old, new) = {
-        let mut s = shared.settings();
-        let old = s.clone();
-        let new = settings::apply_patch(&old, patch)?;
-        *s = new.clone();
-        (old, new)
-    };
-    if new.start_with_windows != old.start_with_windows {
+    let (old, new) = commit_patch(shared, patch, |old, new| {
+        if new.start_with_windows == old.start_with_windows {
+            return Ok(());
+        }
         let autolaunch = app.autolaunch();
         let result = if new.start_with_windows { autolaunch.enable() } else { autolaunch.disable() };
-        if let Err(e) = result {
-            shared.settings().start_with_windows = old.start_with_windows;
-            return Err(format!("could not change Start with Windows: {e}"));
-        }
-    }
-    save(shared, &shared.settings());
+        result.map_err(|e| format!("could not change Start with Windows: {e}"))
+    })?;
+    save(shared, &new);
     if new.pinned != old.pinned {
         crate::window::set_pinned(app, new.pinned);
         shared.ui().pinned = new.pinned;
@@ -186,11 +217,10 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
     if new.hotkey != old.hotkey {
         crate::hotkey::register_edited(app, shared, crate::hotkey::Action::ClickThrough);
     }
-    // [stream B] appearance hooks (ui_scale, card_rows, dock) go here.
+    // Appearance (ui_scale, card_rows, dock, ...) is applied by the window module.
     crate::window::on_settings_changed(app, shared, &old, &new);
 
-    // [stream C] system hooks (toggle_hotkey, auto_hide_fullscreen, check_updates) go here.
-    // (A changed `hotkey` above already re-registered both shortcuts.)
+    // A changed `hotkey` above already re-registered both shortcuts.
     if new.toggle_hotkey != old.toggle_hotkey && new.hotkey == old.hotkey {
         crate::hotkey::register_edited(app, shared, crate::hotkey::Action::ShowHide);
     }
@@ -205,23 +235,19 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
     if view_patched {
         apply_view(app, shared, new.view);
     }
-    if new.thresholds != old.thresholds
-        || new.notify_reset != old.notify_reset
-        || new.stale_min != old.stale_min
-        || new.ctx_overrides != old.ctx_overrides
-        || new.show_project != old.show_project
-        || new.ctx_alerts != old.ctx_alerts
-        || new.ctx_thresholds != old.ctx_thresholds
-    {
+    // The pipeline reads many settings (snapshot inputs and every alert switch); a tick is
+    // cheap, so any change re-runs it.
+    if new != old {
         shared.send(Msg::SettingsChanged);
     }
     crate::window::emit_ui(app, shared);
     Ok(shared.settings().clone())
 }
 
+/// Callers pass a copy, so the settings lock is not held during the write.
 fn save(shared: &Shared, settings: &Settings) {
     if let Err(e) = settings::save(&shared.paths.settings_file(), settings) {
-        crate::pipeline::log(&format!("settings.json write failed: {e}"));
+        crate::diag::log(&format!("settings.json write failed: {e}"));
     }
 }
 
@@ -231,4 +257,35 @@ pub fn quit(app: &AppHandle, shared: &Shared) {
     let _ = app.save_window_state(StateFlags::POSITION);
     shared.send(Msg::Shutdown);
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::{Dirty, PipelineState};
+    use cuw_core::paths::Paths;
+
+    fn shared() -> (tempfile::TempDir, Shared) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("data"));
+        let out = PipelineState::new(paths.clone()).tick(1_000, &Settings::default(), &Dirty::default());
+        let shared = Shared::new(paths, Settings::default(), Snapshot::clone(&out.snapshot));
+        (tmp, shared)
+    }
+
+    #[test]
+    fn a_failed_side_effect_leaves_the_settings_untouched() {
+        let (_t, shared) = shared();
+        let patch = serde_json::json!({"start_with_windows": true, "opacity": 0.5});
+        let err = commit_patch(&shared, &patch, |_, _| Err("registry refused".into())).unwrap_err();
+        assert_eq!(err, "registry refused");
+        assert_eq!(*shared.settings(), Settings::default(), "nothing of the patch applied");
+
+        let (old, new) = commit_patch(&shared, &patch, |_, _| Ok(())).unwrap();
+        assert_eq!(old, Settings::default());
+        assert!(new.start_with_windows && new.opacity == 0.5);
+        assert_eq!(*shared.settings(), new);
+        assert!(commit_patch(&shared, &serde_json::json!({"pinned": "yes"}), |_, _| Ok(())).is_err());
+        assert_eq!(*shared.settings(), new);
+    }
 }

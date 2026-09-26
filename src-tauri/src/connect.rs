@@ -6,12 +6,17 @@
 //! Connect (real run):
 //! 1. copy the shim sidecar into `<data_root>/bin/` (only when its bytes differ),
 //! 2. compute the edit with `claude_settings::connect`,
-//! 3. back up the current file to `<data_root>/backups/` (newest [`KEEP_BACKUPS`] kept),
+//! 3. back up the current file to `<data_root>/backups/`, redacted (see [`backup`]),
 //! 4. write `wrap.json`, re-read the settings file and only write if it is unchanged since step 2
-//!    (Claude Code writes this file too; retried a few times), atomically (temp + rename),
+//!    (Claude Code writes this file too; retried a few times), atomically (temp + rename). When
+//!    the settings file is not written after all, the previous `wrap.json` is put back,
 //! 5. self-test: run the original and the wrapped command through the detected shell with the
 //!    same synthetic statusline JSON (captures redirected to a temp dir) and compare stdout with
 //!    digits stripped (clocks and timers differ between the two runs).
+//!
+//! A successful Disconnect deletes `wrap.json` and the backups. While connected, the installed
+//! shim is compared byte for byte with the bundled one and rewritten when they differ
+//! ([`refresh_installed_shim`]: after an app update, or when it was changed on disk).
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -21,15 +26,21 @@ use std::time::{Duration, Instant};
 
 use cuw_core::claude_settings::{self, SettingsError, Status, WrapRecord};
 use cuw_core::cmdline::{self, SHIM_EXE_NAME, ShellKind, WrapMode};
-use cuw_core::fingerprint::Fnv64;
 use cuw_core::paths::{CLAUDE_CONFIG_DIR_ENV, DATA_DIR_ENV, Paths};
 use cuw_core::saferead::{ReadError, SafeReader};
-use cuw_core::time::Ms;
+use cuw_core::time::{DAY_MS, Ms};
 use serde::Serialize;
 
 use crate::state::{save_json, write_atomic};
 
-pub const KEEP_BACKUPS: usize = 10;
+/// Backups of Claude Code's `settings.json` kept (newest first) ...
+pub const KEEP_BACKUPS: usize = 3;
+/// ... and never longer than this.
+pub const BACKUP_MAX_AGE_MS: Ms = 30 * DAY_MS;
+/// Replaces secret-looking values in backups.
+pub const REDACTED: &str = "<redacted>";
+/// Replaces secret-looking values in the commands the Connect preview shows.
+pub const MASK: &str = "\u{2022}\u{2022}\u{2022}";
 const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
 const CAS_ATTEMPTS: u32 = 3;
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -43,7 +54,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub enum ConnectionStatus {
     NotConfigured,
     Foreign { command: Option<String> },
-    Connected { mode: WrapMode, original: Option<String> },
+    Connected {
+        mode: WrapMode,
+        original: Option<String>,
+        /// The shim the status line runs (as written in the command); not part of the UI contract.
+        #[serde(skip)]
+        shim_path: String,
+    },
     Error { message: String },
 }
 
@@ -66,10 +83,10 @@ pub struct Shell {
 
 /// Decides which shell Claude Code uses for the statusline command on this machine.
 ///
-/// TODO(diag spike): this mirrors Claude Code's documented Windows behaviour (Git Bash when it is
-/// installed or `CLAUDE_CODE_GIT_BASH_PATH` is set, otherwise PowerShell). It must be confirmed
-/// with `cuw-capture --diag` on a machine with Git Bash and on one without Git Bash / pwsh 7
-/// before release; keep every shell decision inside this one function.
+/// Mirrors Claude Code's documented Windows behaviour: Git Bash when `CLAUDE_CODE_GIT_BASH_PATH`
+/// names it or it is installed in a usual place, else pwsh 7.4+, else Windows PowerShell. A
+/// machine where Claude Code picks differently is caught by the self-test after Connect (and
+/// `cuw-capture --diag` shows the shell actually used); every shell decision stays in here.
 pub fn detect_shell() -> Shell {
     if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH")
         .map(PathBuf::from)
@@ -151,12 +168,17 @@ impl ConnectEnv {
     }
 
     fn installed_shim(&self) -> PathBuf {
-        self.paths.bin_dir().join(SHIM_EXE_NAME)
+        installed_shim(&self.paths)
     }
 
     fn shim_command_path(&self) -> String {
         cmdline::shim_path_for_command(&self.installed_shim())
     }
+}
+
+/// Where Connect installs the shim: `<data_root>/bin/cuw-capture.exe`.
+pub fn installed_shim(paths: &Paths) -> PathBuf {
+    paths.bin_dir().join(SHIM_EXE_NAME)
 }
 
 /// Reads `settings.json` through the allowlist; a missing file reads as empty.
@@ -182,7 +204,7 @@ pub fn status(paths: &Paths) -> ConnectionStatus {
     match claude_settings::status(&bytes) {
         Ok(Status::NotConfigured) => ConnectionStatus::NotConfigured,
         Ok(Status::Foreign { command }) => ConnectionStatus::Foreign { command },
-        Ok(Status::Connected { mode, original, .. }) => ConnectionStatus::Connected { mode, original },
+        Ok(Status::Connected { mode, original, shim_path }) => ConnectionStatus::Connected { mode, original, shim_path },
         Err(e) => ConnectionStatus::Error { message: settings_error(e) },
     }
 }
@@ -208,8 +230,8 @@ pub fn preview(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
         .map_err(|e| e.to_string())?
         .command;
     Ok(ConnectPreview {
-        before: record.original_command,
-        after,
+        before: record.original_command.as_deref().map(mask_secrets),
+        after: mask_secrets(&after),
         shell: env.shell.kind,
         warnings: warnings(&env.paths),
         selftest_ok: None,
@@ -224,34 +246,22 @@ pub fn connect(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
         .ok_or("the capture shim (cuw-capture.exe) was not found next to the app")?;
     install_shim(source, &env.installed_shim()).map_err(|e| format!("cannot install the capture shim: {e}"))?;
     let shim = env.shim_command_path();
-    let settings_path = env.paths.claude_settings();
 
-    let mut record = None;
-    for attempt in 0..CAS_ATTEMPTS {
-        let bytes = read_settings(&env.paths)?;
-        let (next, rec) = claude_settings::connect(&bytes, &shim, env.shell.kind, now).map_err(settings_error)?;
-        let rec = keep_first_record(&env.paths.wrap_file(), rec);
-        if next == bytes {
-            save_json(&env.paths.wrap_file(), &rec).map_err(|e| format!("cannot write wrap.json: {e}"))?;
-            record = Some(rec);
-            break;
-        }
-        if !bytes.is_empty() {
-            backup(&env.paths.backups_dir(), &bytes, now).map_err(|e| format!("backup failed: {e}"))?;
-        }
-        save_json(&env.paths.wrap_file(), &rec).map_err(|e| format!("cannot write wrap.json: {e}"))?;
-        // Compare-and-swap: Claude Code may have rewritten the file meanwhile.
-        if read_settings(&env.paths)? != bytes {
-            if attempt + 1 == CAS_ATTEMPTS {
-                return Err("settings.json keeps changing; try again in a moment".into());
+    let wrap_file = env.paths.wrap_file();
+    let previous_wrap = fs::read(&wrap_file).ok();
+    let result = write_connected(env, &shim, now);
+    if result.is_err() {
+        // settings.json was not changed: leave no record of a connection that did not happen.
+        match &previous_wrap {
+            Some(bytes) => {
+                let _ = write_atomic(&wrap_file, bytes);
             }
-            continue;
+            None => {
+                let _ = fs::remove_file(&wrap_file);
+            }
         }
-        write_atomic(&settings_path, &next).map_err(|e| format!("cannot write settings.json: {e}"))?;
-        record = Some(rec);
-        break;
     }
-    let record = record.ok_or("settings.json keeps changing; try again in a moment")?;
+    let record = result?;
 
     match status(&env.paths) {
         ConnectionStatus::Connected { .. } => {}
@@ -265,12 +275,40 @@ pub fn connect(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
         .selftest
         .then(|| selftest(&env.shell, record.original_command.as_deref(), &after));
     Ok(ConnectPreview {
-        before: record.original_command,
-        after,
+        before: record.original_command.as_deref().map(mask_secrets),
+        after: mask_secrets(&after),
         shell: env.shell.kind,
         warnings: warnings(&env.paths),
         selftest_ok,
     })
+}
+
+/// Steps 2-4 of Connect; returns the record written to `wrap.json`.
+fn write_connected(env: &ConnectEnv, shim: &str, now: Ms) -> Result<WrapRecord, String> {
+    let wrap_file = env.paths.wrap_file();
+    for attempt in 0..CAS_ATTEMPTS {
+        let bytes = read_settings(&env.paths)?;
+        let (next, rec) = claude_settings::connect(&bytes, shim, env.shell.kind, now).map_err(settings_error)?;
+        let rec = keep_first_record(&wrap_file, rec);
+        if next == bytes {
+            save_json(&wrap_file, &rec).map_err(|e| format!("cannot write wrap.json: {e}"))?;
+            return Ok(rec);
+        }
+        if !bytes.is_empty() {
+            backup(&env.paths.backups_dir(), &bytes, now).map_err(|e| format!("backup failed: {e}"))?;
+        }
+        save_json(&wrap_file, &rec).map_err(|e| format!("cannot write wrap.json: {e}"))?;
+        // Compare-and-swap: Claude Code may have rewritten the file meanwhile.
+        if read_settings(&env.paths)? != bytes {
+            if attempt + 1 == CAS_ATTEMPTS {
+                break;
+            }
+            continue;
+        }
+        write_atomic(&env.paths.claude_settings(), &next).map_err(|e| format!("cannot write settings.json: {e}"))?;
+        return Ok(rec);
+    }
+    Err("settings.json keeps changing; try again in a moment".into())
 }
 
 /// A previous record for the same original keeps its exact raw literal (see `claude_settings`).
@@ -285,12 +323,15 @@ fn keep_first_record(wrap_file: &Path, rec: WrapRecord) -> WrapRecord {
     }
 }
 
-/// Undoes Connect. Nothing of ours → unchanged. Returns the resulting status.
+/// Undoes Connect. Nothing of ours → `settings.json` unchanged (a stale `wrap.json` is still
+/// removed). After a successful write, `wrap.json` and the backups are deleted. Returns the
+/// resulting status.
 pub fn disconnect(paths: &Paths, now: Ms) -> Result<ConnectionStatus, String> {
     let wrap: Option<WrapRecord> = fs::read(paths.wrap_file()).ok().and_then(|b| serde_json::from_slice(&b).ok());
     for attempt in 0..CAS_ATTEMPTS {
         let bytes = read_settings(paths)?;
         let Some(next) = claude_settings::disconnect(&bytes, wrap.as_ref()).map_err(settings_error)? else {
+            let _ = fs::remove_file(paths.wrap_file());
             return Ok(status(paths));
         };
         backup(&paths.backups_dir(), &bytes, now).map_err(|e| format!("backup failed: {e}"))?;
@@ -302,27 +343,46 @@ pub fn disconnect(paths: &Paths, now: Ms) -> Result<ConnectionStatus, String> {
         }
         write_atomic(&paths.claude_settings(), &next).map_err(|e| format!("cannot write settings.json: {e}"))?;
         let _ = fs::remove_file(paths.wrap_file());
+        let _ = fs::remove_dir_all(paths.backups_dir());
         return Ok(status(paths));
     }
     Err("settings.json keeps changing; try again in a moment".into())
 }
 
-/// Copies the shim unless an identical copy is already installed.
+/// Copies the shim unless an identical copy (byte for byte) is already installed.
 pub fn install_shim(source: &Path, target: &Path) -> io::Result<bool> {
     let src = fs::read(source)?;
-    if fs::read(target).is_ok_and(|cur| hash(&cur) == hash(&src) && cur.len() == src.len()) {
+    if fs::read(target).is_ok_and(|cur| cur == src) {
         return Ok(false);
     }
     write_atomic(target, &src)?;
     Ok(true)
 }
 
-fn hash(bytes: &[u8]) -> u64 {
-    Fnv64::new().write(bytes).finish()
+/// While Connect's record exists, rewrites the installed shim when it differs from the bundled
+/// `source` (an app update shipped a new one, or the file was changed). Returns whether it wrote.
+/// Fails while Claude Code is running the shim (a running exe cannot be replaced); the next
+/// check retries.
+pub fn refresh_installed_shim(paths: &Paths, source: Option<&Path>) -> io::Result<bool> {
+    let Some(source) = source else { return Ok(false) };
+    if !paths.wrap_file().is_file() {
+        return Ok(false);
+    }
+    install_shim(source, &installed_shim(paths))
 }
 
-/// Writes `settings-<ms>.json` and keeps only the newest [`KEEP_BACKUPS`].
-pub fn backup(dir: &Path, bytes: &[u8], now: Ms) -> io::Result<PathBuf> {
+/// Writes `settings-<ms>.json` with every secret-looking value replaced (see [`redact`]), then
+/// keeps only the newest [`KEEP_BACKUPS`] no older than [`BACKUP_MAX_AGE_MS`]. Bytes that are not
+/// JSON are not backed up at all (`Ok(None)`): the raw file could hold keys.
+pub fn backup(dir: &Path, bytes: &[u8], now: Ms) -> io::Result<Option<PathBuf>> {
+    let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(text) else {
+        prune_backups(dir, now);
+        return Ok(None);
+    };
+    redact(&mut value, false);
+    let mut out = serde_json::to_vec_pretty(&value).map_err(io::Error::other)?;
+    out.push(b'\n');
     fs::create_dir_all(dir)?;
     let mut path = dir.join(format!("settings-{now:015}.json"));
     let mut n = 1;
@@ -330,22 +390,122 @@ pub fn backup(dir: &Path, bytes: &[u8], now: Ms) -> io::Result<PathBuf> {
         path = dir.join(format!("settings-{now:015}-{n}.json"));
         n += 1;
     }
-    write_atomic(&path, bytes)?;
-    let mut backups: Vec<PathBuf> = fs::read_dir(dir)?
+    write_atomic(&path, &out)?;
+    prune_backups(dir, now);
+    Ok(Some(path))
+}
+
+/// Deletes all but the newest [`KEEP_BACKUPS`] backups, and any older than [`BACKUP_MAX_AGE_MS`].
+fn prune_backups(dir: &Path, now: Ms) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut backups: Vec<(PathBuf, Option<Ms>)> = entries
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("settings-") && n.ends_with(".json"))
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let stem = name.strip_prefix("settings-")?.strip_suffix(".json")?;
+            let ms = stem.split('-').next().and_then(|t| t.parse::<Ms>().ok());
+            Some((e.path(), ms))
         })
         .collect();
     backups.sort();
     let excess = backups.len().saturating_sub(KEEP_BACKUPS);
-    for old in &backups[..excess] {
-        let _ = fs::remove_file(old);
+    for (i, (path, ms)) in backups.iter().enumerate() {
+        let too_old = ms.is_some_and(|t| now.saturating_sub(t) > BACKUP_MAX_AGE_MS);
+        if i < excess || too_old {
+            let _ = fs::remove_file(path);
+        }
     }
-    Ok(path)
+}
+
+/// Key names whose values are treated as secrets.
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["key", "token", "secret", "password", "passwd", "auth", "credential", "cookie"]
+        .iter()
+        .any(|w| key.contains(w))
+}
+
+/// Replaces every value under an `env` object, and every scalar whose key looks secret
+/// (`apiKeyHelper`, `awsAuthRefresh`, `…_TOKEN`, `password`, …), with [`REDACTED`].
+fn redact(value: &mut serde_json::Value, secret: bool) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let env = k.eq_ignore_ascii_case("env");
+                redact(v, secret || env || is_secret_key(k));
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| redact(v, secret)),
+        Value::Null => {}
+        _ if secret => *value = Value::String(REDACTED.into()),
+        _ => {}
+    }
+}
+
+/// The command with secret-looking values replaced by [`MASK`], for display only: the value of
+/// `NAME=value` / `$env:NAME = "value"` where NAME looks secret (see [`is_secret_key`]), the
+/// token after `Bearer `, and the rest of an `sk-ant-` key.
+pub fn mask_secrets(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    loop {
+        let Some((start, len)) = next_secret(rest) else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(MASK);
+        rest = &rest[start + len..];
+    }
+}
+
+/// Start and length of the first secret value in `s`.
+fn next_secret(s: &str) -> Option<(usize, usize)> {
+    let lower = s.to_ascii_lowercase();
+    let mut best: Option<(usize, usize)> = None;
+    let mut consider = |start: usize, len: usize| {
+        if len > 0 && best.is_none_or(|(b, _)| start < b) {
+            best = Some((start, len));
+        }
+    };
+    for marker in ["sk-ant-", "bearer "] {
+        if let Some(at) = lower.find(marker) {
+            let start = at + marker.len();
+            consider(start, value_len(&s[start..]));
+        }
+    }
+    // NAME=value (PowerShell allows spaces around the `=`); `==` is a comparison.
+    for (i, _) in s.match_indices('=') {
+        let after = &s[i + 1..];
+        if after.starts_with('=') || s[..i].ends_with(['=', '!', '<', '>']) {
+            continue;
+        }
+        let name_end = s[..i].trim_end().len();
+        let name_start = s[..name_end]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |p| p + 1);
+        if !is_secret_key(&s[name_start..name_end]) {
+            continue;
+        }
+        let start = i + 1 + (after.len() - after.trim_start().len());
+        let len = value_len(&s[start..]);
+        if len > 0 {
+            consider(start, len);
+            break;
+        }
+    }
+    best
+}
+
+/// Length of the (possibly quoted) value at the start of `s`.
+fn value_len(s: &str) -> usize {
+    match s.chars().next() {
+        Some(q @ ('"' | '\'')) => s[1..].find(q).map_or(s.len(), |end| end + 2),
+        _ => s
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '"' | '\'' | ')'))
+            .unwrap_or(s.len()),
+    }
 }
 
 // ---- self-test ----
@@ -457,24 +617,29 @@ fn run_with_timeout(mut cmd: Command, input: Option<&[u8]>, timeout: Duration) -
         });
     }
     let mut stdout = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
-    let reader = std::thread::spawn(move || {
+    // The reader hands its buffer over a channel: a grandchild that inherited the pipe can keep
+    // it open long after the child exited, and a join would wait for it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     });
-    let start = Instant::now();
+    let deadline = Instant::now() + timeout;
+    let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "timed out");
     loop {
         if child.try_wait()?.is_some() {
             break;
         }
-        if start.elapsed() > timeout {
+        if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+            return Err(timed_out());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let stdout = reader.join().unwrap_or_default();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let stdout = rx.recv_timeout(remaining).map_err(|_| timed_out())?;
     Ok(Output { stdout })
 }
 
@@ -554,8 +719,7 @@ mod tests {
         assert!(!env.paths.wrap_file().exists());
         // Nothing to undo now.
         assert_eq!(disconnect(&env.paths, 4_000).unwrap(), st);
-        let backups = fs::read_dir(env.paths.backups_dir()).unwrap().count();
-        assert_eq!(backups, 2, "one backup per write");
+        assert!(backup_names(&env.paths.backups_dir()).is_empty(), "deleted after the disconnect");
     }
 
     #[test]
@@ -594,19 +758,160 @@ mod tests {
         assert_eq!(fs::read(&dst).unwrap(), b"v2");
     }
 
+    fn backup_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|d| d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn backups_keep_newest_ten() {
+    fn backups_keep_the_newest_three() {
         let tmp = tempfile::tempdir().unwrap();
         for i in 0..13 {
-            backup(tmp.path(), b"x", 1_000 + i).unwrap();
+            backup(tmp.path(), b"{}", 1_000 + i).unwrap();
         }
-        let mut names: Vec<String> = fs::read_dir(tmp.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
+        let names = backup_names(tmp.path());
         assert_eq!(names.len(), KEEP_BACKUPS);
-        assert_eq!(names[0], "settings-000000000001003.json");
+        assert_eq!(KEEP_BACKUPS, 3);
+        assert_eq!(names[0], "settings-000000000001010.json");
+    }
+
+    #[test]
+    fn backups_older_than_thirty_days_are_pruned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = 100 * cuw_core::time::DAY_MS;
+        backup(tmp.path(), b"{}", now - 31 * cuw_core::time::DAY_MS).unwrap();
+        backup(tmp.path(), b"{}", now - 29 * cuw_core::time::DAY_MS).unwrap();
+        backup(tmp.path(), b"{}", now).unwrap();
+        let names = backup_names(tmp.path());
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(names[1], format!("settings-{now:015}.json"));
+    }
+
+    #[test]
+    fn backups_never_keep_secrets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = br#"{
+  "env": {"FOO_TOKEN": "PLACEHOLDER-A", "PLAIN": "PLACEHOLDER-B", "N": 5},
+  "apiKeyHelper": "PLACEHOLDER-C",
+  "awsAuthRefresh": "PLACEHOLDER-D",
+  "nested": {"Password": "PLACEHOLDER-E", "list": [{"client_secret": "PLACEHOLDER-F"}]},
+  "statusLine": {"type": "command", "command": "my-line"},
+  "theme": "dark"
+}"#;
+        let path = backup(tmp.path(), settings, 1).unwrap().expect("written");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("PLACEHOLDER"), "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["env"]["FOO_TOKEN"], REDACTED);
+        assert_eq!(v["env"]["PLAIN"], REDACTED, "every env value");
+        assert_eq!(v["env"]["N"], REDACTED);
+        assert_eq!(v["apiKeyHelper"], REDACTED);
+        assert_eq!(v["nested"]["list"][0]["client_secret"], REDACTED);
+        assert_eq!(v["statusLine"]["command"], "my-line", "what a restore needs is kept");
+        assert_eq!(v["theme"], "dark");
+        // Not JSON: nothing is written rather than the raw bytes.
+        assert_eq!(backup(tmp.path(), b"{ // jsonc", 2).unwrap(), None);
+        assert_eq!(backup_names(tmp.path()).len(), 1);
+    }
+
+    #[test]
+    fn a_successful_disconnect_deletes_the_backups() {
+        let (_t, env) = setup(Some(ORIGINAL));
+        connect(&env, 1_000).unwrap();
+        assert_eq!(backup_names(&env.paths.backups_dir()).len(), 1);
+        disconnect(&env.paths, 2_000).unwrap();
+        assert!(backup_names(&env.paths.backups_dir()).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)] // Windows only: clears the read-only attribute
+    fn a_failed_connect_leaves_no_wrap_json() {
+        let (_t, env) = setup(Some(ORIGINAL));
+        let settings = env.paths.claude_settings();
+        let mut perms = fs::metadata(&settings).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&settings, perms.clone()).unwrap();
+        let result = connect(&env, 1_000);
+        perms.set_readonly(false);
+        fs::set_permissions(&settings, perms).unwrap();
+        assert!(result.is_err());
+        assert!(!env.paths.wrap_file().exists(), "no record of a connect that did not happen");
+        assert_eq!(fs::read_to_string(&settings).unwrap(), ORIGINAL);
+    }
+
+    #[test]
+    fn disconnect_clears_a_stale_wrap_json() {
+        let (_t, env) = setup(Some(ORIGINAL));
+        connect(&env, 1_000).unwrap();
+        // Someone else put their own status line back: nothing of ours to undo, but the stale
+        // record (which makes the watchdog warn) goes.
+        fs::write(env.paths.claude_settings(), ORIGINAL).unwrap();
+        assert!(matches!(disconnect(&env.paths, 2_000).unwrap(), ConnectionStatus::Foreign { .. }));
+        assert!(!env.paths.wrap_file().exists());
+    }
+
+    #[test]
+    fn installed_shim_is_refreshed_while_connected() {
+        let (tmp, env) = setup(Some(ORIGINAL));
+        let source = env.shim_source.clone().unwrap();
+        let installed = installed_shim(&env.paths);
+        // Not connected: nothing is installed.
+        assert!(!refresh_installed_shim(&env.paths, Some(&source)).unwrap());
+        assert!(!installed.exists());
+        connect(&env, 1_000).unwrap();
+        assert!(!refresh_installed_shim(&env.paths, Some(&source)).unwrap(), "identical");
+        // An app update ships a new shim, or the installed one was tampered with.
+        fs::write(&installed, b"fake shim, tampered").unwrap();
+        assert!(refresh_installed_shim(&env.paths, Some(&source)).unwrap());
+        assert_eq!(fs::read(&installed).unwrap(), b"fake shim");
+        assert!(!refresh_installed_shim(&env.paths, None).unwrap(), "no sidecar: nothing to do");
+        drop(tmp);
+    }
+
+    #[test]
+    fn previews_mask_secret_looking_values() {
+        assert_eq!(mask_secrets("my-line --flag"), "my-line --flag");
+        assert_eq!(
+            mask_secrets("API_KEY=PLACEHOLDER npx line"),
+            format!("API_KEY={MASK} npx line")
+        );
+        assert_eq!(
+            mask_secrets(r#"$env:MY_TOKEN="PLACEHOLDER"; line"#),
+            format!("$env:MY_TOKEN={MASK}; line")
+        );
+        assert_eq!(
+            mask_secrets("my-line --auth 'Bearer PLACEHOLDER' x"),
+            format!("my-line --auth 'Bearer {MASK}' x")
+        );
+        assert_eq!(mask_secrets("run sk-ant-PLACEHOLDER end"), format!("run sk-ant-{MASK} end"));
+        assert_eq!(mask_secrets("VERSION=2 line"), "VERSION=2 line");
+        assert_eq!(
+            mask_secrets("A_KEY=;MY_TOKEN=PLACEHOLDER line"),
+            format!("A_KEY=;MY_TOKEN={MASK} line"),
+            "an empty value does not end the search"
+        );
+        let (_t, env) = setup(Some(
+            r#"{"statusLine":{"type":"command","command":"SECRET=PLACEHOLDER my-line"}}"#,
+        ));
+        let p = preview(&env, 1).unwrap();
+        assert_eq!(p.before, Some(format!("SECRET={MASK} my-line")));
+        assert!(!p.after.contains("PLACEHOLDER"), "{}", p.after);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_grandchild_holding_stdout_does_not_block_past_the_timeout() {
+        let comspec = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let mut cmd = Command::new(comspec);
+        // The child exits at once; the background ping keeps the stdout pipe open for ~6 s.
+        cmd.args(["/d", "/c", "start /b ping -n 7 127.0.0.1"]);
+        let start = Instant::now();
+        let _ = run_with_timeout(cmd, None, Duration::from_millis(1_500));
+        assert!(start.elapsed() < Duration::from_secs(4), "{:?}", start.elapsed());
     }
 
     #[test]
@@ -634,6 +939,7 @@ mod tests {
         let s = serde_json::to_value(ConnectionStatus::Connected {
             mode: WrapMode::PipeGrouped,
             original: None,
+            shim_path: "C:/x/cuw-capture.exe".into(),
         })
         .unwrap();
         assert_eq!(s, serde_json::json!({"state":"connected","mode":"pipe_grouped","original":null}));

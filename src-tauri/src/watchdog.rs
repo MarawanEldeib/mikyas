@@ -3,10 +3,16 @@
 //!
 //! - Runs while `settings.connection_watchdog` is on. Checks at startup, when Claude Code's
 //!   `settings.json` changes (its directory is watched read-only and only that file's events
-//!   count; bursts are debounced) and every 5 min.
-//! - Lost = `wrap.json` says we connected, and `connect::status` is `NotConfigured` or `Foreign`.
+//!   count; bursts are debounced) and every 5 min. While it is off, the watch is dropped and the
+//!   thread only wakes for a setting change or shutdown.
+//! - Lost = `wrap.json` says we connected, and the status line is not ours any more: no status
+//!   line, someone else's command, or a `cuw-capture.exe` wrapper that runs a different shim
+//!   than `<data_root>/bin/cuw-capture.exe` or feeds a different command than the one recorded.
 //!   An unreadable or non-strict file (`Error`) says nothing either way, so the state is kept.
 //!   Disconnect removes `wrap.json`, so a deliberate disconnect never warns.
+//! - Every check (on or off) also rewrites the installed shim when it differs from the bundled
+//!   one while connected ([`connect::refresh_installed_shim`]): app updates reach it, and a
+//!   changed file is replaced.
 //! - The "change" is a fingerprint of the status line command now in the file (never the text).
 //!   A lost connection sets `UiState.connection_lost` (emits `ui-state`) and raises one
 //!   [`Alert::ConnectionLost`] toast per change; the warned fingerprint lives in
@@ -29,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::connect::{self, ConnectionStatus};
-use crate::notify::Alert;
+use crate::toast::Alert;
 use crate::state::{Shared, load_json, lock, save_json};
 
 /// Periodic re-check (a missed file event, or a watch that could not be set up).
@@ -80,12 +86,40 @@ pub fn change_id(command: Option<&str>) -> String {
     format!("{:016x}", Fnv64::new().write_str("statusline").write_opt_str(command).finish())
 }
 
-pub fn observe(wrapped: bool, status: &ConnectionStatus) -> Observed {
-    if !wrapped {
+/// Fingerprint of a `cuw-capture.exe` wrapper that is not ours.
+fn wrapper_change_id(shim_path: &str, original: Option<&str>) -> String {
+    format!(
+        "{:016x}",
+        Fnv64::new().write_str("wrapper").write_str(shim_path).write_opt_str(original).finish()
+    )
+}
+
+/// How long the thread sleeps between checks (`None`: until woken).
+pub fn wait_for(enabled: bool) -> Option<Duration> {
+    enabled.then_some(RECHECK)
+}
+
+/// Same file path as written in a command (case and slashes ignored, as Windows does).
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// `record`: `wrap.json` (`None`: never connected). `expected_shim`: our installed shim as a
+/// command writes it.
+pub fn observe(record: Option<&WrapRecord>, expected_shim: &str, status: &ConnectionStatus) -> Observed {
+    let Some(record) = record else {
         return Observed::NotWrapped;
-    }
+    };
     match status {
-        ConnectionStatus::Connected { .. } => Observed::Connected,
+        ConnectionStatus::Connected { shim_path, original, .. } => {
+            let ours = same_path(shim_path, expected_shim) && same_path(&record.shim_path, expected_shim);
+            if ours && *original == record.original_command {
+                Observed::Connected
+            } else {
+                Observed::Changed(wrapper_change_id(shim_path, original.as_deref()))
+            }
+        }
         ConnectionStatus::NotConfigured => Observed::Changed(change_id(None)),
         ConnectionStatus::Foreign { command } => Observed::Changed(change_id(command.as_deref())),
         ConnectionStatus::Error { .. } => Observed::Unknown,
@@ -128,16 +162,20 @@ pub fn decide(observed: &Observed, enabled: bool, file: &WatchdogFile) -> Outcom
     }
 }
 
-fn wrapped(paths: &Paths) -> bool {
-    std::fs::read(paths.wrap_file())
-        .ok()
-        .is_some_and(|b| serde_json::from_slice::<WrapRecord>(&b).is_ok())
+fn wrap_record(paths: &Paths) -> Option<WrapRecord> {
+    std::fs::read(paths.wrap_file()).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// [`observe`] of what is on disk now.
+fn observe_paths(paths: &Paths) -> Observed {
+    let expected = cuw_core::cmdline::shim_path_for_command(&connect::installed_shim(paths));
+    observe(wrap_record(paths).as_ref(), &expected, &connect::status(paths))
 }
 
 /// Observes under the connect lock, so a Connect or Disconnect in progress is never half-seen.
 fn observe_now(shared: &Shared) -> Observed {
     let _guard = lock(&shared.connect_lock);
-    observe(wrapped(&shared.paths), &connect::status(&shared.paths))
+    observe_paths(&shared.paths)
 }
 
 /// Serialises the load → change → save of `watchdog.json` (the watchdog thread and a Dismiss
@@ -150,12 +188,24 @@ fn file_path(paths: &Paths) -> PathBuf {
 
 fn save(path: &Path, file: &WatchdogFile) {
     if let Err(e) = save_json(path, file) {
-        crate::pipeline::log(&format!("watchdog.json write failed: {e}"));
+        crate::diag::log(&format!("watchdog.json write failed: {e}"));
+    }
+}
+
+/// Rewrites the installed shim if it differs from the bundled one while connected.
+fn refresh_shim(shared: &Shared) {
+    let _guard = lock(&shared.connect_lock);
+    match connect::refresh_installed_shim(&shared.paths, connect::find_sidecar().as_deref()) {
+        Ok(true) => crate::diag::log("installed capture shim differed from the bundled one; replaced it"),
+        Ok(false) => {}
+        // Typically in use by Claude Code right now; the next check retries.
+        Err(e) => crate::diag::log(&format!("capture shim refresh failed: {e}")),
     }
 }
 
 /// One check: updates the flag (emitting `ui-state` when it changes) and toasts a new change.
 fn check(app: &AppHandle, shared: &Shared) {
+    refresh_shim(shared);
     let enabled = shared.settings().connection_watchdog;
     let observed = if enabled { observe_now(shared) } else { Observed::Unknown };
     let path = file_path(&shared.paths);
@@ -183,7 +233,7 @@ fn check(app: &AppHandle, shared: &Shared) {
     let first_time = outcome.toast && lock(&LAST_TOASTED).as_ref() != outcome.warned.as_ref();
     if first_time {
         lock(&LAST_TOASTED).clone_from(&outcome.warned);
-        crate::notify::show_alert(app, &Alert::ConnectionLost);
+        crate::toast::show_alert(app, &Alert::ConnectionLost);
     }
 }
 
@@ -236,7 +286,7 @@ fn watch(paths: &Paths, tx: &Sender<()>) -> Option<RecommendedWatcher> {
         }
     };
     let mut watcher = notify::recommended_watcher(handler)
-        .inspect_err(|e| crate::pipeline::log(&format!("watchdog: file watch unavailable ({e})")))
+        .inspect_err(|e| crate::diag::log(&format!("watchdog: file watch unavailable ({e})")))
         .ok()?;
     watcher.watch(&dir, RecursiveMode::NonRecursive).ok()?;
     Some(watcher)
@@ -248,17 +298,28 @@ fn run(app: &AppHandle, shared: &Shared, tx: &Sender<()>, rx: &Receiver<()>) {
         if shared.quitting.load(Ordering::SeqCst) {
             break;
         }
-        if watcher.is_none() && shared.settings().connection_watchdog {
+        let enabled = shared.settings().connection_watchdog;
+        if !enabled {
+            watcher = None;
+        } else if watcher.is_none() {
             watcher = watch(&shared.paths, tx);
         }
         check(app, shared);
-        match rx.recv_timeout(RECHECK) {
-            Ok(()) => {
-                // Let a burst of writes settle.
-                while rx.recv_timeout(DEBOUNCE).is_ok() {}
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+        let woken = match wait_for(enabled) {
+            Some(timeout) => match rx.recv_timeout(timeout) {
+                Ok(()) => true,
+                Err(RecvTimeoutError::Timeout) => false,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            // Off: sleep until the setting changes (`wake`) or the app quits.
+            None => match rx.recv() {
+                Ok(()) => true,
+                Err(_) => break,
+            },
+        };
+        if woken {
+            // Let a burst of writes settle.
+            while rx.recv_timeout(DEBOUNCE).is_ok() {}
         }
     }
 }
@@ -276,12 +337,17 @@ fn dismiss(shared: &Shared) {
     shared.ui().connection_lost = false;
 }
 
-/// The banner's Dismiss. Async: the connect lock may be held by a Connect's self-test.
+/// The banner's Dismiss. On a blocking worker: the connect lock may be held by a Connect's
+/// self-test.
 #[tauri::command]
 pub async fn dismiss_connection_warning(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
-    dismiss(&shared);
-    crate::window::emit_ui(&app, &shared);
-    Ok(())
+    let shared = shared.inner().clone();
+    crate::commands::blocking(move || {
+        dismiss(&shared);
+        crate::window::emit_ui(&app, &shared);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -289,10 +355,25 @@ mod tests {
     use super::*;
     use cuw_core::cmdline::WrapMode;
 
+    const SHIM: &str = "C:/data/bin/cuw-capture.exe";
+
     fn connected() -> ConnectionStatus {
         ConnectionStatus::Connected {
             mode: WrapMode::Pipe,
             original: None,
+            shim_path: SHIM.into(),
+        }
+    }
+
+    fn record(original: Option<&str>) -> WrapRecord {
+        WrapRecord {
+            original_command: original.map(Into::into),
+            original_command_raw: original.map(|o| format!("{o:?}")),
+            empty_object_ws: None,
+            shim_path: SHIM.into(),
+            mode: WrapMode::Pipe,
+            shell: cuw_core::cmdline::ShellKind::Bash,
+            at_ms: 1,
         }
     }
 
@@ -304,13 +385,92 @@ mod tests {
 
     #[test]
     fn observes_only_what_connect_had_wrapped() {
-        assert_eq!(observe(false, &foreign("x")), Observed::NotWrapped);
-        assert_eq!(observe(false, &ConnectionStatus::NotConfigured), Observed::NotWrapped);
-        assert_eq!(observe(true, &connected()), Observed::Connected);
-        assert_eq!(observe(true, &foreign("x")), Observed::Changed(change_id(Some("x"))));
-        assert_eq!(observe(true, &ConnectionStatus::NotConfigured), Observed::Changed(change_id(None)));
+        let rec = record(None);
+        let wrapped = Some(&rec);
+        assert_eq!(observe(None, SHIM, &foreign("x")), Observed::NotWrapped);
+        assert_eq!(observe(None, SHIM, &ConnectionStatus::NotConfigured), Observed::NotWrapped);
+        assert_eq!(observe(wrapped, SHIM, &connected()), Observed::Connected);
+        assert_eq!(observe(wrapped, r"c:\DATA\bin\CUW-capture.exe", &connected()), Observed::Connected);
+        assert_eq!(observe(wrapped, SHIM, &foreign("x")), Observed::Changed(change_id(Some("x"))));
+        assert_eq!(observe(wrapped, SHIM, &ConnectionStatus::NotConfigured), Observed::Changed(change_id(None)));
         let err = ConnectionStatus::Error { message: "JSONC".into() };
-        assert_eq!(observe(true, &err), Observed::Unknown);
+        assert_eq!(observe(wrapped, SHIM, &err), Observed::Unknown);
+    }
+
+    #[test]
+    fn only_our_own_shim_counts_as_connected() {
+        let rec = record(Some("my-line"));
+        let ours = ConnectionStatus::Connected {
+            mode: WrapMode::Pipe,
+            original: Some("my-line".into()),
+            shim_path: SHIM.into(),
+        };
+        assert_eq!(observe(Some(&rec), SHIM, &ours), Observed::Connected);
+        // Some other cuw-capture.exe wraps the status line.
+        let elsewhere = ConnectionStatus::Connected {
+            mode: WrapMode::Pipe,
+            original: Some("my-line".into()),
+            shim_path: "C:/Users/tester/AppData/Local/Temp/cuw-capture.exe".into(),
+        };
+        assert!(matches!(observe(Some(&rec), SHIM, &elsewhere), Observed::Changed(_)));
+        // Our shim, but it now feeds a different command.
+        let other_inner = ConnectionStatus::Connected {
+            mode: WrapMode::Pipe,
+            original: Some("evil-line".into()),
+            shim_path: SHIM.into(),
+        };
+        assert!(matches!(observe(Some(&rec), SHIM, &other_inner), Observed::Changed(_)));
+        // The record names our shim, but it is not where this install keeps it.
+        assert!(matches!(observe(Some(&rec), "D:/other/bin/cuw-capture.exe", &ours), Observed::Changed(_)));
+        // Distinct changes get distinct ids.
+        let a = observe(Some(&rec), SHIM, &elsewhere);
+        let b = observe(Some(&rec), SHIM, &other_inner);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_real_connect_reads_back_as_connected_in_every_shell() {
+        use cuw_core::cmdline::ShellKind;
+        let originals = [None, Some("my-line --flag"), Some(r#""C:/Program Files/x/line.exe" a"#)];
+        for kind in [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
+            for original in originals {
+                let tmp = tempfile::tempdir().unwrap();
+                let paths = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("data"));
+                std::fs::create_dir_all(paths.claude_home()).unwrap();
+                if let Some(cmd) = original {
+                    let json = serde_json::json!({"statusLine": {"type": "command", "command": cmd}});
+                    std::fs::write(paths.claude_settings(), json.to_string()).unwrap();
+                }
+                let sidecar = tmp.path().join("sidecar").join(cuw_core::cmdline::SHIM_EXE_NAME);
+                std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+                std::fs::write(&sidecar, b"fake shim").unwrap();
+                let env = connect::ConnectEnv {
+                    paths: paths.clone(),
+                    shell: connect::Shell {
+                        kind,
+                        exe: PathBuf::from("shell.exe"),
+                    },
+                    shim_source: Some(sidecar),
+                    selftest: false,
+                };
+                if connect::connect(&env, 1_000).is_err() {
+                    // Commands this shell cannot wrap safely are refused; nothing to observe.
+                    assert!(original.is_some(), "{kind:?}");
+                    assert_eq!(observe_paths(&paths), Observed::NotWrapped, "{kind:?} {original:?}");
+                    continue;
+                }
+                assert_eq!(observe_paths(&paths), Observed::Connected, "{kind:?} {original:?}");
+                // Connecting again (already ours) keeps it that way.
+                connect::connect(&env, 2_000).unwrap();
+                assert_eq!(observe_paths(&paths), Observed::Connected, "again: {kind:?} {original:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn watch_is_dropped_and_polling_stops_while_off() {
+        assert_eq!(wait_for(true), Some(RECHECK));
+        assert_eq!(wait_for(false), None, "only a wake (setting change) or shutdown");
     }
 
     #[test]
@@ -408,7 +568,7 @@ mod tests {
         std::fs::create_dir_all(p.claude_home()).unwrap();
         // Never connected: a foreign status line is not our business.
         std::fs::write(p.claude_settings(), br#"{"statusLine":{"type":"command","command":"my-line"}}"#).unwrap();
-        assert_eq!(observe(wrapped(&p), &connect::status(&p)), Observed::NotWrapped);
+        assert_eq!(observe_paths(&p), Observed::NotWrapped);
         // Connect had recorded a wrap; the file now holds someone else's command.
         let record = WrapRecord {
             original_command: Some("my-line".into()),
@@ -420,10 +580,10 @@ mod tests {
             at_ms: 1,
         };
         save_json(&p.wrap_file(), &record).unwrap();
-        assert_eq!(observe(wrapped(&p), &connect::status(&p)), Observed::Changed(change_id(Some("my-line"))));
+        assert!(matches!(observe_paths(&p), Observed::Changed(_)));
         // Disconnect removes wrap.json: quiet again.
         std::fs::remove_file(p.wrap_file()).unwrap();
-        assert_eq!(observe(wrapped(&p), &connect::status(&p)), Observed::NotWrapped);
+        assert_eq!(observe_paths(&p), Observed::NotWrapped);
     }
 
     #[test]
