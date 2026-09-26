@@ -576,7 +576,9 @@ fn pair_turns<'a>(
 ) -> Vec<(FinishedTurn, TurnInfo)> {
     let mut by_key: HashMap<String, &TranscriptTail> = HashMap::new();
     for tail in tails {
-        let slot = by_key.entry(snapshot::session_key(&tail.session_id)).or_insert(tail);
+        // The snapshot's key rule: a tail without a session id is keyed by its path.
+        let id = if tail.session_id.is_empty() { tail.path.to_string_lossy() } else { tail.session_id.as_str().into() };
+        let slot = by_key.entry(snapshot::session_key(&id)).or_insert(tail);
         if tail.last_assistant_ms > slot.last_assistant_ms {
             *slot = tail;
         }
@@ -1040,5 +1042,11 @@ mod tests {
         assert_eq!(info.ended_ms, Some(20), "the newest file of the session");
         assert_eq!(turn.project, None, "the project comes from the view");
         assert_eq!(turn.model.as_deref(), Some("Opus 5.5"));
+
+        // A tail without a session id is keyed by its path, as in the snapshot's session list.
+        let anon = [tail("C:/x/one.jsonl", "", 30, 30), tail("C:/x/two.jsonl", "", 40, 40)];
+        let pairs = pair_turns(&[view("C:/x/one.jsonl"), view("C:/x/two.jsonl")], anon.iter());
+        let ends: Vec<_> = pairs.iter().map(|(_, info)| info.ended_ms).collect();
+        assert_eq!(ends, vec![Some(30), Some(40)]);
     }
 }

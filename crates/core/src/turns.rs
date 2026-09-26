@@ -6,13 +6,15 @@
 //! the start is outside the scanned tail, the earliest timestamp in the tail is a lower bound.
 //!
 //! [`FinishedTurns::observe`] reports a turn once when: it ended after the app started
-//! (`started_ms`) and within the last [`RECENT_MS`] (no startup flood), it lasted at least
+//! (`started_ms`) and within the last [`RECENT_MS`] (no startup flood) but not more than
+//! `FUTURE_SLACK_MS` in the future (clock skew, corrupt lines), it lasted at least
 //! `min_duration_ms`, and it was not reported before (dedupe by session key + end timestamp,
 //! kept in memory only — reporting only turns that end after app start makes persistence
 //! unnecessary). Sidechain/subagent lines never end a turn.
 
 use std::collections::HashMap;
 
+use crate::engine::snapshot::FUTURE_SLACK_MS;
 use crate::engine::types::Entrypoint;
 use crate::time::{MINUTE_MS, Ms};
 
@@ -62,7 +64,9 @@ impl FinishedTurns {
             let (Some(ended), Some(start)) = (turn.ended_ms, turn.started_ms) else {
                 continue;
             };
-            if ended <= started_ms || ended < recent_floor {
+            // A far-future end (clock skew, corrupt line) would also block the session's later
+            // turns in the dedupe map.
+            if ended <= started_ms || ended < recent_floor || ended > now_ms.saturating_add(FUTURE_SLACK_MS) {
                 continue;
             }
             let duration_ms = ended.saturating_sub(start);
@@ -184,6 +188,22 @@ mod tests {
             (session("backwards"), turn(now + MINUTE_MS, now)),
         ];
         assert!(f.observe(&input, START, MIN, now).is_empty());
+    }
+
+    #[test]
+    fn far_future_ends_are_ignored_and_do_not_block_later_turns() {
+        let mut f = FinishedTurns::default();
+        let now = START + 30 * MINUTE_MS;
+        // A corrupt or skewed timestamp: not reported, and not remembered as the last end.
+        let bogus = now + FUTURE_SLACK_MS + 1;
+        let future = [(session("a"), turn(bogus - 5 * MINUTE_MS, bogus))];
+        assert!(f.observe(&future, START, MIN, now).is_empty());
+        let real = [(session("a"), turn(now - 5 * MINUTE_MS, now))];
+        assert_eq!(keys(&f.observe(&real, START, MIN, now)), vec![("a", 5 * MINUTE_MS)]);
+        // A small skew is still reported.
+        let skewed = now + FUTURE_SLACK_MS;
+        let ahead = [(session("b"), turn(skewed - 5 * MINUTE_MS, skewed))];
+        assert_eq!(f.observe(&ahead, START, MIN, now).len(), 1);
     }
 
     #[test]

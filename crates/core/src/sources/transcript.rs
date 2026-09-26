@@ -1804,6 +1804,18 @@ mod tests {
     }
 
     #[test]
+    fn a_text_user_line_mid_turn_moves_the_start() {
+        let e = env();
+        // Claude Code sometimes writes text user lines inside a turn (`isMeta` notices, a message
+        // typed while Claude works). `isMeta` is not read, so such a line counts as the start: the
+        // duration is then shorter than the real turn, never longer.
+        let mut meta = prompt(100);
+        meta["isMeta"] = json!(true);
+        let values = [prompt(0), working(10), tool_result(20), meta, working(110), done(400)];
+        assert_eq!(turn_of(&e, "meta", &values), finished(100, 400, false));
+    }
+
+    #[test]
     fn turns_in_crlf_files() {
         let e = env();
         let body = [prompt(0), working(10), tool_result(20), done(200)]
