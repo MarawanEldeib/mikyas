@@ -5,10 +5,11 @@
 //!   work starts 250 ms after the last event, and at most 1 s after the first one. A watcher
 //!   error or overflow ([`Msg::Rescan`]) reloads everything.
 //! - The Desktop usage file is polled by mtime every 60 s (Electron churns its data dir, so it is
-//!   never watched), Desktop Code-tab sessions every 30 s (reparsed only when a file's mtime or
-//!   length changed), and a full transcript rescan runs every 5 min. Every 30 s the snapshot is
-//!   recomputed anyway (stale flags, reset phases) and the captures are reloaded, so a missing or
-//!   dead watcher only delays updates. All periods run on the monotonic clock ([`Schedule`]), so
+//!   never watched), Desktop Code-tab sessions every 30 s (a file is reparsed only when its mtime
+//!   or length changed; files untouched for a week are skipped), and a full transcript rescan
+//!   runs every 5 min. Every 30 s the snapshot is recomputed anyway (stale flags, reset phases)
+//!   and the captures are reloaded (again only the files that changed), so a missing or dead
+//!   watcher only delays updates. All periods run on the monotonic clock ([`Schedule`]), so
 //!   a wall-clock jump never stalls them.
 //! - A snapshot is emitted only when it differs from the last one (ignoring `generated_ms`).
 //! - Every tick evaluates the limit alerts (`alerts.json`) and, when enabled, context alerts over
@@ -35,9 +36,9 @@ use cuw_core::pace_alerts::PaceSettings;
 use cuw_core::paths::Paths;
 use cuw_core::saferead::SafeReader;
 use cuw_core::sources::SourceError;
-use cuw_core::sources::desktop_sessions::{self, DesktopSession};
+use cuw_core::sources::desktop_sessions::{DesktopSession, DesktopSessionCache};
 use cuw_core::sources::desktop_usage::{self, DesktopUsage};
-use cuw_core::sources::statusline;
+use cuw_core::sources::statusline::{self, CaptureCache};
 use cuw_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
 use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
 use cuw_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
@@ -64,8 +65,6 @@ pub const MAX_TAILS: usize = 40;
 const HISTORY_OPEN_ATTEMPTS: u32 = 3;
 /// Local days the weekly recap needs (its window plus the day it started on).
 const RECAP_DAYS: usize = 8;
-/// Depth of Desktop Code-tab session files below a sessions dir (as `desktop_sessions` walks).
-const SESSIONS_MAX_DEPTH: usize = desktop_sessions::MAX_WALK_DEPTH;
 
 /// Pipeline input.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +136,8 @@ pub struct PipelineState {
     persisted: PersistedState,
     alerts: AlertState,
     captures: Vec<CaptureRecord>,
+    /// Capture files as last read; only new or changed files are read again.
+    capture_cache: CaptureCache,
     tails: HashMap<PathBuf, CachedTail>,
     /// The tails of `tails`, rebuilt only when a transcript changed.
     tail_list: Vec<TranscriptTail>,
@@ -144,7 +145,8 @@ pub struct PipelineState {
     desktop_health: DesktopHealth,
     desktop_stamp: Stamp,
     desktop_sessions: Vec<DesktopSession>,
-    sessions_stamp: Option<Stamp>,
+    /// Desktop Code-tab session files as last read; only new or changed files are read again.
+    sessions_cache: DesktopSessionCache,
     recap_checked: Option<RecapKey>,
     mismatch_since: Option<Ms>,
     last: Option<Arc<Snapshot>>,
@@ -188,13 +190,14 @@ impl PipelineState {
             persisted,
             alerts,
             captures: Vec::new(),
+            capture_cache: CaptureCache::default(),
             tails: HashMap::new(),
             tail_list: Vec::new(),
             desktop: None,
             desktop_health: DesktopHealth::NotFound,
             desktop_stamp: Vec::new(),
             desktop_sessions: Vec::new(),
-            sessions_stamp: None,
+            sessions_cache: DesktopSessionCache::default(),
             recap_checked: None,
             mismatch_since: None,
             last: None,
@@ -244,7 +247,7 @@ impl PipelineState {
             self.poll_desktop(now);
         }
         if dirty.sessions {
-            self.poll_desktop_sessions();
+            self.poll_desktop_sessions(now);
         }
 
         if snapshot::account_mismatch_now(&self.captures, self.desktop.as_ref(), now) {
@@ -383,7 +386,7 @@ impl PipelineState {
     }
 
     fn reload_captures(&mut self, now: Ms) {
-        self.captures = statusline::load_captures(&self.reader, &self.paths.capture_dir(), now);
+        self.captures = self.capture_cache.load(&self.reader, &self.paths.capture_dir(), now);
         let mut exact = self.persisted.exact_resets();
         if snapshot::learn_exact_resets(&mut exact, &self.captures) {
             self.persisted.set_exact_resets(&exact);
@@ -491,20 +494,11 @@ impl PipelineState {
         }
     }
 
-    /// Reparses the Desktop Code-tab session files only when one was added, removed or changed.
-    fn poll_desktop_sessions(&mut self) {
+    /// Reloads the Desktop Code-tab sessions, reading only session files that were added or
+    /// changed (by size or modification time) and skipping files untouched for a week.
+    fn poll_desktop_sessions(&mut self, now: Ms) {
         let dirs = self.paths.desktop_sessions_dirs();
-        let mut files = Vec::new();
-        for dir in &dirs {
-            session_files(&self.reader, dir, 1, &mut files);
-        }
-        files.sort();
-        let stamp = stamp_of(files);
-        if self.sessions_stamp.as_ref() == Some(&stamp) {
-            return;
-        }
-        self.desktop_sessions = desktop_sessions::load_all(&self.reader, &dirs);
-        self.sessions_stamp = Some(stamp);
+        self.desktop_sessions = self.sessions_cache.update(&self.reader, &dirs, now);
     }
 
     fn maintenance(&mut self, now: Ms) {
@@ -557,27 +551,6 @@ fn stamp_of(files: Vec<PathBuf>) -> Stamp {
             (p, modified, len)
         })
         .collect()
-}
-
-/// `local_*.json` files below `dir` (the files `desktop_sessions::load_all` reads), without
-/// following links; only names and metadata are looked at here.
-fn session_files(reader: &SafeReader, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > SESSIONS_MAX_DEPTH {
-        return;
-    }
-    let Ok(entries) = reader.read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else { continue };
-        let path = entry.path();
-        if kind.is_dir() {
-            session_files(reader, &path, depth + 1, out);
-        } else if kind.is_file()
-            && entry.file_name().to_str().is_some_and(|n| n.starts_with("local_"))
-            && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))
-        {
-            out.push(path);
-        }
-    }
 }
 
 /// Snapshots equal apart from their generation time.
@@ -1090,24 +1063,74 @@ mod tests {
         assert_eq!((kept.modified_ms, kept.len), (5, meta.len()), "stamps not advanced: reread next time");
     }
 
+    fn set_mtime(path: &Path, ms: Ms) {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_millis(ms as u64);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+    }
+
     #[test]
     fn desktop_sessions_are_reparsed_only_when_a_file_changed() {
         let (_t, paths) = setup();
+        let now = now_ms();
         let dir = paths.desktop_roots()[0].join("claude-code-sessions").join("acct").join("org");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("local_1.json");
         std::fs::write(&file, r#"{"cliSessionId":"s1","model":"claude-opus-5-5","lastActivityAt":5}"#).unwrap();
+        set_mtime(&file, now - MINUTE_MS);
         let mut engine = PipelineState::new(paths.clone());
-        engine.poll_desktop_sessions();
+        engine.poll_desktop_sessions(now);
         assert_eq!(engine.desktop_sessions.len(), 1);
-        let stamp = engine.sessions_stamp.clone();
-        engine.desktop_sessions.clear(); // marker: an unchanged poll does not reload
-        engine.poll_desktop_sessions();
-        assert!(engine.desktop_sessions.is_empty());
-        assert_eq!(engine.sessions_stamp, stamp);
+
+        // Same size and modification time: the file is not read again, even while another
+        // session file appears and forces a reload.
+        std::fs::write(&file, r#"{"cliSessionId":"s1","model":"claude-opus-5-6","lastActivityAt":5}"#).unwrap();
+        set_mtime(&file, now - MINUTE_MS);
         std::fs::write(dir.join("local_2.json"), r#"{"cliSessionId":"s2","lastActivityAt":6}"#).unwrap();
-        engine.poll_desktop_sessions();
+        engine.poll_desktop_sessions(now);
         assert_eq!(engine.desktop_sessions.len(), 2);
+        let s1 = engine.desktop_sessions.iter().find(|s| s.cli_session_id.as_deref() == Some("s1")).unwrap();
+        assert_eq!(s1.model.as_deref(), Some("claude-opus-5-5"), "unchanged file was re-read");
+
+        // A changed stamp is read again; a removed file is dropped.
+        set_mtime(&file, now - 1_000);
+        std::fs::remove_file(dir.join("local_2.json")).unwrap();
+        engine.poll_desktop_sessions(now);
+        assert_eq!(engine.desktop_sessions.len(), 1);
+        assert_eq!(engine.desktop_sessions[0].model.as_deref(), Some("claude-opus-5-6"));
+    }
+
+    #[test]
+    fn captures_are_reread_only_when_a_file_changed() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let reset = now + 3_600_000;
+        write_capture(&paths, "s1", now - 2 * MINUTE_MS, 30.5, reset);
+        write_capture(&paths, "s2", now - 3 * MINUTE_MS, 11.5, reset);
+        let (p1, p2) = (paths.capture_dir().join("s1.json"), paths.capture_dir().join("s2.json"));
+        set_mtime(&p1, now - 2 * MINUTE_MS);
+        set_mtime(&p2, now - 3 * MINUTE_MS);
+        let settings = Settings::default();
+        let dirty = Dirty { captures: true, ..Dirty::default() };
+        let mut engine = PipelineState::new(paths.clone());
+        engine.tick(now, &settings, &dirty);
+        let pct = |engine: &PipelineState, sid: &str| {
+            engine.captures.iter().find(|c| c.session_id == sid).map(|c| c.rate_limits["five_hour"].used_percentage)
+        };
+        assert_eq!((pct(&engine, "s1"), pct(&engine, "s2")), (Some(30.5), Some(11.5)));
+
+        // s1 rewritten with the same size and modification time is not read again; the
+        // capture event that s2's change raised still reloads s2.
+        write_capture(&paths, "s1", now - 2 * MINUTE_MS, 70.5, reset);
+        set_mtime(&p1, now - 2 * MINUTE_MS);
+        write_capture(&paths, "s2", now - MINUTE_MS, 12.5, reset);
+        set_mtime(&p2, now - MINUTE_MS);
+        engine.tick(now + 1, &settings, &dirty);
+        assert_eq!((pct(&engine, "s1"), pct(&engine, "s2")), (Some(30.5), Some(12.5)), "s1 was re-read");
+
+        // A removed capture is dropped.
+        std::fs::remove_file(&p2).unwrap();
+        engine.tick(now + 2, &settings, &dirty);
+        assert_eq!((pct(&engine, "s1"), pct(&engine, "s2")), (Some(30.5), None));
     }
 
     #[test]
