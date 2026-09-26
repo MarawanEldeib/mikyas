@@ -52,7 +52,8 @@
   <header class="bar">
     <IconButton icon="back" label="Back" size="m" onclick={() => app.back()} />
     <h1>Sessions</h1>
-    {#if sessions.length}<span class="count" aria-label="{sessions.length} sessions">{sessions.length}</span>{/if}
+    <!-- aria-label is ignored on a plain span; the hidden word gives the number its meaning. -->
+    {#if sessions.length}<span class="count">{sessions.length}<span class="sr"> sessions</span></span>{/if}
     <span class="span">Last 12 hours</span>
   </header>
 

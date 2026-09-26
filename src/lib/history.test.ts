@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "./format";
 import {
+  LABEL_GAP,
   MIN_LABELLED_DAY,
   RANGES,
   addLocalDays,
   barScale,
   chartGeometry,
   dayBars,
+  placeLabels,
   plotX,
   plotY,
   rangeDomain,
@@ -146,6 +148,52 @@ describe("timeAxis", () => {
     const texts = axis.labels.map((l) => l.text);
     expect(texts).toEqual(["Sep 10", "Sep 12", "Sep 14", "Sep 16", "Sep 18", "Sep 20", "Sep 22", "Sep 24"]);
     expect(axis.lines).toHaveLength(14);
+  });
+});
+
+describe("placeLabels", () => {
+  const d = { from: 0, to: 100 };
+  const width = (text: string) => text.length * 10;
+
+  it("keeps labels inside the plot and drops the displaced one of an overlapping pair", () => {
+    const labels = [
+      { t: 2, text: "aa" }, // centred at 12, moved to 20: overlaps "bb"
+      { t: 20, text: "bb" },
+      { t: 72, text: "cc" },
+      { t: 97, text: "dd" }, // centred at 107, moved to 100: closer to "cc" than the gap
+    ];
+    expect(placeLabels(labels, d, BOX, width)).toEqual([
+      { t: 20, text: "bb", x: 30 },
+      { t: 72, text: "cc", x: 82 },
+    ]);
+    // Moved labels that fit stay.
+    expect(placeLabels([{ t: 0, text: "aa" }, { t: 100, text: "bb" }], d, BOX, width)).toEqual([
+      { t: 0, text: "aa", x: 20 },
+      { t: 100, text: "bb", x: 100 },
+    ]);
+    // Equal claims: the earlier label stays; a label wider than the plot is centred.
+    expect(placeLabels([{ t: 50, text: "aa" }, { t: 52, text: "bb" }], d, BOX, width).map((l) => l.text)).toEqual(["aa"]);
+    expect(placeLabels([{ t: 90, text: "x".repeat(20) }], d, BOX, width)).toEqual([{ t: 90, text: "x".repeat(20), x: 60 }]);
+  });
+
+  it("never overlaps on the real 14-day axis, at any hour of the day", () => {
+    // HistoryChart's plot box; "Sep 12" is about 30 px wide at 10 px.
+    const box: PlotBox = { width: 336, height: 72, left: 24, right: 4, top: 6, bottom: 16 };
+    const measure = (text: string) => text.length * 5.2;
+    for (let h = 0; h < 24; h++) {
+      const to = local(26, h);
+      const dom = { from: to - 14 * DAY, to };
+      const placed = placeLabels(timeAxis(dom, "14d", { locale: "en-US" }).labels, dom, box, measure);
+      expect(placed.length).toBeGreaterThanOrEqual(6);
+      for (const l of placed) {
+        expect(l.x - measure(l.text) / 2).toBeGreaterThanOrEqual(box.left);
+        expect(l.x + measure(l.text) / 2).toBeLessThanOrEqual(box.width - box.right);
+      }
+      for (let i = 1; i < placed.length; i++) {
+        const gap = placed[i].x - measure(placed[i].text) / 2 - (placed[i - 1].x + measure(placed[i - 1].text) / 2);
+        expect(gap, `${h}:00 ${placed[i - 1].text}/${placed[i].text}`).toBeGreaterThanOrEqual(LABEL_GAP);
+      }
+    }
   });
 });
 

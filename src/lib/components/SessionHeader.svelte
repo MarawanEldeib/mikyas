@@ -125,7 +125,8 @@
     margin-right: -2px;
     padding: 0 4px;
     border-radius: 6px;
-    background: var(--fill-control-hover);
+    /* Not a control fill: in light theme that equals the chip's hover fill and the badge vanished. */
+    background: var(--track);
     font-size: 10px;
     line-height: 13px;
     font-weight: 600;

@@ -201,6 +201,49 @@ export function timeAxis(d: Domain, range: RangeKey, opts: ClockOptions = {}): T
   return { lines, labels };
 }
 
+/** Least space between two axis labels (a few spaces, so two dates never read as one). */
+export const LABEL_GAP = 8;
+
+export interface PlacedLabel {
+  t: number;
+  text: string;
+  /** Centre of the label. */
+  x: number;
+}
+
+/**
+ * Positions axis labels: centred on their instant, moved inside the plot where they would stick
+ * out, and dropped where they would come closer than LABEL_GAP to a neighbour. Of two such labels
+ * the one moved further from its instant (a partial day at an edge) gives way; on a tie the
+ * earlier one stays. `measure` returns a label's width.
+ */
+export function placeLabels(
+  labels: readonly { t: number; text: string }[],
+  d: Domain,
+  box: PlotBox,
+  measure: (text: string) => number,
+): PlacedLabel[] {
+  const lo = box.left;
+  const hi = box.width - box.right;
+  const kept: { t: number; text: string; x: number; w: number; shift: number }[] = [];
+  for (const l of [...labels].sort((a, b) => a.t - b.t)) {
+    const w = measure(l.text);
+    const at = plotX(l.t, d, box);
+    const x = w >= hi - lo ? (lo + hi) / 2 : Math.min(hi - w / 2, Math.max(lo + w / 2, at));
+    const next = { t: l.t, text: l.text, x, w, shift: Math.abs(x - at) };
+    let keep = true;
+    for (let prev = kept.at(-1); prev && next.x - next.w / 2 < prev.x + prev.w / 2 + LABEL_GAP; prev = kept.at(-1)) {
+      if (next.shift >= prev.shift) {
+        keep = false;
+        break;
+      }
+      kept.pop();
+    }
+    if (keep) kept.push(next);
+  }
+  return kept.map(({ t, text, x }) => ({ t, text, x: round(x) }));
+}
+
 export interface DayBar {
   start: number;
   /** Share of the limit used that day (0..100). */

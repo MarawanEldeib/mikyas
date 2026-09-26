@@ -1,7 +1,19 @@
+<script lang="ts" module>
+  // Axis label widths, measured in the widget font at the labels' 10px.
+  let measurer: CanvasRenderingContext2D | null | undefined;
+  function labelWidth(text: string): number {
+    if (measurer === undefined) {
+      measurer = document.createElement("canvas").getContext("2d");
+      if (measurer) measurer.font = `10px ${getComputedStyle(document.body).fontFamily}`;
+    }
+    return measurer ? measurer.measureText(text).width : text.length * 6;
+  }
+</script>
+
 <script lang="ts">
   import { CRIT_AT, WARN_AT, fillColor, textColor } from "../color";
   import { formatClock, formatPct } from "../format";
-  import { GRID_PCTS, chartGeometry, plotX, plotY, timeAxis, windowSummary, type Domain, type PlotBox, type RangeKey } from "../history";
+  import { GRID_PCTS, chartGeometry, placeLabels, plotX, plotY, timeAxis, windowSummary, type Domain, type PlotBox, type RangeKey } from "../history";
   import type { HistoryWindow } from "../types";
 
   interface Props {
@@ -25,13 +37,12 @@
   const box = $derived<PlotBox>({ width, height, left: 24, right: 4, top: 6, bottom: 16 });
   const geo = $derived(chartGeometry(w.points, domain, box));
   const axis = $derived(timeAxis(domain, range));
+  const labels = $derived(placeLabels(axis.labels, domain, box, labelWidth));
   const resets = $derived(w.resets_ms.filter((t) => t >= domain.from && t <= domain.to));
   const summary = $derived(windowSummary(w, domain));
   const value = $derived(current ?? geo.last?.pct ?? null);
   const base = $derived(plotY(0, box));
   const x = (t: number) => plotX(t, domain, box);
-  // Labels are centred on their instant but kept inside the plot.
-  const labelX = (t: number) => Math.min(width - box.right - 16, Math.max(box.left + 16, x(t)));
   const aria = $derived(
     [
       `${label} usage, ${rangeName}`,
@@ -85,8 +96,8 @@
     {#if geo.last}
       <circle class="dot" cx={geo.last.x} cy={geo.last.y} r="2.5" style:fill={fillColor(geo.last.pct)} />
     {/if}
-    {#each axis.labels as l (l.t)}
-      <text class="xlabel" x={labelX(l.t)} y={height - 2}>{l.text}</text>
+    {#each labels as l (l.t)}
+      <text class="xlabel" x={l.x} y={height - 2}>{l.text}</text>
     {/each}
   </svg>
 </section>
