@@ -246,6 +246,9 @@ pub enum CtxBasis {
 /// The active Claude Code / Cowork session shown in the widget header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionView {
+    /// Opaque, stable identifier for UI list keys (a hash of the session id; never the id itself).
+    #[serde(default)]
+    pub key: String,
     /// Model id without the `[1m]` suffix, e.g. `claude-opus-5-5`.
     pub model_id: Option<String>,
     /// Human name, e.g. `Opus 5.5`.
@@ -299,6 +302,10 @@ pub struct Snapshot {
     /// FiveHour first, then SevenDay, then any others in key order.
     pub windows: Vec<WindowView>,
     pub session: Option<SessionView>,
+    /// Every session with activity in the last [`crate::engine::snapshot::SESSIONS_WINDOW_MS`],
+    /// newest first, at most [`crate::engine::snapshot::MAX_SESSIONS`]; includes `session`.
+    #[serde(default)]
+    pub sessions: Vec<SessionView>,
     pub health: SourceHealth,
     pub warnings: Vec<Warning>,
 }

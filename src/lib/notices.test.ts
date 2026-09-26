@@ -6,6 +6,7 @@ const base: Snapshot = {
   generated_ms: 0,
   windows: [],
   session: null,
+  sessions: [],
   health: { desktop: { state: "ok", last_sample_ms: null }, cli_last_capture_ms: null, transcripts_last_activity_ms: null },
   warnings: [],
 };

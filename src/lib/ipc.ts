@@ -9,9 +9,11 @@ import type {
   CommandName,
   ConnectPreview,
   ConnectionStatus,
+  HistoryData,
   Settings,
   Snapshot,
   UiState,
+  UpdateInfo,
   ViewMode,
 } from "./types";
 
@@ -63,6 +65,10 @@ export const api = {
   disconnectClaudeCode: () => call<ConnectionStatus>("disconnect_claude_code"),
   openDataFolder: () => call<void>("open_data_folder"),
   quitApp: () => call<void>("quit_app"),
+  getHistory: (days: number) => call<HistoryData>("get_history", { days }),
+  setDockExpanded: (expanded: boolean) => call<void>("set_dock_expanded", { expanded }),
+  checkUpdatesNow: () => call<UpdateInfo | null>("check_updates_now"),
+  openUrl: (url: string) => call<void>("open_url", { url }),
 };
 
 /** Subscribes to `snapshot` events. */

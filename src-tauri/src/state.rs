@@ -45,6 +45,27 @@ impl PersistedState {
     }
 }
 
+/// Why the widget is currently hidden.
+// TODO(stream C): remove the allow once the tray/hotkey/fullscreen code sets these.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HiddenReason {
+    None,
+    /// Hidden with the tray or the show/hide hotkey.
+    User,
+    /// Hidden automatically while a fullscreen app or game has focus.
+    Fullscreen,
+}
+
+/// A newer release found by the opt-in update checker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    /// Release page (always under https://github.com/).
+    pub url: String,
+}
+
 /// What the UI shows about the window itself (`ui-state` event).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UiState {
@@ -52,6 +73,12 @@ pub struct UiState {
     pub pinned: bool,
     pub click_through: bool,
     pub hotkey_error: Option<String>,
+    /// Error registering the show/hide hotkey.
+    pub toggle_hotkey_error: Option<String>,
+    /// Docked widget is slid out (only meaningful when `settings.dock != off`).
+    pub dock_expanded: bool,
+    pub hidden_reason: HiddenReason,
+    pub update: Option<UpdateInfo>,
 }
 
 /// Everything commands, tray, hotkey and pipeline share.
@@ -74,6 +101,10 @@ impl Shared {
             pinned: settings.pinned,
             click_through: false,
             hotkey_error: None,
+            toggle_hotkey_error: None,
+            dock_expanded: false,
+            hidden_reason: HiddenReason::None,
+            update: None,
         };
         Self {
             paths,

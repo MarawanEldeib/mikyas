@@ -1,6 +1,9 @@
 <script lang="ts">
   import Card from "./lib/components/Card.svelte";
+  import DockBar from "./lib/components/DockBar.svelte";
+  import HistoryView from "./lib/components/HistoryView.svelte";
   import Pill from "./lib/components/Pill.svelte";
+  import SessionsView from "./lib/components/SessionsView.svelte";
   import Settings from "./lib/components/Settings.svelte";
   import { startDragging } from "./lib/ipc";
   import { app } from "./lib/stores.svelte";
@@ -39,7 +42,14 @@
     root.dataset.effect = app.settings?.effect ?? "auto";
     root.dataset.view = app.ui.view;
     root.toggleAttribute("data-ghost", app.ui.click_through);
+    // Appearance hooks for CSS (stream B): accent colour, gauge style, UI scale, dock edge.
+    root.dataset.accent = app.settings?.accent ?? "auto";
+    root.dataset.gauge = app.settings?.gauge_style ?? "ring";
+    root.dataset.dock = app.settings?.dock ?? "off";
+    root.style.setProperty("--ui-scale", String(app.settings?.ui_scale ?? 1));
   });
+
+  const docked = $derived((app.settings?.dock ?? "off") !== "off" && !app.ui.dock_expanded);
 
   const opacity = $derived(
     app.settings ? (app.ui.click_through ? app.settings.ghost_opacity : app.settings.opacity) : 1,
@@ -67,10 +77,16 @@
     {#if app.error}
       <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>
     {/if}
+  {:else if docked}
+    <DockBar />
   {:else if app.ui.view === "pill"}
     <Pill />
   {:else if app.ui.view === "settings"}
     <Settings />
+  {:else if app.ui.view === "sessions"}
+    <SessionsView />
+  {:else if app.ui.view === "history"}
+    <HistoryView />
   {:else}
     <Card />
   {/if}

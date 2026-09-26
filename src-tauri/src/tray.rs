@@ -246,6 +246,7 @@ mod tests {
                 })
                 .collect(),
             session: None,
+            sessions: vec![],
             health: SourceHealth {
                 desktop: DesktopHealth::NotFound,
                 cli_last_capture_ms: None,

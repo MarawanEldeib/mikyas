@@ -4,6 +4,8 @@
 mod cli;
 mod commands;
 mod connect;
+mod dock;
+mod history_view;
 mod hotkey;
 mod notify;
 mod pipeline;
@@ -11,6 +13,7 @@ mod platform;
 mod settings;
 mod state;
 mod tray;
+mod updates;
 mod watcher;
 mod window;
 
@@ -73,6 +76,10 @@ pub fn run() {
             commands::disconnect_claude_code,
             commands::open_data_folder,
             commands::quit_app,
+            history_view::get_history,
+            dock::set_dock_expanded,
+            updates::check_updates_now,
+            updates::open_url,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

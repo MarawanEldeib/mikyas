@@ -9,11 +9,20 @@ class AppState {
   /** Latest snapshot; replaced wholesale on every `snapshot` event. */
   snapshot = $state.raw<Snapshot | null>(null);
   settings = $state.raw<Settings | null>(null);
-  ui = $state.raw<UiState>({ view: "card", pinned: true, click_through: false, hotkey_error: null });
+  ui = $state.raw<UiState>({
+    view: "card",
+    pinned: true,
+    click_through: false,
+    hotkey_error: null,
+    toggle_hotkey_error: null,
+    dock_expanded: false,
+    hidden_reason: "none",
+    update: null,
+  });
   connection = $state.raw<ConnectionStatus | null>(null);
   /** Wall clock used by every countdown/age; advanced by the tick scheduler. */
   now = $state(Date.now());
-  /** View to return to when leaving settings. */
+  /** View to return to when leaving settings, sessions or history. */
   previousView = $state<"pill" | "card">("card");
   ready = $state(false);
   error = $state<string | null>(null);
@@ -40,7 +49,7 @@ class AppState {
       this.snapshot = snapshot;
       this.settings = settings;
       this.connection = connection;
-      if (settings.view !== "settings") this.previousView = settings.view;
+      if (settings.view === "pill" || settings.view === "card") this.previousView = settings.view;
       this.#applyUi(ui);
       this.now = Date.now();
       this.ready = true;
@@ -54,7 +63,7 @@ class AppState {
   }
 
   #applyUi(u: UiState): void {
-    if (u.view !== "settings") this.previousView = u.view;
+    if (u.view === "pill" || u.view === "card") this.previousView = u.view;
     this.ui = u;
   }
 

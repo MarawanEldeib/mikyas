@@ -97,7 +97,7 @@ pub fn apply_view(app: &AppHandle, shared: &Shared, view: ViewMode) {
     let from = shared.ui().view;
     crate::window::set_view(app, from, view);
     shared.ui().view = view;
-    if view != ViewMode::Settings {
+    if matches!(view, ViewMode::Pill | ViewMode::Card) {
         let mut s = shared.settings();
         if s.view != view {
             s.view = view;

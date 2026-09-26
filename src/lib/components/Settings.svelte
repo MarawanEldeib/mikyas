@@ -8,6 +8,9 @@
   import HotkeyField from "./HotkeyField.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import SettingsContext from "./SettingsContext.svelte";
+  import SettingsLayout from "./SettingsLayout.svelte";
+  import SettingsSystem from "./SettingsSystem.svelte";
   import StatusBanner from "./StatusBanner.svelte";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
@@ -138,6 +141,8 @@
         </div>
       </div>
 
+      <SettingsContext />
+
       <h2 class="section">Appearance</h2>
       <div class="group">
         <div class="row col">
@@ -182,6 +187,8 @@
         </div>
       </div>
 
+      <SettingsLayout />
+
       <h2 class="section">Behaviour</h2>
       <div class="group">
         <div class="row">
@@ -196,6 +203,8 @@
           <Stepper label="Minutes until data is stale" value={s.stale_min} min={1} max={240} suffix="m" onchange={(v) => update({ stale_min: v })} />
         </div>
       </div>
+
+      <SettingsSystem />
 
       <h2 class="section">Context window sizes</h2>
       <div class="group">

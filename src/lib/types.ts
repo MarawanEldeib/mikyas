@@ -46,6 +46,8 @@ export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";
 export type CtxBasis = "statusline" | "identity" | "desktop_model" | "override" | "heuristic" | "default";
 
 export interface SessionView {
+  /** Opaque stable key for lists (a hash, never the session id). */
+  key: string;
   model_id: string | null;
   display_name: string | null;
   ctx_pct: number | null;
@@ -79,15 +81,58 @@ export interface Snapshot {
   /** five_hour first, then seven_day, then others. */
   windows: WindowView[];
   session: SessionView | null;
+  /** Every session active in the last 12 h, newest first, max 8; includes `session`. */
+  sessions: SessionView[];
   health: SourceHealth;
   warnings: Warning[];
+}
+
+/** One local calendar day of one window in the History view. */
+export interface HistoryDay {
+  /** Local midnight. */
+  day_start_ms: Ms;
+  /** Highest % seen that day. */
+  peak_pct: number;
+  /** Sum of increases that day (share of the limit consumed; resets don't subtract). */
+  consumed_pct: number;
+}
+
+export interface HistoryWindow {
+  kind: WindowKind;
+  /** Hourly buckets (max % per hour) over [from_ms, to_ms]; null = gap. */
+  points: SparkPoint[];
+  /** Detected reset times (exact or inferred from drops), ascending. */
+  resets_ms: Ms[];
+  /** Oldest first. */
+  days: HistoryDay[];
+}
+
+/** Returned by `get_history`. */
+export interface HistoryData {
+  from_ms: Ms;
+  to_ms: Ms;
+  /** five_hour first, then seven_day, then others. */
+  windows: HistoryWindow[];
 }
 
 // ---------------------------------------------------------------------------------------------
 // App shell contract (src-tauri)
 
-export type ViewMode = "pill" | "card" | "settings";
+/** Window sizes (logical px): pill 240×72, card 320×232, settings 320×440, sessions 320×300,
+ *  history 360×380 — all multiplied by `ui_scale`. Only pill/card are persisted. */
+export type ViewMode = "pill" | "card" | "settings" | "sessions" | "history";
 export type EffectName = "auto" | "mica" | "acrylic" | "blur" | "none";
+/** Chrome accent. "auto" = neutral chrome; usage colours always follow the thresholds. */
+export type Accent = "auto" | "blue" | "violet" | "teal" | "green" | "amber" | "rose";
+export type GaugeStyle = "ring" | "bar";
+export type DockEdge = "off" | "left" | "right" | "top";
+
+export interface CardRows {
+  sparklines: boolean;
+  burn: boolean;
+  session: boolean;
+  sources: boolean;
+}
 
 /** Persisted in %LOCALAPPDATA%\ClaudeUsageWidget\settings.json. */
 export interface Settings {
@@ -110,6 +155,30 @@ export interface Settings {
   ctx_overrides: Record<string, number>;
   show_project: boolean;
   start_with_windows: boolean;
+  /** Toast when the active session's context crosses a threshold (default true). */
+  ctx_alerts: boolean;
+  /** Ascending context-% thresholds (default [80, 90]). */
+  ctx_thresholds: number[];
+  /** Global show/hide shortcut, "" = none (default "Ctrl+Alt+H"). */
+  toggle_hotkey: string;
+  /** Hide while a fullscreen app/game has focus (default true). */
+  auto_hide_fullscreen: boolean;
+  /** Opt-in daily GitHub Releases check — the app's only network call (default false). */
+  check_updates: boolean;
+  accent: Accent;
+  gauge_style: GaugeStyle;
+  /** 0.85..1.3, scales the UI and the window (default 1). */
+  ui_scale: number;
+  card_rows: CardRows;
+  dock: DockEdge;
+}
+
+export type HiddenReason = "none" | "user" | "fullscreen";
+
+export interface UpdateInfo {
+  version: string;
+  /** Always a https://github.com/… release page. */
+  url: string;
 }
 
 /** Emitted by Rust as the `ui-state` event and returned by `get_ui_state`. */
@@ -119,6 +188,13 @@ export interface UiState {
   click_through: boolean;
   /** Set when the global hotkey could not be registered. */
   hotkey_error: string | null;
+  /** Set when the show/hide hotkey could not be registered. */
+  toggle_hotkey_error: string | null;
+  /** Docked widget is slid out (only meaningful when settings.dock != "off"). */
+  dock_expanded: boolean;
+  hidden_reason: HiddenReason;
+  /** A newer release, when the update checker found one. */
+  update: UpdateInfo | null;
 }
 
 export type ShellKind = "bash" | "cmd" | "pwsh" | "legacy_power_shell";
@@ -155,6 +231,10 @@ export interface ConnectPreview {
  *  disconnect_claude_code() -> ConnectionStatus
  *  open_data_folder() -> void
  *  quit_app() -> void
+ *  get_history({ days: number }) -> HistoryData          (days 1..14)
+ *  set_dock_expanded({ expanded: boolean }) -> void       (pointer enter/leave while docked)
+ *  check_updates_now() -> UpdateInfo | null              (explicit click; network)
+ *  open_url({ url: string }) -> void                     (GitHub release pages only)
  * Events: "snapshot" (Snapshot), "ui-state" (UiState).
  */
 export type CommandName =
@@ -169,4 +249,8 @@ export type CommandName =
   | "connect_claude_code"
   | "disconnect_claude_code"
   | "open_data_folder"
-  | "quit_app";
+  | "quit_app"
+  | "get_history"
+  | "set_dock_expanded"
+  | "check_updates_now"
+  | "open_url";

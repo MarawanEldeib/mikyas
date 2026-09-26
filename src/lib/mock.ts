@@ -36,7 +36,7 @@ export const SCENARIOS = [
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
-const VIEWS: readonly ViewMode[] = ["pill", "card", "settings"];
+const VIEWS: readonly ViewMode[] = ["pill", "card", "settings", "sessions", "history"];
 const EFFECTS: readonly EffectName[] = ["auto", "mica", "acrylic", "blur", "none"];
 
 /** Live-update period of the mock `snapshot` event. */
@@ -146,6 +146,7 @@ interface ScenarioSpec {
 }
 
 const opus = (over: Partial<SessionView> = {}) => (t0: number): SessionView => ({
+  key: "mock-session-1",
   model_id: "claude-opus-5-5",
   display_name: "Opus 5.5",
   ctx_pct: 34.2,
@@ -324,6 +325,8 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
     generated_ms: now,
     windows,
     session,
+    // TODO(stream A): several concurrent mock sessions for the Sessions view.
+    sessions: session ? [session] : [],
     health: {
       desktop: spec.desktop(t0),
       cli_last_capture_ms: spec.cliAgo === null ? null : t0 - spec.cliAgo,
@@ -353,7 +356,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
   let snapshot = buildSnapshot(scenario, t0, t0);
   let settings: Settings = {
     schema_version: 1,
-    view: view === "settings" ? "card" : view,
+    view: view === "pill" ? "pill" : "card",
     pinned: true,
     opacity: 1,
     ghost_opacity: 0.45,
@@ -365,12 +368,26 @@ export function createMockBackend(params: URLSearchParams): Backend {
     ctx_overrides: { "claude-opus-5-5": 1_000_000 },
     show_project: true,
     start_with_windows: false,
+    ctx_alerts: true,
+    ctx_thresholds: [80, 90],
+    toggle_hotkey: "Ctrl+Alt+H",
+    auto_hide_fullscreen: true,
+    check_updates: false,
+    accent: "auto",
+    gauge_style: "ring",
+    ui_scale: 1,
+    card_rows: { sparklines: true, burn: true, session: true, sources: true },
+    dock: "off",
   };
   let ui: UiState = {
     view,
     pinned: true,
     click_through: params.get("ghost") === "1",
     hotkey_error: spec.hotkeyError ?? null,
+    toggle_hotkey_error: null,
+    dock_expanded: false,
+    hidden_reason: "none",
+    update: null,
   };
   const connParam = params.get("conn");
   let connection: ConnectionStatus =
@@ -424,7 +441,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
     set_view: (args) => {
       const v = pick(String(args.view), VIEWS, ui.view);
       ui = { ...ui, view: v };
-      if (v !== "settings") settings = { ...settings, view: v };
+      if (v === "pill" || v === "card") settings = { ...settings, view: v };
       emit("ui-state", ui);
     },
     set_pinned: (args) => {
@@ -451,6 +468,19 @@ export function createMockBackend(params: URLSearchParams): Backend {
     },
     open_data_folder: () => console.info("[mock] open_data_folder"),
     quit_app: () => console.info("[mock] quit_app"),
+    // TODO(stream A): realistic 14-day mock history.
+    get_history: (args) => ({ from_ms: t0 - Number(args.days ?? 14) * DAY, to_ms: t0, windows: [] }),
+    set_dock_expanded: (args) => {
+      ui = { ...ui, dock_expanded: Boolean(args.expanded) };
+      emit("ui-state", ui);
+    },
+    check_updates_now: async () => {
+      await sleep(400);
+      ui = { ...ui, update: { version: "0.2.0", url: "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.2.0" } };
+      emit("ui-state", ui);
+      return ui.update;
+    },
+    open_url: (args) => console.info("[mock] open_url", args.url),
   };
 
   return {

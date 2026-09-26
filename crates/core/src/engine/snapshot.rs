@@ -59,6 +59,11 @@ pub const ACCOUNT_MISMATCH_PAIR_MS: Ms = 20 * MINUTE_MS;
 /// The mismatch must persist this long before it is shown.
 pub const ACCOUNT_MISMATCH_AFTER_MS: Ms = 30 * MINUTE_MS;
 
+/// Sessions active within this long appear in `Snapshot::sessions`.
+pub const SESSIONS_WINDOW_MS: Ms = 12 * HOUR_MS;
+/// At most this many sessions are listed.
+pub const MAX_SESSIONS: usize = 8;
+
 /// Burn and reset estimation never look further back than this.
 const SAMPLE_LOOKBACK_MS: Ms = 8 * DAY_MS;
 
@@ -146,10 +151,13 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         warnings.push(Warning::NoPlanLimits);
     }
 
+    // TODO(stream A): fill with every recent session (see SESSIONS_WINDOW_MS / MAX_SESSIONS).
+    let sessions = session.iter().cloned().collect();
     Snapshot {
         generated_ms: now_ms,
         windows,
         session,
+        sessions,
         health,
         warnings,
     }
@@ -324,6 +332,7 @@ fn session_view(inputs: &EngineInputs<'_>, now_ms: Ms) -> Option<SessionView> {
         .or_else(|| capture.and_then(|c| c.model.as_ref()?.id.as_deref()))
         .or_else(|| desktop_session.and_then(|d| d.model.as_deref()));
     Some(SessionView {
+        key: String::new(),
         model_id: raw_id.map(|id| split_1m(id.trim()).0.to_owned()).filter(|s| !s.is_empty()),
         display_name: raw_id.and_then(name_of),
         ctx_pct: ctx.pct,
@@ -354,6 +363,7 @@ fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, St
         overrides: inputs.ctx_overrides,
     });
     Some(SessionView {
+        key: String::new(),
         model_id: Some(split_1m(raw_id.trim()).0.to_owned()),
         display_name: Some(display_name(raw_id, learned)).filter(|n| !n.is_empty()),
         ctx_pct: ctx.pct,

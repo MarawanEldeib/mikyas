@@ -21,6 +21,8 @@ pub fn logical_size(view: ViewMode) -> (f64, f64) {
         ViewMode::Pill => (240.0, 72.0),
         ViewMode::Card => (320.0, 232.0),
         ViewMode::Settings => (320.0, 440.0),
+        ViewMode::Sessions => (320.0, 300.0),
+        ViewMode::History => (360.0, 380.0),
     }
 }
 

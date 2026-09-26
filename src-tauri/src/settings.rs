@@ -17,6 +17,10 @@ pub enum ViewMode {
     Pill,
     Card,
     Settings,
+    /// List of every recent session.
+    Sessions,
+    /// 14-day usage history.
+    History,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,11 +33,62 @@ pub enum EffectName {
     None,
 }
 
+/// Chrome accent colour. `Auto` = neutral chrome; usage colours always follow the thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accent {
+    Auto,
+    Blue,
+    Violet,
+    Teal,
+    Green,
+    Amber,
+    Rose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GaugeStyle {
+    Ring,
+    Bar,
+}
+
+/// Screen edge the widget docks to (`Off` = free-floating).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockEdge {
+    Off,
+    Left,
+    Right,
+    Top,
+}
+
+/// Which optional rows the card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CardRows {
+    pub sparklines: bool,
+    pub burn: bool,
+    pub session: bool,
+    pub sources: bool,
+}
+
+impl Default for CardRows {
+    fn default() -> Self {
+        Self {
+            sparklines: true,
+            burn: true,
+            session: true,
+            sources: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub schema_version: u32,
-    /// Persisted as `pill` or `card` only (Settings is transient).
+    /// Persisted as `pill` or `card` only (Settings, Sessions and History are transient).
     pub view: ViewMode,
     pub pinned: bool,
     pub opacity: f32,
@@ -46,6 +101,22 @@ pub struct Settings {
     pub ctx_overrides: BTreeMap<String, u64>,
     pub show_project: bool,
     pub start_with_windows: bool,
+    /// Toast when the active session's context crosses a threshold.
+    pub ctx_alerts: bool,
+    /// Ascending context-% thresholds, e.g. [80, 90].
+    pub ctx_thresholds: Vec<u8>,
+    /// Global shortcut that shows/hides the widget ("" = none).
+    pub toggle_hotkey: String,
+    /// Hide automatically while a fullscreen app or game has focus.
+    pub auto_hide_fullscreen: bool,
+    /// Opt-in daily check of GitHub Releases (the app's only network call).
+    pub check_updates: bool,
+    pub accent: Accent,
+    pub gauge_style: GaugeStyle,
+    /// UI and window scale, 0.85..=1.3.
+    pub ui_scale: f32,
+    pub card_rows: CardRows,
+    pub dock: DockEdge,
 }
 
 impl Default for Settings {
@@ -65,6 +136,16 @@ impl Default for Settings {
             ctx_overrides: BTreeMap::new(),
             show_project: false,
             start_with_windows: false,
+            ctx_alerts: true,
+            ctx_thresholds: vec![80, 90],
+            toggle_hotkey: "Ctrl+Alt+H".into(),
+            auto_hide_fullscreen: true,
+            check_updates: false,
+            accent: Accent::Auto,
+            gauge_style: GaugeStyle::Ring,
+            ui_scale: 1.0,
+            card_rows: CardRows::default(),
+            dock: DockEdge::Off,
         }
     }
 }
@@ -73,9 +154,14 @@ impl Settings {
     /// Clamps every field into its valid range.
     pub fn sanitized(mut self) -> Self {
         self.schema_version = SCHEMA_VERSION;
-        if self.view == ViewMode::Settings {
+        if !matches!(self.view, ViewMode::Pill | ViewMode::Card) {
             self.view = ViewMode::Card;
         }
+        self.ctx_thresholds.retain(|t| (1..=100).contains(t));
+        self.ctx_thresholds.sort_unstable();
+        self.ctx_thresholds.dedup();
+        self.toggle_hotkey = self.toggle_hotkey.trim().to_owned();
+        self.ui_scale = clamp_or(self.ui_scale, 0.85, 1.3, 1.0);
         self.opacity = clamp_or(self.opacity, 0.3, 1.0, 1.0);
         self.ghost_opacity = clamp_or(self.ghost_opacity, 0.15, 1.0, 0.45);
         self.thresholds.retain(|t| (1..=100).contains(t));
@@ -152,6 +238,31 @@ mod tests {
         assert_eq!(v["show_project"], false);
         assert_eq!(v["start_with_windows"], false);
         assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["ctx_alerts"], true);
+        assert_eq!(v["ctx_thresholds"], serde_json::json!([80, 90]));
+        assert_eq!(v["toggle_hotkey"], "Ctrl+Alt+H");
+        assert_eq!(v["auto_hide_fullscreen"], true);
+        assert_eq!(v["check_updates"], false);
+        assert_eq!(v["accent"], "auto");
+        assert_eq!(v["gauge_style"], "ring");
+        assert_eq!(v["ui_scale"], 1.0);
+        assert_eq!(
+            v["card_rows"],
+            serde_json::json!({"sparklines": true, "burn": true, "session": true, "sources": true})
+        );
+        assert_eq!(v["dock"], "off");
+    }
+
+    #[test]
+    fn transient_views_are_never_persisted() {
+        for view in ["settings", "sessions", "history"] {
+            let next = apply_patch(&Settings::default(), &serde_json::json!({ "view": view })).unwrap();
+            assert_eq!(next.view, ViewMode::Card, "{view}");
+        }
+        let s = apply_patch(&Settings::default(), &serde_json::json!({"ui_scale": 9, "ctx_thresholds": [90, 0, 80]}))
+            .unwrap();
+        assert_eq!(s.ui_scale, 1.3);
+        assert_eq!(s.ctx_thresholds, vec![80, 90]);
     }
 
     #[test]
