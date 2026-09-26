@@ -148,6 +148,12 @@ impl Debounce {
     }
 }
 
+/// Auto-hide applies only while the setting is on and click-through ("ghost") is off: ghost mode
+/// is the explicit "keep it over my game or video" choice.
+pub fn auto_hide_active(setting: bool, click_through: bool) -> bool {
+    setting && !click_through
+}
+
 /// What one tick of the thread should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tick {
@@ -207,7 +213,8 @@ fn run(app: &AppHandle, shared: &Shared, rx: &Receiver<()>) {
         if shared.quitting.load(Ordering::SeqCst) {
             break;
         }
-        let enabled = shared.settings().auto_hide_fullscreen;
+        let setting = shared.settings().auto_hide_fullscreen;
+        let enabled = auto_hide_active(setting, shared.ui().click_through);
         let action = tick(
             &mut debounce,
             enabled,
@@ -377,6 +384,24 @@ mod tests {
         assert_eq!(
             run_ticks(&[on(true), on(true), (false, true), (false, true), on(false)], false),
             [Nothing, Emit(Event::FullscreenStarted), Emit(Event::AutoHideOff), Nothing, Nothing]
+        );
+    }
+
+    #[test]
+    fn ghost_mode_pauses_auto_hide() {
+        assert!(auto_hide_active(true, false));
+        assert!(!auto_hide_active(true, true), "click-through keeps the widget over a game");
+        assert!(!auto_hide_active(false, false));
+        // Turning ghost mode on over a fullscreen game brings an auto-hidden widget back.
+        let mut d = Debounce::default();
+        for _ in 0..3 {
+            tick(&mut d, auto_hide_active(true, false), true, || true, || false);
+        }
+        let t = tick(&mut d, auto_hide_active(true, true), true, || true, || false);
+        assert_eq!(t, Tick::Emit(Event::AutoHideOff));
+        assert_eq!(
+            crate::visibility::transition(HiddenReason::Fullscreen, false, Event::AutoHideOff).1,
+            crate::visibility::Action::Show
         );
     }
 

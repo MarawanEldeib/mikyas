@@ -125,6 +125,8 @@ pub fn apply_click_through_toggle(app: &AppHandle, shared: &Shared) {
     crate::window::set_click_through(app, on, effect);
     shared.ui().click_through = on;
     crate::window::emit_ui(app, shared);
+    // Ghost mode pauses fullscreen auto-hide; re-evaluate now rather than at the next poll.
+    crate::fullscreen::wake(app);
 }
 
 /// Validates, persists and applies a settings patch.
