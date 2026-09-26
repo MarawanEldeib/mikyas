@@ -347,19 +347,20 @@ mod tests {
 
     #[test]
     fn weekly_estimated_to_exact_switch_is_an_alias() {
-        let mut s = AlertState::default();
+        // Weekly estimates carry ±1 day: an exact time 20 h from the estimate is the same week.
         let settings = AlertSettings::default();
         let weekly_reset = T0 + 3 * DAY_MS;
-        let estimated = win(
-            WindowKind::SevenDay,
-            82.0,
-            ResetInfo::Estimated {
-                at_ms: weekly_reset - 25 * MINUTE_MS,
-                plus_minus_ms: DAY_MS,
-                confidence: Confidence::Low,
-            },
-        );
-        assert_eq!(s.evaluate(&[estimated], &settings, false).len(), 1);
+        let estimated = |at_ms: Ms| {
+            win(
+                WindowKind::SevenDay,
+                82.0,
+                ResetInfo::Estimated {
+                    at_ms,
+                    plus_minus_ms: DAY_MS,
+                    confidence: Confidence::Low,
+                },
+            )
+        };
         let exact = win(
             WindowKind::SevenDay,
             82.3,
@@ -367,8 +368,16 @@ mod tests {
                 at_ms: weekly_reset,
             },
         );
-        assert_eq!(s.evaluate(&[exact], &settings, false), vec![]);
+        let mut s = AlertState::default();
+        assert_eq!(s.evaluate(&[estimated(weekly_reset - 20 * HOUR_MS)], &settings, false).len(), 1);
+        assert_eq!(s.evaluate(std::slice::from_ref(&exact), &settings, false), vec![]);
         assert_eq!(s.kinds["seven_day"].instance_key, Some(weekly_reset));
+        // 30 h apart is beyond the estimate's error: a new week.
+        let mut s = AlertState::default();
+        assert_eq!(s.evaluate(&[estimated(weekly_reset - 30 * HOUR_MS)], &settings, false).len(), 1);
+        let events = s.evaluate(&[exact], &settings, false);
+        assert_eq!(events[0], AlertEvent::Reset { kind: WindowKind::SevenDay });
+        assert_eq!(events.len(), 2, "reset + re-armed threshold");
     }
 
     #[test]

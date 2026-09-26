@@ -19,13 +19,14 @@
 //! - A reset only counts as known while it is in the future. A reset already in the past (a
 //!   stale estimate) neither bounds the window nor yields `pct_at_reset`.
 //! - Estimated resets bound the window only approximately, and unknown ones not at all, so points
-//!   before the newest decrease of more than [`DROP_TOLERANCE_PCT`] (including a decrease to the
-//!   current value) are dropped as well: they belong to a previous window.
+//!   before the newest decrease of at least [`MIXED_SOURCE_DROP_PCT`] (including a decrease to the
+//!   current value) are dropped as well: they belong to a previous window. The samples mix CLI
+//!   decimals with Desktop integers, so smaller dips are noise.
 //! - The resampling grid is anchored at `now_ms` (`now`, `now - step`, …) so the current value is
 //!   always a grid point. Samples at or after `now_ms` are ignored; `state.pct` is the value then.
 
-use crate::engine::reset_estimate::DROP_TOLERANCE_PCT;
 use crate::engine::types::{Burn, Phase, Sample, WindowKind, WindowState};
+use crate::history::MIXED_SOURCE_DROP_PCT;
 use crate::time::{HOUR_MS, MINUTE_MS, Ms};
 
 pub const MIN_SLOPE_PCT_PER_H: f32 = 0.05;
@@ -88,7 +89,7 @@ pub fn compute(
 
     let current_window = points
         .windows(2)
-        .rposition(|w| w[1].pct < w[0].pct - DROP_TOLERANCE_PCT)
+        .rposition(|w| w[0].pct - w[1].pct >= MIXED_SOURCE_DROP_PCT)
         .map_or(0, |j| j + 1);
     let points = &points[current_window..];
     // The last point at or before the lookback start supplies the step value there.
@@ -519,6 +520,27 @@ mod tests {
     }
 
     #[test]
+    fn small_dip_between_cli_and_desktop_values_keeps_the_history() {
+        // CLI values (one decimal) climbing 10 %/h, then a Desktop integer lagging a little
+        // behind: 79.4 → 78 is not a reset, so the whole hour stays in the fit.
+        let mut s = series(&[
+            (NOW - m(60), 71.0),
+            (NOW - m(50), 72.7),
+            (NOW - m(40), 74.3),
+            (NOW - m(30), 76.0),
+            (NOW - m(20), 77.7),
+            (NOW - m(10), 79.4),
+            (NOW - m(8), 78.0),
+        ]);
+        let st = five(81.0, ResetInfo::Unknown);
+        let burn = compute(&WindowKind::FiveHour, &s, &st, NOW).expect("the dip is no reset");
+        assert!((8.0..12.0).contains(&burn.slope_pct_per_h), "{burn:?}");
+        // A two-point drop is one: only the last 8 minutes would remain, too few to fit.
+        s[6].pct = 77.0;
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &st, NOW), None);
+    }
+
+    #[test]
     fn weekly_uses_a_day_of_history() {
         // 1 %/h for the last 30 h, sampled every 15 min.
         let s: Vec<Sample> = (1..=120)
@@ -582,7 +604,7 @@ mod tests {
             // Samples before a decrease inside the lookback never influence the result.
             if let Some(j) = (1..=k)
                 .rev()
-                .find(|&j| fh[j].pct < fh[j - 1].pct - DROP_TOLERANCE_PCT)
+                .find(|&j| fh[j - 1].pct - fh[j].pct >= MIXED_SOURCE_DROP_PCT)
             {
                 if fh[j].t_ms > now - m(60) {
                     assert_eq!(

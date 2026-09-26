@@ -111,7 +111,19 @@ describe("mockHistory", () => {
     const w = aggregate("five_hour", rows, d0, d0 + 6 * HOUR, d0 + 6 * HOUR);
     expect(w.points.map((p) => p.pct)).toEqual([null, 10, 50, 49.5, 5, 30]);
     expect(w.resets_ms).toEqual([d0 + 4 * HOUR]);
-    expect(w.days).toEqual([{ day_start_ms: d0, peak_pct: 50, consumed_pct: 70 }]);
+    expect(w.days).toEqual([{ day_start_ms: d0, peak_pct: 50, consumed_pct: 70, samples: 5 }]);
+    // A dip under two points is noise; five silent hours end a five-hour window.
+    const gap = [
+      { t: d0 + HOUR, p: 40, r: null },
+      { t: d0 + 2 * HOUR, p: 38.6, r: null },
+      { t: d0 + 9 * HOUR, p: 60, r: null },
+    ];
+    const g = aggregate("five_hour", gap, d0, d0 + 10 * HOUR, d0 + 10 * HOUR);
+    expect(g.resets_ms).toEqual([d0 + 7 * HOUR]);
+    expect(g.days).toEqual([{ day_start_ms: d0, peak_pct: 60, consumed_pct: 60, samples: 3 }]);
+    const weekly = aggregate("seven_day", gap, d0, d0 + 10 * HOUR, d0 + 10 * HOUR);
+    expect(weekly.resets_ms).toEqual([]);
+    expect(weekly.days[0].consumed_pct).toBe(20);
   });
 });
 

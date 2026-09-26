@@ -30,6 +30,7 @@ pub struct HistoryDay {
     pub day_start_ms: i64,
     pub peak_pct: f32,
     pub consumed_pct: f32,
+    pub samples: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -53,6 +54,7 @@ impl From<DayUsage> for HistoryDay {
             day_start_ms: d.day_start_ms,
             peak_pct: d.peak_pct,
             consumed_pct: d.consumed_pct,
+            samples: d.samples,
         }
     }
 }
@@ -204,10 +206,13 @@ mod tests {
         assert_eq!(starts, vec![midnight - 2 * DAY_MS, midnight - DAY_MS, midnight]);
         assert_eq!(weekly.days[2].consumed_pct, 4.0);
         assert_eq!(weekly.days[2].peak_pct, 44.0);
+        let samples: Vec<u32> = weekly.days.iter().map(|d| d.samples).collect();
+        assert_eq!(samples, vec![0, 1, 1], "a day without rows says so");
         let json = serde_json::to_value(&d).unwrap();
         assert_eq!(json["windows"][1]["kind"], "seven_day");
         assert!(json["windows"][0]["points"][0].get("t_ms").is_some());
         assert!(json["windows"][0]["days"][0].get("consumed_pct").is_some());
+        assert_eq!(json["windows"][1]["days"][1]["samples"], 1);
     }
 
     #[test]

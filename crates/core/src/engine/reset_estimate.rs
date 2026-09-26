@@ -21,6 +21,8 @@
 //!   Estimate `at = (lo + hi) / 2 + duration`, `plus_minus = (hi - lo) / 2`.
 //!   Confidence: FiveHour → High if plus_minus ≤ 10 min, Medium if ≤ 45 min, else Low;
 //!   weekly → Low always. For weekly, add 1 day to `plus_minus`.
+//!   A start bounded below only by a sample at 0 is at most Medium: Desktop's integer 0 hides
+//!   usage below one point, so at light usage the window may already have been running then.
 //! - No boundary found within the samples (monotone since the first sample): if the first sample
 //!   is older than `now - duration`, the window cannot be older than `duration`… use the first
 //!   sample as `hi` with `lo = hi - duration` only when `s[0].pct > 0`; otherwise Unknown.
@@ -120,7 +122,8 @@ pub fn estimate_reset(
     } else {
         (lo.max(floor), hi)
     };
-    estimate(lo, hi, duration, weekly, now_ms)
+    let zero_bound = boundary.is_some_and(|j| samples[j].pct <= 0.0 && samples[j].t_ms == lo);
+    estimate(lo, hi, duration, weekly, zero_bound, now_ms)
 }
 
 /// True if `cur` belongs to a later window than `prev`.
@@ -139,8 +142,9 @@ fn bound_by_reset(lo: Ms, past_reset: Option<Ms>, hi: Ms) -> Ms {
     }
 }
 
-/// Estimate for a window that started in `(lo, hi]` (`lo <= hi <= lo + duration`).
-fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, now_ms: Ms) -> ResetInfo {
+/// Estimate for a window that started in `(lo, hi]` (`lo <= hi <= lo + duration`). `zero_bound`:
+/// `lo` is the time of a sample at 0, which caps the confidence at Medium.
+fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, zero_bound: bool, now_ms: Ms) -> ResetInfo {
     let width = hi - lo;
     let mid = lo + width / 2;
     let half = width - width / 2;
@@ -149,7 +153,7 @@ fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, now_ms: Ms) -> ResetInfo
         .max(now_ms.saturating_sub(duration));
     let (plus_minus_ms, confidence) = if weekly {
         (half.saturating_add(WEEKLY_EXTRA_MS), Confidence::Low)
-    } else if half <= HIGH_CONFIDENCE_MS {
+    } else if half <= HIGH_CONFIDENCE_MS && !zero_bound {
         (half, Confidence::High)
     } else if half <= MEDIUM_CONFIDENCE_MS {
         (half, Confidence::Medium)
@@ -283,6 +287,8 @@ mod tests {
 
     #[test]
     fn rise_from_zero_starts_a_window() {
+        // Desktop's integer 0 hides usage below one point, so the window may already have been
+        // running at T + 15 min: at most Medium, however narrow the interval.
         let got = five(
             &[
                 (T, 0.0),
@@ -297,9 +303,61 @@ mod tests {
             est(
                 T + m(15) + m(7) + 30_000 + FIVE_HOURS_MS,
                 m(7) + 30_000,
-                Confidence::High
+                Confidence::Medium
             )
         );
+        // Wider intervals still fall to Low.
+        let got = five(&[(T, 0.0), (T + 2 * HOUR_MS, 5.0)], T + 2 * HOUR_MS);
+        assert_eq!(
+            got,
+            est(T + HOUR_MS + FIVE_HOURS_MS, HOUR_MS, Confidence::Low)
+        );
+        // A known reset between the 0 and the rise bounds the start instead: the 0 belonged to
+        // the window that ended there.
+        let got = estimate_reset(
+            &WindowKind::FiveHour,
+            &series(&[(T, 0.0), (T + m(15), 5.0)]),
+            Some(T + m(5)),
+            T + m(20),
+        );
+        assert_eq!(got, est(T + m(10) + FIVE_HOURS_MS, m(5), Confidence::High));
+    }
+
+    #[test]
+    fn light_usage_never_claims_a_precision_it_lacks() {
+        // At 0.05–0.12 %/min Desktop still shows 0 up to ten minutes into a window, so a rise
+        // from 0 does not bound its start. Estimates may then miss, but never as High.
+        let synth = synth::light();
+        let fh = synth.fh();
+        let (mut checked, mut missed) = (0, 0);
+        for (k, truth) in synth.samples.iter().enumerate() {
+            let got = estimate_reset(
+                &WindowKind::FiveHour,
+                &fh[..=k],
+                None,
+                truth.t_ms + MINUTE_MS,
+            );
+            let (
+                Some(true_at),
+                ResetInfo::Estimated {
+                    at_ms,
+                    plus_minus_ms,
+                    confidence,
+                },
+            ) = (truth.fh_reset_ms, &got)
+            else {
+                continue;
+            };
+            let hit = (at_ms - true_at).abs() <= *plus_minus_ms;
+            assert!(
+                hit || *confidence != Confidence::High,
+                "5h sample {k}: High {at_ms}±{plus_minus_ms}, true {true_at}"
+            );
+            checked += 1;
+            missed += usize::from(!hit);
+        }
+        assert!(checked > 100, "{checked}");
+        assert!(missed > 0, "the hidden window start is reproduced");
     }
 
     #[test]
@@ -644,7 +702,7 @@ mod tests {
         let synth = synth::realistic();
         let fh = synth.fh();
         let sd = synth.sd();
-        let (mut checked_fh, mut high) = (0, 0);
+        let (mut checked_fh, mut narrow, mut high) = (0, 0, 0);
         for (k, truth) in synth.samples.iter().enumerate() {
             let now = truth.t_ms + MINUTE_MS;
 
@@ -665,6 +723,7 @@ mod tests {
                         "5h sample {k}: estimated {at_ms}±{plus_minus_ms}, true {true_at}"
                     );
                     checked_fh += 1;
+                    narrow += usize::from(*plus_minus_ms <= HIGH_CONFIDENCE_MS);
                     high += usize::from(*confidence == Confidence::High);
                 }
                 other => panic!("5h sample {k}: unexpected {other:?}"),
@@ -692,9 +751,11 @@ mod tests {
         }
         assert!(checked_fh > 200, "{checked_fh}");
         assert!(
-            high > 100,
-            "most windows are located to ±7.5 min: {high}/{checked_fh}"
+            narrow > 100,
+            "most windows are located to ±7.5 min: {narrow}/{checked_fh}"
         );
+        // Most of them rise from 0 and are capped at Medium; those located by a drop stay High.
+        assert!(high > 20, "{high}/{checked_fh}");
     }
 
     proptest! {

@@ -12,9 +12,10 @@ export const MOCK_HISTORY_DAYS = 14;
 const STEP = 15 * MIN;
 const FIVE_H = 5 * HOUR;
 const WEEK = 7 * DAY;
-/** Same rules as history.rs: gap after 2 h without rows, 1-point drops, 30-minute dedup. */
+/** Same rules as history.rs: gap after 2 h without rows, 2-point drops, five-hour windows over
+ *  after five hours without rows, 30-minute dedup. */
 const MAX_CARRY = 2 * HOUR;
-const RESET_DROP = 1;
+const RESET_DROP = 2;
 const RESET_DEDUP = 30 * MIN;
 
 export interface MockWindowSpec {
@@ -157,7 +158,7 @@ export function aggregate(kind: string, rows: readonly Row[], from: number, to: 
 
   const dayStarts: number[] = [];
   for (let d = startOfLocalDay(from); d < to; d = addLocalDays(d, 1)) dayStarts.push(d);
-  const days: HistoryDay[] = dayStarts.map((day_start_ms) => ({ day_start_ms, peak_pct: 0, consumed_pct: 0 }));
+  const days: HistoryDay[] = dayStarts.map((day_start_ms) => ({ day_start_ms, peak_pct: 0, consumed_pct: 0, samples: 0 }));
   const passed = Math.min(to, now);
   const marks: number[] = [];
   let known: number | null = null;
@@ -167,8 +168,12 @@ export function aggregate(kind: string, rows: readonly Row[], from: number, to: 
     if (row.t > to) break;
     const exactReset = prev !== null && known !== null && prev.t < known && known <= row.t;
     const dropped = prev !== null && prev.p - row.p >= RESET_DROP;
-    if (dropped && !exactReset && row.t >= from) marks.push(row.t);
-    const fresh = prev === null || exactReset || dropped;
+    const expired = kind === "five_hour" && prev !== null && row.t - prev.t > FIVE_H ? prev : null;
+    if (!exactReset) {
+      const mark = expired ? (expired.p > 0 ? Math.min(expired.t + FIVE_H, row.t) : null) : dropped ? row.t : null;
+      if (mark !== null && mark >= from && mark <= to) marks.push(mark);
+    }
+    const fresh = prev === null || exactReset || dropped || expired !== null;
     const consumed = prev === null ? 0 : fresh ? row.p : Math.max(0, row.p - high);
     high = fresh ? row.p : Math.max(high, row.p);
     let i = dayStarts.length - 1;
@@ -176,6 +181,7 @@ export function aggregate(kind: string, rows: readonly Row[], from: number, to: 
     if (i >= 0) {
       days[i].consumed_pct += consumed;
       days[i].peak_pct = Math.max(days[i].peak_pct, row.p);
+      days[i].samples++;
     }
     if (row.r !== null) {
       if (known !== null && known !== row.r && known <= row.t && known >= from && known <= passed) marks.push(known);

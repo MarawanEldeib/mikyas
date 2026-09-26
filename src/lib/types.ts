@@ -95,6 +95,8 @@ export interface HistoryDay {
   peak_pct: number;
   /** Sum of increases that day (share of the limit consumed; resets don't subtract). */
   consumed_pct: number;
+  /** Rows recorded that day; 0 means no data, unlike a day at 0%. */
+  samples: number;
 }
 
 export interface HistoryWindow {
