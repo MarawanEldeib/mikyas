@@ -3,10 +3,29 @@
 //  - UUIDs must start with 8 identical hex chars (e.g. 00000000-..., aaaaaaaa-...)
 //  - no Anthropic token prefixes
 //  - no real Windows user profile paths or the local username
+//
+// With --data-names it only checks file NAMES: any widget data file (settings backups,
+// wrap/state/alerts/... json, a backups/ dir) is rejected wherever it is, since one staged from a
+// CUW_DATA_DIR inside the repo would publish real usage data. .gitignore covers them too; this
+// catches a forced add.
 import { readFileSync, existsSync } from "node:fs";
+import { basename } from "node:path";
 import { userInfo } from "node:os";
 
-const files = process.argv.slice(2).filter((f) => existsSync(f));
+const args = process.argv.slice(2);
+const namesOnly = args[0] === "--data-names";
+const files = (namesOnly ? args.slice(1) : args).filter((f) => existsSync(f));
+const DATA_NAME = /^(settings-.*|wrap|state|alerts|positions|watchdog|update-check)\.json$/i;
+const DATA_DIR = /(^|[\\/])(backups|\.cuw-data)[\\/]/i;
+
+if (namesOnly) {
+  const bad = files.filter((f) => DATA_NAME.test(basename(f)) || DATA_DIR.test(f));
+  if (bad.length) {
+    console.error("Widget data files must never be committed:\n  " + bad.join("\n  "));
+    process.exit(1);
+  }
+  process.exit(0);
+}
 const username = userInfo().username.toLowerCase();
 const uuidRe = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const problems = [];

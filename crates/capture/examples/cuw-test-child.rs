@@ -1,4 +1,5 @@
-//! Test helper for the `cuw-capture` integration tests; not part of the product.
+//! Test helper for the `cuw-capture` integration tests; not part of the product (an example, so
+//! it is never built into or installed with the shipped package).
 //!
 //! Echoes stdin to stdout byte for byte, then exits. Flags (any order):
 //! - `--exit N`: exit code (default 0)

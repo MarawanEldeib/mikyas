@@ -6,11 +6,15 @@
 //! `<capture_dir>/_errors.log`) and nothing is ever written to stderr.
 //!
 //! Modes (first argument):
-//! - `--tee` (also: no or unknown argument): copy stdin to stdout byte for byte, then capture.
+//! - `--tee` (also: no argument): copy stdin to stdout byte for byte, then capture. An unknown or
+//!   misplaced argument also falls back to `--tee`, and `unknown_arg` (never the argument's text)
+//!   is logged so a mistyped statusline command can be found.
 //! - `--default`: capture, then print one compact coloured summary line.
 //! - `-- <program> [args...]`: run the user's statusline program with the same stdin (used where
 //!   the shell cannot pipe bytes unchanged) and exit with its exit code.
-//! - `--diag`: append shell/process diagnostics (names only, never values) to `_diag.log`.
+//! - `--diag`: append shell/process diagnostics to `_diag.log`: environment variable names, JSON
+//!   key names, the parent/grandparent executable names and the argument COUNT. Never values,
+//!   never the command line or any path.
 //! - `--version`: print the version.
 
 use std::ffi::{OsStr, OsString};
@@ -43,6 +47,8 @@ const GREEN: &str = "\x1b[32m";
 const ORANGE: &str = "\x1b[38;5;208m";
 const RED: &str = "\x1b[31m";
 const SEPARATOR: &str = " · ";
+/// Longest model name shown on the `--default` line.
+const MAX_MODEL_NAME_CHARS: usize = 48;
 
 #[derive(Debug, PartialEq)]
 enum Mode {
@@ -61,7 +67,18 @@ fn main() {
 }
 
 fn run() -> i32 {
-    match parse_args(std::env::args_os().skip(1)) {
+    let (mode, unknown_arg) = parse_args(std::env::args_os().skip(1));
+    let name = mode.name();
+    let code = run_mode(mode);
+    // After the mode ran, so the user's statusline is never delayed by it. Kind only.
+    if unknown_arg {
+        log_failure(&Paths::detect_capture_dir(), name, "unknown_arg");
+    }
+    code
+}
+
+fn run_mode(mode: Mode) -> i32 {
+    match mode {
         Mode::Version => {
             write_stdout(format!("cuw-capture {}\n", env!("CARGO_PKG_VERSION")).as_bytes());
             0
@@ -82,20 +99,36 @@ fn run() -> i32 {
     }
 }
 
-/// Hand-rolled on purpose: no dependency, and anything unexpected falls back to `--tee`.
-fn parse_args(args: impl IntoIterator<Item = OsString>) -> Mode {
+impl Mode {
+    /// The name used in `_errors.log` lines.
+    fn name(&self) -> &'static str {
+        match self {
+            Mode::Tee => "tee",
+            Mode::Default => "default",
+            Mode::Diag => "diag",
+            Mode::Version => "version",
+            Mode::Argv(_) => "argv",
+        }
+    }
+}
+
+/// Hand-rolled on purpose: no dependency, and anything unexpected falls back to `--tee`. The flag
+/// is true when an argument was not understood: an unknown first argument, or anything after a
+/// mode that takes none. `--diag` accepts (and only counts) extra arguments.
+fn parse_args(args: impl IntoIterator<Item = OsString>) -> (Mode, bool) {
     let mut args = args.into_iter();
     let Some(first) = args.next() else {
-        return Mode::Tee;
+        return (Mode::Tee, false);
     };
-    match first.to_str() {
+    let mode = match first.to_str() {
         Some("--tee") => Mode::Tee,
         Some("--default") => Mode::Default,
-        Some("--diag") => Mode::Diag,
+        Some("--diag") => return (Mode::Diag, false),
         Some("--version") => Mode::Version,
-        Some("--") => Mode::Argv(args.collect()),
-        _ => Mode::Tee,
-    }
+        Some("--") => return (Mode::Argv(args.collect()), false),
+        _ => return (Mode::Tee, true),
+    };
+    (mode, args.next().is_some())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -220,7 +253,7 @@ fn default_line() {
 }
 
 fn capture_and_print_line(mode: &str, bytes: &[u8], timed_out: bool) {
-    let rec = capture_input(mode, bytes, timed_out);
+    let rec = capture_record(mode, bytes, timed_out);
     write_stdout(render_line(rec.as_ref(), time::now_ms()).as_bytes());
 }
 
@@ -258,7 +291,7 @@ fn argv(command: &[OsString]) -> i32 {
                 &format!("spawn_{:?}", e.kind()),
             );
             if let Some(job) = &job {
-                job.release();
+                release_job(job);
             }
             return 0;
         }
@@ -284,7 +317,14 @@ fn argv(command: &[OsString]) -> i32 {
         });
     }
 
-    capture_input("argv", &head, timed_out);
+    // The shim and the user's program share a kill-on-close job: a panic unwinding out of here
+    // would close it and kill the program. Contain a bug in our own capture instead.
+    let captured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        capture_input("argv", &head, timed_out);
+    }));
+    if captured.is_err() {
+        log_failure(&Paths::detect_capture_dir(), "argv", "panic");
+    }
 
     let code = match child.wait() {
         Ok(status) => status.code().unwrap_or(1),
@@ -293,15 +333,22 @@ fn argv(command: &[OsString]) -> i32 {
     // The child finished normally: let anything it deliberately left running in the background
     // outlive us. Only an abnormal end of the shim (Claude Code cancelling it) kills the tree.
     if let Some(job) = &job {
-        job.release();
+        release_job(job);
     }
     code
+}
+
+fn release_job(job: &job::Job) {
+    if !job.release() {
+        log_failure(&Paths::detect_capture_dir(), "argv", "job_release");
+    }
 }
 
 fn diag() {
     let (head, timed_out) = read_all_stdin();
     let dir = Paths::detect_capture_dir();
-    let block = diag_block(&head, timed_out);
+    let argc = std::env::args_os().len().saturating_sub(1);
+    let block = diag_block(&head, timed_out, argc);
     let _ = append_capped(&dir.join(DIAG_LOG), block.as_bytes(), DIAG_LOG_MAX);
     capture_input("diag", &head, timed_out);
     write_stdout(b"cuw diag ok\n");
@@ -311,18 +358,34 @@ fn diag() {
 // capture + error log
 // ---------------------------------------------------------------------------------------------
 
-/// Parses and saves the capture. Failures are logged (kind only, never input content) and
-/// otherwise ignored. Returns the record for rendering the `--default` line.
-fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) -> Option<CaptureRecord> {
+/// Parses and saves the capture through cuw-core's one-call helper. Failures are logged (kind
+/// only, never input content) and otherwise ignored.
+fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) {
+    test_hook();
+    let dir = Paths::detect_capture_dir();
+    let result = capture::capture_from_bytes(bytes, &dir, time::now_ms());
+    log_capture_result(&dir, mode, result.err().as_ref(), timed_out);
+}
+
+/// Like [`capture_input`], but also returns the record, for rendering the `--default` line (the
+/// only place that needs it, so the only place that pays for the copy handed to the writer).
+fn capture_record(mode: &str, bytes: &[u8], timed_out: bool) -> Option<CaptureRecord> {
+    test_hook();
     let dir = Paths::detect_capture_dir();
     let result = capture::record_from_bytes(bytes, time::now_ms()).and_then(|rec| {
         capture::write_capture(&dir, rec.clone())?;
         Ok(rec)
     });
-    let (rec, kind) = match result {
+    let (rec, err) = match result {
         Ok(rec) => (Some(rec), None),
-        Err(e) => (None, Some(error_kind(&e))),
+        Err(e) => (None, Some(e)),
     };
+    log_capture_result(&dir, mode, err.as_ref(), timed_out);
+    rec
+}
+
+fn log_capture_result(dir: &Path, mode: &str, err: Option<&CaptureError>, timed_out: bool) {
+    let kind = err.map(error_kind);
     let note = match (kind, timed_out) {
         (Some(kind), true) => Some(format!("{kind} stdin_timeout")),
         (Some(kind), false) => Some(kind),
@@ -330,10 +393,31 @@ fn capture_input(mode: &str, bytes: &[u8], timed_out: bool) -> Option<CaptureRec
         (None, false) => None,
     };
     if let Some(note) = note {
-        log_failure(&dir, mode, &note);
+        log_failure(dir, mode, &note);
     }
-    rec
 }
+
+/// Debug builds only (release binaries never read it): `CUW_TEST_HOOK` lets the integration
+/// tests make the capture panic (`panic`) or slow (`capture_delay_ms=N`) on demand.
+#[cfg(debug_assertions)]
+fn test_hook() {
+    let Some(hook) = std::env::var_os("CUW_TEST_HOOK") else {
+        return;
+    };
+    let hook = hook.to_string_lossy();
+    if hook == "panic" {
+        panic!("CUW_TEST_HOOK=panic");
+    }
+    if let Some(ms) = hook
+        .strip_prefix("capture_delay_ms=")
+        .and_then(|ms| ms.parse().ok())
+    {
+        thread::sleep(Duration::from_millis(ms));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn test_hook() {}
 
 /// Appends one `<timestamp> <mode> <note>` line to `<capture_dir>/_errors.log`. `note` is an
 /// error kind, never input content.
@@ -459,7 +543,12 @@ fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
             .model
             .as_ref()
             .and_then(|m| m.display_name.as_deref().or(m.id.as_deref()))
-            .map(printable)
+            .map(|n| {
+                printable(n)
+                    .chars()
+                    .take(MAX_MODEL_NAME_CHARS)
+                    .collect::<String>()
+            })
             .filter(|n| !n.is_empty());
         if let Some(name) = name {
             parts.push(format!("{PINK}{name}{RESET}"));
@@ -485,9 +574,21 @@ fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
     line
 }
 
-/// Strips control characters so a model name cannot inject terminal escape sequences.
+/// Strips control characters (terminal escape sequences), bidi overrides/embeddings/isolates and
+/// zero-width characters (reordered or hidden text) from text shown in a terminal.
 fn printable(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars()
+        .filter(|&c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
+                )
+        })
+        .collect()
 }
 
 fn colored_pct(pct: f32) -> String {
@@ -637,14 +738,20 @@ mod job {
             unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) != 0 }
         }
 
-        /// Clears the kill-on-close limit so closing the handle no longer kills anything.
-        pub fn release(&self) {
-            self.set_limit_flags(0);
+        /// Clears the kill-on-close limit so closing the handle no longer kills anything. False
+        /// if Windows refused (closing the handle would then still kill the tree).
+        pub fn release(&self) -> bool {
+            self.set_limit_flags(0)
         }
     }
 
     impl Drop for Job {
         fn drop(&mut self) {
+            // Unwinding from a bug in the shim is not Claude Code cancelling it: do not take the
+            // user's program (or the shim itself, also a member) down with it.
+            if std::thread::panicking() {
+                self.release();
+            }
             // SAFETY: the handle came from CreateJobObjectW and is closed only here.
             unsafe {
                 CloseHandle(self.0);
@@ -670,7 +777,9 @@ mod job {
         pub fn assign(&self, _child: &Child) -> bool {
             false
         }
-        pub fn release(&self) {}
+        pub fn release(&self) -> bool {
+            true
+        }
     }
 }
 
@@ -689,7 +798,9 @@ const DIAG_ENV_NAMES: &[&str] = &[
 const DIAG_MAX_KEYS: usize = 64;
 const DIAG_MAX_KEY_LEN: usize = 64;
 
-fn diag_block(stdin: &[u8], timed_out: bool) -> String {
+/// `argc` is the number of arguments after the executable; their text is never logged (a path
+/// argument would reveal the user name).
+fn diag_block(stdin: &[u8], timed_out: bool, argc: usize) -> String {
     let json: Option<serde_json::Value> =
         serde_json::from_slice(stdin.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(stdin)).ok();
     let (parent, grandparent) = ancestry();
@@ -700,7 +811,7 @@ fn diag_block(stdin: &[u8], timed_out: bool) -> String {
         env!("CARGO_PKG_VERSION"),
         iso_now()
     );
-    let _ = writeln!(s, "cmdline: {}", raw_command_line());
+    let _ = writeln!(s, "args: mode=--diag argc={argc}");
     let _ = writeln!(s, "parent: {parent}");
     let _ = writeln!(s, "grandparent: {grandparent}");
     let _ = writeln!(s, "env_names: {}", diag_env_names().join(", "));
@@ -742,32 +853,6 @@ fn diag_env_names() -> Vec<String> {
         .collect();
     names.sort();
     names
-}
-
-#[cfg(windows)]
-fn raw_command_line() -> String {
-    use windows_sys::Win32::System::Environment::GetCommandLineW;
-    // SAFETY: GetCommandLineW returns a pointer to this process's NUL-terminated command line,
-    // valid for the life of the process; we only read up to the terminator.
-    unsafe {
-        let ptr = GetCommandLineW();
-        if ptr.is_null() {
-            return String::new();
-        }
-        let mut len = 0;
-        while *ptr.add(len) != 0 {
-            len += 1;
-        }
-        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
-    }
-}
-
-#[cfg(not(windows))]
-fn raw_command_line() -> String {
-    std::env::args_os()
-        .map(|a| format!("{a:?}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// `pid=… exe=…` of the parent and grandparent process.
@@ -916,17 +1001,20 @@ mod tests {
 
     #[test]
     fn parses_modes_and_defaults_to_tee() {
-        assert_eq!(parse_args(args(&[])), Mode::Tee);
-        assert_eq!(parse_args(args(&["--tee", "extra"])), Mode::Tee);
-        assert_eq!(parse_args(args(&["--default"])), Mode::Default);
-        assert_eq!(parse_args(args(&["--diag"])), Mode::Diag);
-        assert_eq!(parse_args(args(&["--version"])), Mode::Version);
-        assert_eq!(parse_args(args(&["--bogus"])), Mode::Tee);
-        assert_eq!(parse_args(args(&["pwsh"])), Mode::Tee);
-        assert_eq!(parse_args(args(&["--"])), Mode::Argv(vec![]));
+        assert_eq!(parse_args(args(&[])), (Mode::Tee, false));
+        assert_eq!(parse_args(args(&["--tee"])), (Mode::Tee, false));
+        assert_eq!(parse_args(args(&["--tee", "extra"])), (Mode::Tee, true));
+        assert_eq!(parse_args(args(&["--default"])), (Mode::Default, false));
+        assert_eq!(parse_args(args(&["--default", "x"])), (Mode::Default, true));
+        assert_eq!(parse_args(args(&["--diag"])), (Mode::Diag, false));
+        assert_eq!(parse_args(args(&["--diag", "x"])), (Mode::Diag, false));
+        assert_eq!(parse_args(args(&["--version"])), (Mode::Version, false));
+        assert_eq!(parse_args(args(&["--bogus"])), (Mode::Tee, true));
+        assert_eq!(parse_args(args(&["pwsh"])), (Mode::Tee, true));
+        assert_eq!(parse_args(args(&["--"])), (Mode::Argv(vec![]), false));
         assert_eq!(
             parse_args(args(&["--", "pwsh", "-File", "a b.ps1"])),
-            Mode::Argv(args(&["pwsh", "-File", "a b.ps1"]))
+            (Mode::Argv(args(&["pwsh", "-File", "a b.ps1"])), false)
         );
     }
 
@@ -998,6 +1086,23 @@ mod tests {
             format!("{PINK}]0;evilOpus{RESET}\n")
         );
 
+        // Bidi overrides/isolates and zero-width characters could reorder or hide what follows.
+        rec.model = Some(ModelInfo {
+            id: None,
+            display_name: Some("\u{202E}Opus\u{200B}\u{2066}x\u{2069}\u{FEFF}\u{200F}".to_owned()),
+        });
+        assert_eq!(render_line(Some(&rec), 0), format!("{PINK}Opusx{RESET}\n"));
+
+        // Names are capped so a huge one cannot push the rest of the line off screen.
+        rec.model = Some(ModelInfo {
+            id: None,
+            display_name: Some("é".repeat(500)),
+        });
+        assert_eq!(
+            render_line(Some(&rec), 0),
+            format!("{PINK}{}{RESET}\n", "é".repeat(MAX_MODEL_NAME_CHARS))
+        );
+
         rec.model = None;
         assert_eq!(render_line(Some(&rec), 0), "Claude\n");
         assert_eq!(render_line(None, 0), "Claude\n");
@@ -1031,7 +1136,8 @@ mod tests {
     #[test]
     fn diag_block_lists_names_only() {
         let stdin = br#"{"session_id":"00000000-0000-4000-8000-000000000001","cwd":"C:\\work\\value-sentinel","rate_limits":{"five_hour":{"used_percentage":5}}}"#;
-        let block = diag_block(stdin, false);
+        let block = diag_block(stdin, false, 2);
+        assert!(block.contains("args: mode=--diag argc=2\n"), "{block}");
         assert!(
             block.contains("json_keys: session_id, cwd, rate_limits\n"),
             "{block}"
@@ -1043,7 +1149,7 @@ mod tests {
         );
         assert!(!block.contains("value-sentinel"));
         assert!(!block.contains("00000000-0000-4000-8000-000000000001"));
-        assert!(diag_block(b"garbage", true).contains("json_keys: (none)"));
+        assert!(diag_block(b"garbage", true, 1).contains("json_keys: (none)"));
     }
 
     #[cfg(windows)]

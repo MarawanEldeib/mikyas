@@ -1,27 +1,56 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds the per-user NSIS installer and creates a DRAFT GitHub release
-# with the installer and SHA256SUMS. Review the draft, then publish it by hand. The version in
-# package.json, Cargo.toml and src-tauri/tauri.conf.json must equal the tag (without "v").
+# DISABLED on GitHub: releases are made by hand (cuw-release skill). Keep it disabled in the
+# Actions tab; this file is kept hardened for when it is turned back on.
+#
+# Pushing a tag like v0.2.0 runs the full CI as a gate, builds the per-user NSIS installer in a job
+# that holds only a read-only token, then a separate publish job (gated by the `release`
+# environment) attests the build provenance and creates a DRAFT GitHub release with the installer
+# and SHA256SUMS. Review the draft, then publish it by hand. The version in package.json,
+# Cargo.toml and src-tauri/tauri.conf.json must equal the tag (without "v"), and the tagged commit
+# must be on main.
+#
+# Repo settings this relies on (not expressible here): the `release` environment with the owner as
+# required reviewer, a ruleset that lets only admins create `v*` tags, and immutable releases.
+#
+# Verify a downloaded installer:
+#   gh attestation verify <installer.exe> --repo MarawanEldeib/claude-usage-widget
 
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
 
+# Every action is pinned to a full commit SHA (the tag is in the comment). No caches are restored
+# or saved here: a release always builds from a clean state.
 jobs:
-  release:
+  check:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+    with:
+      no_cache: true
+    permissions:
+      contents: read
+
+  build:
+    name: Build installer (read-only token)
+    needs: check
     runs-on: windows-latest
+    permissions:
+      contents: read
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the "tag is on main" check needs history
+          persist-credentials: false
 
       - name: Tag matches the app version
         run: |
@@ -31,57 +60,101 @@ jobs:
           if ($npm -ne $tauri -or $npm -ne $cargo) { throw "version mismatch: package.json $npm, tauri.conf.json $tauri, Cargo.toml $cargo" }
           if ("v$npm" -ne "$env:GITHUB_REF_NAME") { throw "tag $env:GITHUB_REF_NAME does not match version $npm" }
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - name: Tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          if ($LASTEXITCODE -ne 0) { throw "fetching main failed" }
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "$env:GITHUB_SHA is not on main" }
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+      # No install scripts (lefthook's hook installer is not needed here), and no token to steal:
+      # this job's GITHUB_TOKEN is read-only and checkout did not persist it.
+      - run: npm ci --ignore-scripts
 
       # Only the cuw-capture shim, copied to src-tauri/binaries/ for bundle.externalBin.
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
 
-      - name: Build the installer and create a draft release
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Claude Usage Widget ${{ github.ref_name }}
-          releaseBody: |
-            Per-user installer for Windows 10/11 (no admin rights needed). It is not code-signed yet,
-            so SmartScreen may warn: choose **More info → Run anyway**. See INSTALL.md for the
-            first-run steps; SHA256SUMS lists the installer's checksum.
-          releaseDraft: true
-          prerelease: false
-
-      - name: SHA256SUMS
-        env:
-          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+      # The Tauri CLI directly (no tauri-action): nothing in this job can publish.
+      - name: Build the installer
         run: |
-          $files = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*.exe' }
-          if (-not $files) { throw "no installer in $env:ARTIFACTS" }
-          # The name GitHub gives the uploaded asset (tauri-action's ghAssetName): spaces and other
-          # special characters become dots, e.g. Claude.Usage.Widget_0.1.0_x64-setup.exe.
-          $ghName = { param($f) ((Split-Path $f -Leaf).Trim() -replace '[^a-zA-Z0-9_-]', '.') -replace '\.\.', '.' }
-          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower(), (& $ghName $f) }
-          $lines
-          [IO.File]::WriteAllText("$PWD/SHA256SUMS", ($lines -join "`n") + "`n")
+          $env:CARGO_ENCODED_RUSTFLAGS = & ./scripts/release-rustflags.ps1
+          npx --no-install tauri build --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed ($LASTEXITCODE)" }
 
-      - name: Attach SHA256SUMS to the draft
-        uses: actions/github-script@v7
-        env:
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+      - name: Collect the installer and SHA256SUMS
+        run: |
+          $targetDir = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+          $files = @(Get-ChildItem (Join-Path $targetDir 'release\bundle\nsis') -Filter '*.exe')
+          if ($files.Count -ne 1) { throw "expected one installer, found $($files.Count)" }
+          $out = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dist"
+          # The name GitHub would give the uploaded asset: spaces and other special characters
+          # become dots, e.g. Claude.Usage.Widget_0.1.0_x64-setup.exe. Renamed here, so
+          # SHA256SUMS, the attestation and the asset all use the same name.
+          $name = ($files[0].Name.Trim() -replace '[^a-zA-Z0-9_.-]', '.') -replace '\.\.+', '.'
+          Copy-Item -LiteralPath $files[0].FullName -Destination (Join-Path $out $name)
+          $line = "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 (Join-Path $out $name)).Hash.ToLower(), $name
+          $line
+          [IO.File]::WriteAllText((Join-Path $out 'SHA256SUMS'), "$line`n")
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          script: |
-            const fs = require("fs");
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: Number(process.env.RELEASE_ID),
-              name: "SHA256SUMS",
-              data: fs.readFileSync("SHA256SUMS"),
-            });
+          name: installer
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attest and create the draft release
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewer gate (configure the `release` environment in the repo settings).
+    environment: release
+    permissions:
+      contents: write # create the draft release
+      id-token: write # sign the provenance attestation (Sigstore)
+      attestations: write
+    steps:
+      # No checkout and no build here: this job only handles the finished files.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: installer
+          path: dist
+
+      - name: Check SHA256SUMS
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/SHA256SUMS
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "Per-user installer for Windows 10/11 (no admin rights needed). It is not code-signed yet,"
+            echo "so SmartScreen may warn: choose **More info → Run anyway**. See INSTALL.md for the"
+            echo "first-run steps."
+            echo
+            echo "SHA-256 (also in SHA256SUMS):"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "Verify the build provenance: \`gh attestation verify <file> --repo $GH_REPO\`"
+          } > notes.md
+          gh release create "$TAG" --draft --verify-tag \
+            --title "Claude Usage Widget $TAG" --notes-file notes.md \
+            dist/*.exe dist/SHA256SUMS

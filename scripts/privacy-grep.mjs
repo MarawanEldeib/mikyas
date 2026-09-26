@@ -1,5 +1,6 @@
 // Privacy grep (plan M6): the widget is token-free, so no code under src-tauri/, crates/ or
-// src/ may name the credentials file, the OAuth usage endpoint or claude.ai. Comments and docs
+// src/ may name the credentials file, the OAuth usage endpoint, claude.ai, an Anthropic host, the
+// session cookie or a cookie store. Comments and docs
 // may (they explain what the widget never touches); the few code lines that must name one are
 // listed in ALLOW. Scans the files git knows about (tracked, plus untracked ones not ignored).
 //  - Only whole-line comments are skipped. A trailing `//` is not stripped: it could sit inside
@@ -9,7 +10,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const ROOTS = ["src-tauri", "crates", "src"];
-const PATTERNS = [/\.credentials/i, /api\/oauth/i, /claude\.ai/i];
+const PATTERNS = [
+  /\.credentials/i,
+  /api\/oauth/i,
+  /claude\.ai/i,
+  /anthropic\.com/i, // api.anthropic.com, console.anthropic.com, ...
+  /sessionKey/i, // the claude.ai session cookie
+  /[\\/]Network[\\/]Cookies/i, // Chromium/Electron cookie store (Claude Desktop's included)
+];
 const DOCS = /\.(md|txt)$/i;
 
 // Each entry names a file and the exact code it may contain; `tests` limits it to the file's
@@ -117,7 +125,7 @@ for (const file of listFiles()) {
 const stale = ALLOW.filter((_, i) => !used.has(i)).map((a) => `${a.file}: ${a.line} (${a.why})`);
 
 if (hits.length || stale.length) {
-  if (hits.length) console.error("Privacy grep: code names a credential file, api/oauth or claude.ai:\n  " + hits.join("\n  "));
+  if (hits.length) console.error("Privacy grep: code names a credential file, api/oauth, claude.ai, an Anthropic host, sessionKey or a cookie store:\n  " + hits.join("\n  "));
   if (stale.length) console.error("Privacy grep: allowlist entries that match nothing:\n  " + stale.join("\n  "));
   process.exit(1);
 }

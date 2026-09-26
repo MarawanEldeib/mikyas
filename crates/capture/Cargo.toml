@@ -10,12 +10,9 @@ rust-version.workspace = true
 name = "cuw-capture"
 path = "src/main.rs"
 
-# Test-only helper spawned by the integration tests (echoes stdin, exits with a chosen code).
-[[bin]]
-name = "cuw-test-child"
-path = "src/bin/cuw-test-child.rs"
-test = false
-doc = false
+# The integration tests' helper process is examples/cuw-test-child.rs: an example, not a [[bin]],
+# so `cargo build`/`cargo install` of this package never produce it. `cargo test` builds examples
+# before running the tests, and tests/shim.rs finds it next to the shim in `<profile>/examples/`.
 
 [dependencies]
 cuw-core.workspace = true
@@ -28,7 +25,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Environment",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

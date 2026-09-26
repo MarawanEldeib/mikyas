@@ -1,0 +1,7 @@
+# Static MSVC runtime: the shim runs from a user-writable bin dir on every statusline update, and a
+# dynamically linked VCRUNTIME140.dll would be searched for next to it first. With +crt-static the
+# binaries import only KnownDLLs and API sets. `tauri build` (STATIC_VCRUNTIME=true) still links.
+# Note: a RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS env var replaces these flags instead of adding to
+# them, so scripts/build-sidecar.ps1 repeats +crt-static when it adds --remap-path-prefix.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
