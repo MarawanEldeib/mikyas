@@ -74,10 +74,13 @@ export type ChartGeometry = StepPath;
  * domain). A null point, or a missing stretch longer than 1.5 steps, breaks the line.
  */
 export function chartGeometry(points: readonly SparkPoint[], d: Domain, box: PlotBox, step = HOUR): ChartGeometry {
-  const pts = points
-    .filter((p) => Number.isFinite(p.t_ms) && p.t_ms < d.to && p.t_ms + step > d.from)
-    .sort((a, b) => a.t_ms - b.t_ms);
-  return stepPath(pts, (t) => plotX(t, d, box), (pct) => plotY(pct, box), step);
+  const pts = points.filter((p) => Number.isFinite(p.t_ms) && p.t_ms < d.to && p.t_ms + step > d.from).sort((a, b) => a.t_ms - b.t_ms);
+  return stepPath(
+    pts,
+    (t) => plotX(t, d, box),
+    (pct) => plotY(pct, box),
+    step,
+  );
 }
 
 /** X positions of the resets inside the domain. */

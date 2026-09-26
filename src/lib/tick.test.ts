@@ -101,9 +101,13 @@ describe("createTicker", () => {
     vi.setSystemTime(NOW);
     const ticks: number[] = [];
     const deadline = NOW + 10 * MIN + 2 * SEC;
-    const t = createTicker(() => ({ deadlines: [deadline], pasts: [] }), (n) => ticks.push(n), {
-      doc: null,
-    });
+    const t = createTicker(
+      () => ({ deadlines: [deadline], pasts: [] }),
+      (n) => ticks.push(n),
+      {
+        doc: null,
+      },
+    );
     vi.advanceTimersByTime(2 * SEC);
     expect(ticks).toEqual([]);
     vi.advanceTimersByTime(1);
@@ -121,9 +125,13 @@ describe("createTicker", () => {
     vi.setSystemTime(NOW);
     const doc = fakeDoc();
     const ticks: number[] = [];
-    const t = createTicker(() => ({ deadlines: [NOW + HOUR], pasts: [] }), (n) => ticks.push(n), {
-      doc: doc as unknown as Document,
-    });
+    const t = createTicker(
+      () => ({ deadlines: [NOW + HOUR], pasts: [] }),
+      (n) => ticks.push(n),
+      {
+        doc: doc as unknown as Document,
+      },
+    );
     doc.visibilityState = "hidden";
     doc.fire();
     vi.advanceTimersByTime(10 * MIN);
@@ -140,9 +148,13 @@ describe("createTicker", () => {
     vi.setSystemTime(NOW);
     const doc = fakeDoc();
     const ticks: number[] = [];
-    const t = createTicker(() => ({ deadlines: [NOW + HOUR + 30 * SEC], pasts: [] }), (n) => ticks.push(n), {
-      doc: doc as unknown as Document,
-    });
+    const t = createTicker(
+      () => ({ deadlines: [NOW + HOUR + 30 * SEC], pasts: [] }),
+      (n) => ticks.push(n),
+      {
+        doc: doc as unknown as Document,
+      },
+    );
     // Two visibilitychange events while already visible (no "hidden" in between).
     doc.fire();
     doc.fire();
@@ -162,7 +174,11 @@ describe("createTicker", () => {
     vi.setSystemTime(NOW);
     let targets = { deadlines: [] as number[], pasts: [] as number[] };
     const ticks: number[] = [];
-    const t = createTicker(() => targets, (n) => ticks.push(n), { doc: null });
+    const t = createTicker(
+      () => targets,
+      (n) => ticks.push(n),
+      { doc: null },
+    );
     vi.advanceTimersByTime(5 * MIN);
     expect(ticks).toEqual([]);
     targets = { deadlines: [], pasts: [Date.now() - 30 * SEC] };

@@ -57,16 +57,19 @@ export function updateRows(update: UpdateInfo | null): UpdateRow[] {
       .map((n) => n.trim())
       .filter((n) => n.length > 0)
       .slice(0, MAX_NOTES)
-      .map((n) => ([...n].length > MAX_NOTE_CHARS ? `${[...n].slice(0, MAX_NOTE_CHARS - 1).join("").trimEnd()}…` : n)),
+      .map((n) =>
+        [...n].length > MAX_NOTE_CHARS
+          ? `${[...n]
+              .slice(0, MAX_NOTE_CHARS - 1)
+              .join("")
+              .trimEnd()}…`
+          : n,
+      ),
   }));
 }
 
 /** Progress of an explicit "Check now". */
-export type CheckState =
-  | { state: "idle" }
-  | { state: "checking" }
-  | { state: "done" }
-  | { state: "error"; message: string };
+export type CheckState = { state: "idle" } | { state: "checking" } | { state: "done" } | { state: "error"; message: string };
 
 export interface UpdateStatus {
   tone: "ok" | "info" | "warn";

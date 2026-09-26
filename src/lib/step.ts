@@ -17,12 +17,7 @@ export interface StepPath {
 export const valueOf = (p: SparkPoint): number | null => (p.pct === null || !Number.isFinite(p.pct) ? null : p.pct);
 
 /** Builds the path over points sorted by time; `xOf`/`yOf` map a time and a percentage to the plot. */
-export function stepPath(
-  pts: readonly SparkPoint[],
-  xOf: (t: number) => number,
-  yOf: (pct: number) => number,
-  step: number,
-): StepPath {
+export function stepPath(pts: readonly SparkPoint[], xOf: (t: number) => number, yOf: (pct: number) => number, step: number): StepPath {
   const base = yOf(0);
   let line = "";
   let area = "";

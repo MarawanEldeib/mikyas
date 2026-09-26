@@ -54,7 +54,11 @@ export const MOCK_UPDATE: UpdateInfo = {
   releases: [
     { version: "0.4.0", url: releasePage("0.4.0"), notes: ["list every missed update", "smaller pill", "fix tray tooltip"] },
     { version: "0.3.1", url: releasePage("0.3.1"), notes: ["fix weekly reset detection"] },
-    { version: "0.3.0", url: releasePage("0.3.0"), notes: ["history view", "edge dock", "accent colours", "ui scale", "per-display position"] },
+    {
+      version: "0.3.0",
+      url: releasePage("0.3.0"),
+      notes: ["history view", "edge dock", "accent colours", "ui scale", "per-display position"],
+    },
   ],
   dismissed: false,
 };
@@ -174,29 +178,41 @@ interface ScenarioSpec {
   hotkeyError?: string;
 }
 
-const opus = (over: Partial<SessionView> = {}) => (t0: number): SessionView => ({
-  key: "mock-session-1",
-  model_id: "claude-opus-5-5",
-  display_name: "Opus 5.5",
-  ctx_pct: 34.2,
-  ctx_tokens: 342_000,
-  ctx_size: 1_000_000,
-  ctx_basis: "statusline",
-  ctx_is_estimate: false,
-  entrypoint: "cli",
-  last_active_ms: t0 - 2 * MIN,
-  project: "claude-usage-widget",
-  concurrent: 1,
-  ...over,
-});
+const opus =
+  (over: Partial<SessionView> = {}) =>
+  (t0: number): SessionView => ({
+    key: "mock-session-1",
+    model_id: "claude-opus-5-5",
+    display_name: "Opus 5.5",
+    ctx_pct: 34.2,
+    ctx_tokens: 342_000,
+    ctx_size: 1_000_000,
+    ctx_basis: "statusline",
+    ctx_is_estimate: false,
+    entrypoint: "cli",
+    last_active_ms: t0 - 2 * MIN,
+    project: "claude-usage-widget",
+    concurrent: 1,
+    ...over,
+  });
 
-const desktopOk = (ago: number) => (t0: number): DesktopHealth => ({ state: "ok", last_sample_ms: t0 - ago });
+const desktopOk =
+  (ago: number) =>
+  (t0: number): DesktopHealth => ({ state: "ok", last_sample_ms: t0 - ago });
 const connected: ConnectionStatus = { state: "connected", mode: "pipe", original: null };
 const notConfigured: ConnectionStatus = { state: "not_configured" };
 
 const NORMAL: ScenarioSpec = {
   windows: [
-    { kind: "five_hour", pct: 29, resetIn: 3 * HOUR + 12 * MIN + 30 * SEC, source: "cli", observedAgo: 2 * MIN, slope: 6.4, gaps: [[40, 7]] },
+    {
+      kind: "five_hour",
+      pct: 29,
+      resetIn: 3 * HOUR + 12 * MIN + 30 * SEC,
+      source: "cli",
+      observedAgo: 2 * MIN,
+      slope: 6.4,
+      gaps: [[40, 7]],
+    },
     { kind: "seven_day", pct: 59, resetIn: 2 * DAY + 4 * HOUR + 20 * MIN, source: "cli", observedAgo: 2 * MIN, slope: 0.55 },
   ],
   session: opus(),
@@ -207,21 +223,48 @@ const NORMAL: ScenarioSpec = {
   connection: connected,
 };
 
-const sonnet = (over: Partial<SessionView>) => (t0: number): SessionView =>
-  opus({
-    model_id: "claude-sonnet-5",
-    display_name: "Sonnet 5",
-    ctx_size: 200_000,
-    ...over,
-  })(t0);
+const sonnet =
+  (over: Partial<SessionView>) =>
+  (t0: number): SessionView =>
+    opus({
+      model_id: "claude-sonnet-5",
+      display_name: "Sonnet 5",
+      ctx_size: 200_000,
+      ...over,
+    })(t0);
 
 const SPECS: Record<Scenario, ScenarioSpec> = {
   normal: {
     ...NORMAL,
     others: (t0) => [
-      sonnet({ key: "mock-session-2", ctx_pct: 61, ctx_tokens: 122_000, ctx_basis: "desktop_model", ctx_is_estimate: true, entrypoint: "desktop", project: "demo-app", last_active_ms: t0 - 38 * MIN })(t0),
-      opus({ key: "mock-session-3", ctx_pct: 12.4, ctx_tokens: 124_000, ctx_basis: "identity", ctx_is_estimate: true, entrypoint: "cowork", project: null, last_active_ms: t0 - 2 * HOUR - 10 * MIN })(t0),
-      sonnet({ key: "mock-session-4", ctx_pct: 87, ctx_tokens: 870_000, ctx_size: 1_000_000, project: "api-gateway", last_active_ms: t0 - 6 * HOUR - 40 * MIN })(t0),
+      sonnet({
+        key: "mock-session-2",
+        ctx_pct: 61,
+        ctx_tokens: 122_000,
+        ctx_basis: "desktop_model",
+        ctx_is_estimate: true,
+        entrypoint: "desktop",
+        project: "demo-app",
+        last_active_ms: t0 - 38 * MIN,
+      })(t0),
+      opus({
+        key: "mock-session-3",
+        ctx_pct: 12.4,
+        ctx_tokens: 124_000,
+        ctx_basis: "identity",
+        ctx_is_estimate: true,
+        entrypoint: "cowork",
+        project: null,
+        last_active_ms: t0 - 2 * HOUR - 10 * MIN,
+      })(t0),
+      sonnet({
+        key: "mock-session-4",
+        ctx_pct: 87,
+        ctx_tokens: 870_000,
+        ctx_size: 1_000_000,
+        project: "api-gateway",
+        last_active_ms: t0 - 6 * HOUR - 40 * MIN,
+      })(t0),
     ],
   },
   high: {
@@ -232,8 +275,20 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
     ],
     session: opus({ ctx_pct: 78.4, ctx_tokens: 784_000, concurrent: 2, last_active_ms: 0 }),
     others: (t0) => [
-      sonnet({ key: "mock-session-2", ctx_pct: 91, ctx_tokens: 182_000, concurrent: 2, project: "demo-app", last_active_ms: t0 - 4 * MIN })(t0),
-      opus({ key: "mock-session-3", ctx_pct: 45, ctx_tokens: 450_000, ctx_basis: "identity", ctx_is_estimate: true, concurrent: 2, entrypoint: "desktop", project: "infra-scripts", last_active_ms: t0 - 3 * HOUR })(t0),
+      sonnet({ key: "mock-session-2", ctx_pct: 91, ctx_tokens: 182_000, concurrent: 2, project: "demo-app", last_active_ms: t0 - 4 * MIN })(
+        t0,
+      ),
+      opus({
+        key: "mock-session-3",
+        ctx_pct: 45,
+        ctx_tokens: 450_000,
+        ctx_basis: "identity",
+        ctx_is_estimate: true,
+        concurrent: 2,
+        entrypoint: "desktop",
+        project: "infra-scripts",
+        last_active_ms: t0 - 3 * HOUR,
+      })(t0),
     ],
     cliAgo: 1 * MIN,
   },
@@ -258,8 +313,23 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
   },
   "desktop-only": {
     windows: [
-      { kind: "five_hour", pct: 34, resetIn: 2 * HOUR + 40 * MIN, estimate: { pm: 20 * MIN, confidence: "medium" }, source: "desktop", observedAgo: 4 * MIN, slope: 5 },
-      { kind: "seven_day", pct: 61, resetIn: 4 * DAY + 2 * HOUR, estimate: { pm: 3 * HOUR, confidence: "low" }, source: "desktop", observedAgo: 4 * MIN },
+      {
+        kind: "five_hour",
+        pct: 34,
+        resetIn: 2 * HOUR + 40 * MIN,
+        estimate: { pm: 20 * MIN, confidence: "medium" },
+        source: "desktop",
+        observedAgo: 4 * MIN,
+        slope: 5,
+      },
+      {
+        kind: "seven_day",
+        pct: 61,
+        resetIn: 4 * DAY + 2 * HOUR,
+        estimate: { pm: 3 * HOUR, confidence: "low" },
+        source: "desktop",
+        observedAgo: 4 * MIN,
+      },
     ],
     session: opus({
       model_id: "claude-sonnet-5",
@@ -291,10 +361,33 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
   estimated: {
     ...NORMAL,
     windows: [
-      { kind: "five_hour", pct: 52, resetIn: HOUR + 35 * MIN, estimate: { pm: 15 * MIN, confidence: "high" }, source: "desktop", observedAgo: 6 * MIN, slope: 9 },
-      { kind: "seven_day", pct: 38, resetIn: 5 * DAY, estimate: { pm: 2 * HOUR, confidence: "medium" }, source: "desktop", observedAgo: 6 * MIN, slope: 0.25 },
+      {
+        kind: "five_hour",
+        pct: 52,
+        resetIn: HOUR + 35 * MIN,
+        estimate: { pm: 15 * MIN, confidence: "high" },
+        source: "desktop",
+        observedAgo: 6 * MIN,
+        slope: 9,
+      },
+      {
+        kind: "seven_day",
+        pct: 38,
+        resetIn: 5 * DAY,
+        estimate: { pm: 2 * HOUR, confidence: "medium" },
+        source: "desktop",
+        observedAgo: 6 * MIN,
+        slope: 0.25,
+      },
     ],
-    session: opus({ ctx_pct: 64, ctx_tokens: 128_000, ctx_size: 200_000, ctx_basis: "heuristic", ctx_is_estimate: true, display_name: "Opus 5.5" }),
+    session: opus({
+      ctx_pct: 64,
+      ctx_tokens: 128_000,
+      ctx_size: 200_000,
+      ctx_basis: "heuristic",
+      ctx_is_estimate: true,
+      display_name: "Opus 5.5",
+    }),
     desktop: desktopOk(6 * MIN),
   },
   warnings: {
@@ -487,7 +580,9 @@ export function createMockBackend(params: URLSearchParams): Backend {
       shell: "pwsh",
       warnings:
         scenario === "warnings"
-          ? [String.raw`C:\Users\tester\code\demo-app\.claude\settings.json sets its own statusLine; sessions in that project will not be captured.`]
+          ? [
+              String.raw`C:\Users\tester\code\demo-app\.claude\settings.json sets its own statusLine; sessions in that project will not be captured.`,
+            ]
           : [],
       selftest_ok: null,
     };
@@ -528,12 +623,17 @@ export function createMockBackend(params: URLSearchParams): Backend {
       await sleep(args.dryRun ? 250 : 900);
       const p = preview();
       if (args.dryRun) return p;
-      connection = { state: "connected", mode: p.before ? "pipe_grouped" : "pipe", original: connection.state === "foreign" ? connection.command : null };
+      connection = {
+        state: "connected",
+        mode: p.before ? "pipe_grouped" : "pipe",
+        original: connection.state === "foreign" ? connection.command : null,
+      };
       return { ...p, selftest_ok: true };
     },
     disconnect_claude_code: async () => {
       await sleep(300);
-      connection = connection.state === "connected" && connection.original ? { state: "foreign", command: connection.original } : notConfigured;
+      connection =
+        connection.state === "connected" && connection.original ? { state: "foreign", command: connection.original } : notConfigured;
       return connection;
     },
     open_data_folder: () => console.info("[mock] open_data_folder"),

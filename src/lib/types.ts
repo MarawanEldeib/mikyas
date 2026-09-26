@@ -8,9 +8,7 @@ export type Source = "cli" | "desktop";
 export type Confidence = "high" | "medium" | "low";
 
 export type ResetInfo =
-  | { type: "exact"; at_ms: Ms }
-  | { type: "estimated"; at_ms: Ms; plus_minus_ms: Ms; confidence: Confidence }
-  | { type: "unknown" };
+  { type: "exact"; at_ms: Ms } | { type: "estimated"; at_ms: Ms; plus_minus_ms: Ms; confidence: Confidence } | { type: "unknown" };
 
 export type Phase = "active" | "reset_awaiting_data";
 

@@ -66,7 +66,10 @@
     const d = snap?.health.desktop;
     switch (d?.state) {
       case "ok":
-        return { tone: "ok", text: d.last_sample_ms === null ? "Found · no samples yet" : `Found · sample ${formatAge(d.last_sample_ms, app.now)}` };
+        return {
+          tone: "ok",
+          text: d.last_sample_ms === null ? "Found · no samples yet" : `Found · sample ${formatAge(d.last_sample_ms, app.now)}`,
+        };
       case "schema_changed":
         return { tone: "warn", text: `Unsupported format (v${d.version})` };
       case "unreadable":
@@ -128,11 +131,25 @@
       <div class="group">
         <div class="row">
           <span class="label">First alert at</span>
-          <Stepper label="First alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => app.patch({ thresholds: [v, t[1]] })} />
+          <Stepper
+            label="First alert threshold"
+            value={t[0]}
+            min={10}
+            max={t[1] - 1}
+            suffix="%"
+            onchange={(v) => app.patch({ thresholds: [v, t[1]] })}
+          />
         </div>
         <div class="row">
           <span class="label">Second alert at</span>
-          <Stepper label="Second alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => app.patch({ thresholds: [t[0], v] })} />
+          <Stepper
+            label="Second alert threshold"
+            value={t[1]}
+            min={t[0] + 1}
+            max={100}
+            suffix="%"
+            onchange={(v) => app.patch({ thresholds: [t[0], v] })}
+          />
         </div>
         <div class="row">
           <span class="label">Notify when a limit resets</span>
@@ -161,7 +178,8 @@
           />
         </div>
         <div class="row col">
-          <label class="label spread" for="ghost">Click-through opacity <span class="val">{Math.round(s.ghost_opacity * 100)}%</span></label>
+          <label class="label spread" for="ghost">Click-through opacity <span class="val">{Math.round(s.ghost_opacity * 100)}%</span></label
+          >
           <input
             id="ghost"
             type="range"
@@ -201,7 +219,14 @@
         </div>
         <div class="row">
           <span class="label">Mark data stale after</span>
-          <Stepper label="Minutes until data is stale" value={s.stale_min} min={1} max={240} suffix="m" onchange={(v) => app.patch({ stale_min: v })} />
+          <Stepper
+            label="Minutes until data is stale"
+            value={s.stale_min}
+            min={1}
+            max={240}
+            suffix="m"
+            onchange={(v) => app.patch({ stale_min: v })}
+          />
         </div>
       </div>
 
@@ -262,14 +287,18 @@
       <Icon name="shield" size={16} />
       <div>
         <p>
-          <strong>Reads only</strong> Claude Code's statusline output, local session transcripts (model and context size) and
-          Claude Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access except update checks you turn on or run (api.github.com).
+          <strong>Reads only</strong> Claude Code's statusline output, local session transcripts (model and context size) and Claude
+          Desktop's usage history. <strong>Never reads your Claude login.</strong> No network access except update checks you turn on or run (api.github.com).
         </p>
-        <button type="button" class="btn" onclick={() => api.openDataFolder().catch(failed)}><Icon name="folder" size={13} />Open data folder</button>
+        <button type="button" class="btn" onclick={() => api.openDataFolder().catch(failed)}
+          ><Icon name="folder" size={13} />Open data folder</button
+        >
       </div>
     </div>
 
-    <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}><Icon name="power" size={13} />Quit Claude Usage</button>
+    <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}
+      ><Icon name="power" size={13} />Quit Claude Usage</button
+    >
     <p class="credits">Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib</p>
   </div>
 </div>

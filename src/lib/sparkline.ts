@@ -49,7 +49,10 @@ function medianStep(ts: number[]): number | null {
 export function sparkGeometry(points: readonly SparkPoint[], opts: SparkOptions): SparkGeometry {
   const empty: SparkGeometry = { line: "", area: "", dot: null, runs: 0 };
   const padX = opts.padX ?? 2;
-  const pts = points.filter((p) => Number.isFinite(p.t_ms)).slice().sort((a, b) => a.t_ms - b.t_ms);
+  const pts = points
+    .filter((p) => Number.isFinite(p.t_ms))
+    .slice()
+    .sort((a, b) => a.t_ms - b.t_ms);
   if (pts.length === 0) return empty;
 
   const step = medianStep(pts.map((p) => p.t_ms));

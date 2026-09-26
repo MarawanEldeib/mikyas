@@ -14,15 +14,7 @@
   let { icon, label, onclick, pressed, size = "s" }: Props = $props();
 </script>
 
-<button
-  type="button"
-  class="icon-btn {size}"
-  class:on={pressed}
-  aria-label={label}
-  aria-pressed={pressed}
-  title={label}
-  {onclick}
->
+<button type="button" class="icon-btn {size}" class:on={pressed} aria-label={label} aria-pressed={pressed} title={label} {onclick}>
   <Icon name={icon} size={size === "s" ? 14 : 16} filled={pressed} />
 </button>
 

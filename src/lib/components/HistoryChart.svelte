@@ -13,7 +13,18 @@
 <script lang="ts">
   import { CRIT_AT, WARN_AT, fillColor, textColor } from "../color";
   import { formatClock, formatPct } from "../format";
-  import { GRID_PCTS, chartGeometry, placeLabels, plotX, plotY, timeAxis, windowSummary, type Domain, type PlotBox, type RangeKey } from "../history";
+  import {
+    GRID_PCTS,
+    chartGeometry,
+    placeLabels,
+    plotX,
+    plotY,
+    timeAxis,
+    windowSummary,
+    type Domain,
+    type PlotBox,
+    type RangeKey,
+  } from "../history";
   import type { HistoryWindow } from "../types";
 
   interface Props {

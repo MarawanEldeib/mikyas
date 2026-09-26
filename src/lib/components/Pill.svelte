@@ -1,8 +1,18 @@
-
 <script lang="ts">
   import { clampPct } from "../color";
   import { startDock } from "../dock";
-  import { ctxLabel, estimateTooltip, formatAge, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowLabel, windowShort } from "../format";
+  import {
+    ctxLabel,
+    estimateTooltip,
+    formatAge,
+    formatPct,
+    liveWindow,
+    modelLabel,
+    pillCountdown,
+    splitUnits,
+    windowLabel,
+    windowShort,
+  } from "../format";
   import { api } from "../ipc";
   import { connectionBannerVisible } from "../connection";
   import { notices } from "../notices";
@@ -29,7 +39,6 @@
 
   // Slides the widget back into its strip when the pointer leaves (edge dock).
   startDock(app, api.setDockExpanded);
-
 
   function describe(w: WindowView): string {
     const parts = [`${windowLabel(w.kind)} limit ${formatPct(w.pct)}% used`];
@@ -60,12 +69,17 @@
     <div class="bars">
       {#each shown as w, i (w.kind)}
         <div class="brow" role="img" aria-label={describe(w)}>
-          <span class="label">{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span>
+          <span class="label"
+            >{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span
+          >
           <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={mutedColor(w)}></span></span>
           <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
-            {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span>{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
+            {#if w.limit_reached}<Icon name="lock" size={13} />{:else}{formatPct(clampPct(w.pct))}<span class="u">%</span
+              >{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{/if}
           </span>
-          <span class="count bcount" class:crit={w.limit_reached} data-under-controls={i === 0 ? "" : undefined}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
+          <span class="count bcount" class:crit={w.limit_reached} data-under-controls={i === 0 ? "" : undefined}
+            >{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span
+          >
         </div>
       {/each}
     </div>
@@ -75,8 +89,15 @@
       <div class="win" role="img" aria-label={describe(w)}>
         <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
-          <span class="label">{windowShort(w.kind)}{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{#if w.stale}<span class="stale-tag" data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span>{/if}</span>
-          <span class="count" class:crit={w.limit_reached}>{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span>
+          <span class="label"
+            >{windowShort(w.kind)}{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{#if w.stale}<span
+                class="stale-tag"
+                data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span
+              >{/if}</span
+          >
+          <span class="count" class:crit={w.limit_reached}
+            >{#each splitUnits(pillCountdown(w, app.now)) as run, j (j)}<span class:u={run.unit}>{run.text}</span>{/each}</span
+          >
         </div>
       </div>
     {/each}

@@ -161,9 +161,9 @@ describe("clock", () => {
     expect(formatClock(sat, NOW, { locale: "hi-IN", timeZone: "UTC" })).toBe("श 21:36");
     // One-letter weekdays only where the seven stay distinct (Greek has two Τ and two Π).
     expect(formatClock(sat, NOW, { locale: "el-GR", timeZone: "UTC" })).toMatch(/^Σάβ 21:36$/u);
-    expect(burnText({ slope_pct_per_h: 5, t100_ms: sat, pct_at_reset: null, hits_limit_before_reset: true }, { type: "unknown" }, NOW, ko)?.text).toBe(
-      "At this pace 100% at 토 21:36",
-    );
+    expect(
+      burnText({ slope_pct_per_h: 5, t100_ms: sat, pct_at_reset: null, hits_limit_before_reset: true }, { type: "unknown" }, NOW, ko)?.text,
+    ).toBe("At this pace 100% at 토 21:36");
     // The Sessions view's plain time keeps the locale's convention.
     expect(formatTime(sat, ko)).toMatch(/오후/u);
   });

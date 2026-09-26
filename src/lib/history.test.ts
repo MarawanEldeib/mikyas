@@ -27,8 +27,7 @@ const NOW = local(24, 10, 17);
 const TO = local(24, 11);
 
 const BOX: PlotBox = { width: 110, height: 60, left: 10, right: 0, top: 5, bottom: 5 };
-const hourly = (from: number, vals: (number | null)[]): SparkPoint[] =>
-  vals.map((pct, i) => ({ t_ms: from + i * HOUR, pct }));
+const hourly = (from: number, vals: (number | null)[]): SparkPoint[] => vals.map((pct, i) => ({ t_ms: from + i * HOUR, pct }));
 const subpaths = (d: string) => (d.match(/M/g) ?? []).length;
 
 describe("domain and scales", () => {
@@ -167,12 +166,32 @@ describe("placeLabels", () => {
       { t: 72, text: "cc", x: 82 },
     ]);
     // Moved labels that fit stay.
-    expect(placeLabels([{ t: 0, text: "aa" }, { t: 100, text: "bb" }], d, BOX, width)).toEqual([
+    expect(
+      placeLabels(
+        [
+          { t: 0, text: "aa" },
+          { t: 100, text: "bb" },
+        ],
+        d,
+        BOX,
+        width,
+      ),
+    ).toEqual([
       { t: 0, text: "aa", x: 20 },
       { t: 100, text: "bb", x: 100 },
     ]);
     // Equal claims: the earlier label stays; a label wider than the plot is centred.
-    expect(placeLabels([{ t: 50, text: "aa" }, { t: 52, text: "bb" }], d, BOX, width).map((l) => l.text)).toEqual(["aa"]);
+    expect(
+      placeLabels(
+        [
+          { t: 50, text: "aa" },
+          { t: 52, text: "bb" },
+        ],
+        d,
+        BOX,
+        width,
+      ).map((l) => l.text),
+    ).toEqual(["aa"]);
     expect(placeLabels([{ t: 90, text: "x".repeat(20) }], d, BOX, width)).toEqual([{ t: 90, text: "x".repeat(20), x: 60 }]);
   });
 

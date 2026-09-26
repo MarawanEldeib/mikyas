@@ -37,7 +37,14 @@
   const listText = $derived(others > 0 ? `Show all ${others + 1} recent sessions` : "Show recent sessions");
   const chipTip = $derived(
     session
-      ? [surface?.name, modelLabel(session), session.model_id, session.project ? `Project: ${session.project}` : null, session.concurrent > 1 ? `${session.concurrent} sessions active` : null, listText]
+      ? [
+          surface?.name,
+          modelLabel(session),
+          session.model_id,
+          session.project ? `Project: ${session.project}` : null,
+          session.concurrent > 1 ? `${session.concurrent} sessions active` : null,
+          listText,
+        ]
           .filter(Boolean)
           .join("\n")
       : "",
@@ -46,7 +53,13 @@
 
 {#if session}
   <div class="head">
-    <button type="button" class="chip" title={chipTip} aria-label="{modelLabel(session)}. {listText}" onclick={() => app.setView("sessions")}>
+    <button
+      type="button"
+      class="chip"
+      title={chipTip}
+      aria-label="{modelLabel(session)}. {listText}"
+      onclick={() => app.setView("sessions")}
+    >
       {#if surface}<Icon name={surface.icon} size={12} />{/if}
       <span class="model">{modelLabel(session)}</span>
       {#if others > 0}<span class="more" aria-hidden="true">+{others}</span>{/if}
@@ -67,7 +80,10 @@
     </span>
   </div>
 {:else}
-  <div class="head none" title="The model and context are read from Claude Code (terminal, Desktop Code tab or Cowork) sessions. Claude Desktop's chat doesn't expose which model it uses.">
+  <div
+    class="head none"
+    title="The model and context are read from Claude Code (terminal, Desktop Code tab or Cowork) sessions. Claude Desktop's chat doesn't expose which model it uses."
+  >
     <Icon name="info" size={14} />
     <p>
       <span class="none-title">No Claude Code session</span><span class="sr"> — </span>

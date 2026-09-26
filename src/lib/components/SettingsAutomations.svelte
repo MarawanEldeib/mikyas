@@ -13,7 +13,6 @@
 
   const uid = $props.id();
   const s = $derived(app.settings);
-
 </script>
 
 {#if s}
@@ -63,14 +62,22 @@
         Warn if the connection breaks
         <span class="sub">When Claude Code's status line is changed</span>
       </span>
-      <Toggle label="Warn if the connection breaks" checked={s.connection_watchdog} onchange={(v) => app.patch({ connection_watchdog: v })} />
+      <Toggle
+        label="Warn if the connection breaks"
+        checked={s.connection_watchdog}
+        onchange={(v) => app.patch({ connection_watchdog: v })}
+      />
     </div>
     <div class="row">
       <span class="label">
         Remember position per display
         <span class="sub">Each monitor setup keeps its own spot</span>
       </span>
-      <Toggle label="Remember position per display" checked={s.per_display_position} onchange={(v) => app.patch({ per_display_position: v })} />
+      <Toggle
+        label="Remember position per display"
+        checked={s.per_display_position}
+        onchange={(v) => app.patch({ per_display_position: v })}
+      />
     </div>
     <div class="row">
       <label class="label" for="{uid}-tray">Tray icon number</label>
