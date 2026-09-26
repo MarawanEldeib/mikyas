@@ -43,7 +43,9 @@
 </script>
 
 <div class="updates" class:compact data-no-drag>
-  <ul class="releases">
+  <!-- In the popover the list scrolls, so it takes focus (arrow keys scroll it, a ring shows). -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <ul class="releases" aria-label="Release notes" tabindex={compact ? 0 : undefined}>
     {#each rows as r (r.version)}
       <li>
         <span class="version"
@@ -111,7 +113,8 @@
     padding: 0 5px;
     border-radius: 7px;
     background: color-mix(in srgb, var(--accent) 18%, transparent);
-    color: var(--accent);
+    /* Text colour, not the accent: the light accent on its own tint is below 4.5:1. */
+    color: var(--fg);
     font-size: 10px;
     line-height: 14px;
     font-weight: 600;

@@ -1,23 +1,12 @@
 <script lang="ts">
   import { clampPct } from "../color";
   import { startDock } from "../dock";
-  import {
-    ctxLabel,
-    estimateTooltip,
-    formatAge,
-    formatPct,
-    liveWindow,
-    modelLabel,
-    pillCountdown,
-    splitUnits,
-    windowLabel,
-    windowShort,
-  } from "../format";
+  import { ctxLabel, formatPct, liveWindow, modelLabel, pillCountdown, splitUnits, windowShort } from "../format";
   import { api } from "../ipc";
   import { connectionBannerVisible } from "../connection";
   import { notices } from "../notices";
+  import { describeWindow } from "../pill";
   import { app } from "../stores.svelte";
-  import type { WindowView } from "../types";
   import { mainWindows, mutedColor } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
@@ -40,17 +29,6 @@
   // Slides the widget back into its strip when the pointer leaves (edge dock).
   startDock(app, api.setDockExpanded);
 
-  function describe(w: WindowView): string {
-    const parts = [`${windowLabel(w.kind)} limit ${formatPct(w.pct)}% used`];
-    if (w.limit_reached) parts.push("limit reached");
-    if (showWorkedSince(w)) parts.push(WORKED_SINCE_TIP);
-    parts.push(`resets in ${pillCountdown(w, app.now)}`);
-    if (w.stale) parts.push(`last updated ${formatAge(w.observed_at_ms, app.now)}`);
-    const est = estimateTooltip(w.reset);
-    if (est) parts.push(est);
-    return parts.join(", ");
-  }
-
   const hint = $derived(
     [session ? `${modelLabel(session)} · ${ctxLabel(session)}` : null, ...warn.map((n) => n.title), "Double-click for details"]
       .filter(Boolean)
@@ -68,7 +46,7 @@
     <!-- One grid for both rows so the bars line up whatever the labels and countdowns say. -->
     <div class="bars">
       {#each shown as w, i (w.kind)}
-        <div class="brow" role="img" aria-label={describe(w)}>
+        <div class="brow" role="img" aria-label={describeWindow(w, app.now)}>
           <span class="label"
             >{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span
           >
@@ -86,7 +64,7 @@
   {:else}
     {#each shown as w, i (w.kind)}
       {#if i > 0}<div class="sep" aria-hidden="true"></div>{/if}
-      <div class="win" role="img" aria-label={describe(w)}>
+      <div class="win" role="img" aria-label={describeWindow(w, app.now)}>
         <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
           <span class="label"
