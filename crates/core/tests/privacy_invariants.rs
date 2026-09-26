@@ -8,14 +8,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Raw-read patterns counted in non-test code.
-const PATTERNS: &[&str] = &[
-    "File::open(",
-    "fs::read(",
-    "fs::read_to_string(",
-    "fs::read_dir(",
-    "fs::copy(",
-    ".read(true)",
-];
+const PATTERNS: &[&str] =
+    &["File::open(", "fs::read(", "fs::read_to_string(", "fs::read_dir(", "fs::copy(", ".read(true)"];
 
 /// `std::fs` functions that read contents (or list a directory). Importing one by name would let a
 /// bare call (`read_dir(x)`) slip past [`PATTERNS`], so non-test code may not import them.
@@ -184,7 +178,9 @@ fn item_end(b: &[u8], mut i: usize) -> usize {
                     while i < b.len() && b[i] != b'\'' {
                         i += 1;
                     }
-                } else if let Some(len) = std::str::from_utf8(&b[i + 1..]).ok().and_then(|s| s.chars().next()).map(char::len_utf8) {
+                } else if let Some(len) =
+                    std::str::from_utf8(&b[i + 1..]).ok().and_then(|s| s.chars().next()).map(char::len_utf8)
+                {
                     if b.get(i + 1 + len) == Some(&b'\'') {
                         i += 1 + len;
                     }

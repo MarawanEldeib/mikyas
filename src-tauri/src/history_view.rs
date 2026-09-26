@@ -51,12 +51,7 @@ pub struct HistoryData {
 
 impl From<DayUsage> for HistoryDay {
     fn from(d: DayUsage) -> Self {
-        Self {
-            day_start_ms: d.day_start_ms,
-            peak_pct: d.peak_pct,
-            consumed_pct: d.consumed_pct,
-            samples: d.samples,
-        }
+        Self { day_start_ms: d.day_start_ms, peak_pct: d.peak_pct, consumed_pct: d.consumed_pct, samples: d.samples }
     }
 }
 
@@ -88,22 +83,9 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
     let to_ms = next_local_hour(now_ms, tz);
     let from_ms = to_ms - i64::from(days) * DAY_MS;
     let day_starts = local_day_starts(from_ms, to_ms - 1, MAX_DAYS as usize, tz);
-    let range = ViewRange {
-        from_ms,
-        to_ms,
-        now_ms,
-        day_starts: &day_starts,
-    };
-    let windows = history
-        .kinds()
-        .iter()
-        .map(|kind| HistoryWindow::from(history.view(kind, &range)))
-        .collect();
-    HistoryData {
-        from_ms,
-        to_ms,
-        windows,
-    }
+    let range = ViewRange { from_ms, to_ms, now_ms, day_starts: &day_starts };
+    let windows = history.kinds().iter().map(|kind| HistoryWindow::from(history.view(kind, &range))).collect();
+    HistoryData { from_ms, to_ms, windows }
 }
 
 #[cfg(test)]
@@ -186,9 +168,7 @@ mod tests {
         for i in 0..20_000_i64 {
             let t = NOW - 14 * DAY_MS + i * MINUTE_MS;
             let (w, p) = if i % 2 == 0 { ("5h", (i % 600) as f32 / 6.0) } else { ("7d", (i / 300) as f32) };
-            text.push_str(&format!(
-                "{{\"t\":{t},\"w\":\"{w}\",\"p\":{p:.1},\"r\":null,\"s\":\"cli\",\"e\":false}}\n"
-            ));
+            text.push_str(&format!("{{\"t\":{t},\"w\":\"{w}\",\"p\":{p:.1},\"r\":null,\"s\":\"cli\",\"e\":false}}\n"));
         }
         std::fs::write(&path, text).unwrap();
         let start = std::time::Instant::now();

@@ -1326,40 +1326,42 @@ mod tests {
             0usize..8,
             prop::sample::select(vec!["", " ", "\n", "\r\n", "\n  ", "\t"]),
         )
-            .prop_map(|(members, layout, command, (crlf_eol, bom, trailing_nl, ascii, padding), pos, empty_ws)| {
-                // Dedupe keys first, then place statusLine (if any) at `pos`.
-                let mut members: Vec<(String, Value)> =
-                    members.into_iter().collect::<Map<_, _>>().into_iter().collect();
-                if command.is_some() {
-                    let mut sl = Map::new();
-                    if padding {
-                        sl.insert("padding".into(), Value::from(0));
+            .prop_map(
+                |(members, layout, command, (crlf_eol, bom, trailing_nl, ascii, padding), pos, empty_ws)| {
+                    // Dedupe keys first, then place statusLine (if any) at `pos`.
+                    let mut members: Vec<(String, Value)> =
+                        members.into_iter().collect::<Map<_, _>>().into_iter().collect();
+                    if command.is_some() {
+                        let mut sl = Map::new();
+                        if padding {
+                            sl.insert("padding".into(), Value::from(0));
+                        }
+                        sl.insert("type".into(), Value::from("command"));
+                        sl.insert("command".into(), Value::from(PLACEHOLDER));
+                        members.insert(pos.min(members.len()), (STATUS_LINE.into(), Value::Object(sl)));
                     }
-                    sl.insert("type".into(), Value::from("command"));
-                    sl.insert("command".into(), Value::from(PLACEHOLDER));
-                    members.insert(pos.min(members.len()), (STATUS_LINE.into(), Value::Object(sl)));
-                }
-                let canonical = !ascii;
-                let mut text = render(&Value::Object(members.into_iter().collect()), layout);
-                // serde writes an empty object as `{}`; files may also hold `{ }`, `{\n}`, ….
-                let spaced_empty = text == "{}" && !empty_ws.is_empty();
-                if spaced_empty {
-                    text = format!("{{{empty_ws}}}");
-                }
-                if let Some(cmd) = &command {
-                    let lit = if ascii { ascii_literal(cmd) } else { json_string(cmd).unwrap() };
-                    text = text.replace(&format!("\"{PLACEHOLDER}\""), &lit);
-                }
-                if trailing_nl {
-                    text.push('\n');
-                }
-                if crlf_eol {
-                    text = crlf(&text);
-                }
-                let bytes = if bom { with_bom(&text) } else { text.into_bytes() };
-                // Without the record, an emptied object comes back as `{}`.
-                (bytes, !spaced_empty && (canonical || command.as_deref().is_none_or(str::is_ascii)))
-            })
+                    let canonical = !ascii;
+                    let mut text = render(&Value::Object(members.into_iter().collect()), layout);
+                    // serde writes an empty object as `{}`; files may also hold `{ }`, `{\n}`, ….
+                    let spaced_empty = text == "{}" && !empty_ws.is_empty();
+                    if spaced_empty {
+                        text = format!("{{{empty_ws}}}");
+                    }
+                    if let Some(cmd) = &command {
+                        let lit = if ascii { ascii_literal(cmd) } else { json_string(cmd).unwrap() };
+                        text = text.replace(&format!("\"{PLACEHOLDER}\""), &lit);
+                    }
+                    if trailing_nl {
+                        text.push('\n');
+                    }
+                    if crlf_eol {
+                        text = crlf(&text);
+                    }
+                    let bytes = if bom { with_bom(&text) } else { text.into_bytes() };
+                    // Without the record, an emptied object comes back as `{}`.
+                    (bytes, !spaced_empty && (canonical || command.as_deref().is_none_or(str::is_ascii)))
+                },
+            )
     }
 
     proptest! {

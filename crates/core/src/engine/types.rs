@@ -153,7 +153,9 @@ pub enum Confidence {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResetInfo {
     /// From Claude Code's `resets_at`.
-    Exact { at_ms: Ms },
+    Exact {
+        at_ms: Ms,
+    },
     /// Inferred from Desktop samples / history; shown with a "~".
     Estimated {
         at_ms: Ms,
@@ -381,12 +383,8 @@ mod tests {
 
     #[test]
     fn reset_info_is_tagged() {
-        let v = serde_json::to_value(ResetInfo::Estimated {
-            at_ms: 5,
-            plus_minus_ms: 1,
-            confidence: Confidence::Low,
-        })
-        .unwrap();
+        let v = serde_json::to_value(ResetInfo::Estimated { at_ms: 5, plus_minus_ms: 1, confidence: Confidence::Low })
+            .unwrap();
         assert_eq!(v["type"], "estimated");
         assert_eq!(v["confidence"], "low");
     }

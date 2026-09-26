@@ -38,38 +38,21 @@ struct Fit {
     min_span: Ms,
 }
 
-const FIVE_HOUR_FIT: Fit = Fit {
-    lookback: 60 * MINUTE_MS,
-    step: MINUTE_MS,
-    min_span: 15 * MINUTE_MS,
-};
+const FIVE_HOUR_FIT: Fit = Fit { lookback: 60 * MINUTE_MS, step: MINUTE_MS, min_span: 15 * MINUTE_MS };
 
-const SEVEN_DAY_FIT: Fit = Fit {
-    lookback: 24 * HOUR_MS,
-    step: 10 * MINUTE_MS,
-    min_span: 6 * HOUR_MS,
-};
+const SEVEN_DAY_FIT: Fit = Fit { lookback: 24 * HOUR_MS, step: 10 * MINUTE_MS, min_span: 6 * HOUR_MS };
 
 /// Forecasts when the window reaches 100 % at the recent pace (see the module docs).
 ///
 /// `samples` is this window's history (Desktop samples or history rows, ideally sorted);
 /// `state` is its merged current value.
-pub fn compute(
-    kind: &WindowKind,
-    samples: &[Sample],
-    state: &WindowState,
-    now_ms: Ms,
-) -> Option<Burn> {
+pub fn compute(kind: &WindowKind, samples: &[Sample], state: &WindowState, now_ms: Ms) -> Option<Burn> {
     let fit = match kind {
         WindowKind::FiveHour => &FIVE_HOUR_FIT,
         WindowKind::SevenDay => &SEVEN_DAY_FIT,
         WindowKind::Other(_) => return None,
     };
-    if state.stale
-        || state.phase == Phase::ResetAwaitingData
-        || state.limit_reached
-        || !state.pct.is_finite()
-    {
+    if state.stale || state.phase == Phase::ResetAwaitingData || state.limit_reached || !state.pct.is_finite() {
         return None;
     }
     let duration = kind.duration_ms()?;
@@ -79,24 +62,18 @@ pub fn compute(
 
     let mut points: Vec<Sample> = samples
         .iter()
-        .filter(|s| {
-            s.pct.is_finite() && s.t_ms < now_ms && window_start.is_none_or(|w| s.t_ms >= w)
-        })
+        .filter(|s| s.pct.is_finite() && s.t_ms < now_ms && window_start.is_none_or(|w| s.t_ms >= w))
         .copied()
         .collect();
     points.sort_by_key(|s| s.t_ms);
     points.push(Sample { t_ms: now_ms, pct });
 
-    let current_window = points
-        .windows(2)
-        .rposition(|w| w[0].pct - w[1].pct >= MIXED_SOURCE_DROP_PCT)
-        .map_or(0, |j| j + 1);
+    let current_window =
+        points.windows(2).rposition(|w| w[0].pct - w[1].pct >= MIXED_SOURCE_DROP_PCT).map_or(0, |j| j + 1);
     let points = &points[current_window..];
     // The last point at or before the lookback start supplies the step value there.
     let lookback_start = now_ms.saturating_sub(fit.lookback);
-    let first = points
-        .partition_point(|s| s.t_ms <= lookback_start)
-        .saturating_sub(1);
+    let first = points.partition_point(|s| s.t_ms <= lookback_start).saturating_sub(1);
     let points = &points[first..];
     let start = points.first()?.t_ms.max(lookback_start);
     if now_ms.saturating_sub(start) < fit.min_span {
@@ -115,8 +92,7 @@ pub fn compute(
 
     let pct = f64::from(pct);
     let t100_ms = now_ms.saturating_add(hours_to_ms((100.0 - pct) / slope));
-    let pct_at_reset =
-        reset_ms.map(|r| (pct + slope * ms_to_hours(r.saturating_sub(now_ms))) as f32);
+    let pct_at_reset = reset_ms.map(|r| (pct + slope * ms_to_hours(r.saturating_sub(now_ms))) as f32);
     Some(Burn {
         slope_pct_per_h: slope as f32,
         t100_ms,
@@ -205,10 +181,7 @@ mod tests {
     }
 
     fn series(points: &[(Ms, f32)]) -> Vec<Sample> {
-        points
-            .iter()
-            .map(|&(t_ms, pct)| Sample { t_ms, pct })
-            .collect()
+        points.iter().map(|&(t_ms, pct)| Sample { t_ms, pct }).collect()
     }
 
     fn exact(at_ms: Ms) -> ResetInfo {
@@ -217,183 +190,78 @@ mod tests {
 
     /// One sample per minute over the last hour at `rate` %/h, reaching `pct_now` at `NOW`.
     fn per_minute(rate: f32, pct_now: f32) -> Vec<Sample> {
-        (1..=60)
-            .rev()
-            .map(|k| Sample {
-                t_ms: NOW - m(k),
-                pct: pct_now - rate * k as f32 / 60.0,
-            })
-            .collect()
+        (1..=60).rev().map(|k| Sample { t_ms: NOW - m(k), pct: pct_now - rate * k as f32 / 60.0 }).collect()
     }
 
     /// Desktop-style 15-minute samples over the last hour, 2.5 points apart, ending below 50.
     fn quarter_hourly() -> Vec<Sample> {
-        series(&[
-            (NOW - m(60), 40.0),
-            (NOW - m(45), 42.5),
-            (NOW - m(30), 45.0),
-            (NOW - m(15), 47.5),
-        ])
+        series(&[(NOW - m(60), 40.0), (NOW - m(45), 42.5), (NOW - m(30), 45.0), (NOW - m(15), 47.5)])
     }
 
     #[test]
     fn linear_ten_percent_per_hour() {
-        let burn = compute(
-            &WindowKind::FiveHour,
-            &per_minute(10.0, 50.0),
-            &five(50.0, exact(NOW + 3 * HOUR_MS)),
-            NOW,
-        )
-        .unwrap();
+        let burn = compute(&WindowKind::FiveHour, &per_minute(10.0, 50.0), &five(50.0, exact(NOW + 3 * HOUR_MS)), NOW)
+            .unwrap();
         assert!((burn.slope_pct_per_h - 10.0).abs() < 0.01, "{burn:?}");
         let expected = NOW + 5 * HOUR_MS;
-        assert!(
-            (burn.t100_ms - expected).abs() <= MINUTE_MS,
-            "{burn:?}"
-        );
+        assert!((burn.t100_ms - expected).abs() <= MINUTE_MS, "{burn:?}");
         assert!((burn.pct_at_reset.unwrap() - 80.0).abs() < 0.1, "{burn:?}");
         assert!(!burn.hits_limit_before_reset);
     }
 
     #[test]
     fn projects_past_100_before_a_late_reset() {
-        let reset = ResetInfo::Estimated {
-            at_ms: NOW + 4 * HOUR_MS,
-            plus_minus_ms: m(7),
-            confidence: Confidence::High,
-        };
-        let burn = compute(
-            &WindowKind::FiveHour,
-            &per_minute(10.0, 70.0),
-            &five(70.0, reset),
-            NOW,
-        )
-        .unwrap();
-        assert!(
-            (burn.t100_ms - (NOW + 3 * HOUR_MS)).abs() <= MINUTE_MS,
-            "{burn:?}"
-        );
-        assert!(
-            (burn.pct_at_reset.unwrap() - 110.0).abs() < 0.1,
-            "not clamped: {burn:?}"
-        );
+        let reset =
+            ResetInfo::Estimated { at_ms: NOW + 4 * HOUR_MS, plus_minus_ms: m(7), confidence: Confidence::High };
+        let burn = compute(&WindowKind::FiveHour, &per_minute(10.0, 70.0), &five(70.0, reset), NOW).unwrap();
+        assert!((burn.t100_ms - (NOW + 3 * HOUR_MS)).abs() <= MINUTE_MS, "{burn:?}");
+        assert!((burn.pct_at_reset.unwrap() - 110.0).abs() < 0.1, "not clamped: {burn:?}");
         assert!(burn.hits_limit_before_reset);
     }
 
     #[test]
     fn unknown_reset_gives_no_reset_projection() {
-        let burn = compute(
-            &WindowKind::FiveHour,
-            &per_minute(10.0, 50.0),
-            &five(50.0, ResetInfo::Unknown),
-            NOW,
-        )
-        .unwrap();
+        let burn =
+            compute(&WindowKind::FiveHour, &per_minute(10.0, 50.0), &five(50.0, ResetInfo::Unknown), NOW).unwrap();
         assert!((burn.slope_pct_per_h - 10.0).abs() < 0.01);
         assert_eq!(burn.pct_at_reset, None);
         assert!(!burn.hits_limit_before_reset);
         // A reset already in the past is not a known future reset either.
         let past = five(50.0, exact(NOW - m(5)));
         let burn = compute(&WindowKind::FiveHour, &per_minute(10.0, 50.0), &past, NOW).unwrap();
-        assert_eq!(
-            (burn.pct_at_reset, burn.hits_limit_before_reset),
-            (None, false)
-        );
+        assert_eq!((burn.pct_at_reset, burn.hits_limit_before_reset), (None, false));
     }
 
     #[test]
     fn desktop_staircase_is_close_to_the_true_pace() {
-        let burn = compute(
-            &WindowKind::FiveHour,
-            &quarter_hourly(),
-            &five(50.0, ResetInfo::Unknown),
-            NOW,
-        )
-        .unwrap();
+        let burn = compute(&WindowKind::FiveHour, &quarter_hourly(), &five(50.0, ResetInfo::Unknown), NOW).unwrap();
         assert!((8.0..12.0).contains(&burn.slope_pct_per_h), "{burn:?}");
     }
 
     #[test]
     fn flat_is_none() {
-        let s = series(&[
-            (NOW - m(60), 40.0),
-            (NOW - m(30), 40.0),
-            (NOW - m(15), 40.0),
-        ]);
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(40.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        let s = series(&[(NOW - m(60), 40.0), (NOW - m(30), 40.0), (NOW - m(15), 40.0)]);
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(40.0, ResetInfo::Unknown), NOW), None);
     }
 
     #[test]
     fn negative_or_tiny_slope_is_none() {
         // Half-point dips are noise, not resets, so the fit sees a falling line.
-        let s = series(&[
-            (NOW - m(60), 50.0),
-            (NOW - m(45), 49.5),
-            (NOW - m(30), 49.0),
-            (NOW - m(15), 48.5),
-        ]);
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(48.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        let s = series(&[(NOW - m(60), 50.0), (NOW - m(45), 49.5), (NOW - m(30), 49.0), (NOW - m(15), 48.5)]);
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(48.0, ResetInfo::Unknown), NOW), None);
         // 0.04 %/h rise is below the minimum.
         let s = per_minute(0.04, 50.0);
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(50.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(50.0, ResetInfo::Unknown), NOW), None);
     }
 
     #[test]
     fn short_span_is_none() {
         let s = series(&[(NOW - m(10), 40.0)]);
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(45.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &[],
-                &five(45.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(45.0, ResetInfo::Unknown), NOW), None);
+        assert_eq!(compute(&WindowKind::FiveHour, &[], &five(45.0, ResetInfo::Unknown), NOW), None);
         // Exactly the minimum span is enough.
         let s = series(&[(NOW - m(15), 40.0)]);
-        assert!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(45.0, ResetInfo::Unknown),
-                NOW
-            )
-            .is_some()
-        );
+        assert!(compute(&WindowKind::FiveHour, &s, &five(45.0, ResetInfo::Unknown), NOW).is_some());
         // Weekly needs 6 h.
         let s = series(&[(NOW - 5 * HOUR_MS, 40.0), (NOW - 2 * HOUR_MS, 44.0)]);
         let weekly = state(WindowKind::SevenDay, 45.0, ResetInfo::Unknown);
@@ -412,10 +280,7 @@ mod tests {
         assert_eq!(compute(&WindowKind::FiveHour, &s, &st, NOW), None);
         let st = five(99.5, ResetInfo::Unknown);
         assert!(st.limit_reached);
-        assert_eq!(
-            compute(&WindowKind::FiveHour, &per_minute(10.0, 99.5), &st, NOW),
-            None
-        );
+        assert_eq!(compute(&WindowKind::FiveHour, &per_minute(10.0, 99.5), &st, NOW), None);
         let st = five(f32::NAN, ResetInfo::Unknown);
         assert_eq!(compute(&WindowKind::FiveHour, &s, &st, NOW), None);
     }
@@ -423,10 +288,7 @@ mod tests {
     #[test]
     fn only_five_hour_and_seven_day() {
         let s = per_minute(10.0, 50.0);
-        for kind in [
-            WindowKind::Other("seven_day_opus".into()),
-            WindowKind::Other("xh".into()),
-        ] {
+        for kind in [WindowKind::Other("seven_day_opus".into()), WindowKind::Other("xh".into())] {
             let st = state(kind.clone(), 50.0, ResetInfo::Unknown);
             assert_eq!(compute(&kind, &s, &st, NOW), None);
         }
@@ -435,86 +297,32 @@ mod tests {
     #[test]
     fn previous_window_is_excluded_by_known_reset() {
         // Reset in 4.5 h: the window began 30 min ago, so 90/95 belong to the previous one.
-        let s = series(&[
-            (NOW - m(60), 90.0),
-            (NOW - m(45), 95.0),
-            (NOW - m(30), 2.0),
-            (NOW - m(15), 6.0),
-        ]);
-        let with_reset = compute(
-            &WindowKind::FiveHour,
-            &s,
-            &five(10.0, exact(NOW + m(270))),
-            NOW,
-        )
-        .unwrap();
-        assert!(
-            (10.0..25.0).contains(&with_reset.slope_pct_per_h),
-            "{with_reset:?}"
-        );
+        let s = series(&[(NOW - m(60), 90.0), (NOW - m(45), 95.0), (NOW - m(30), 2.0), (NOW - m(15), 6.0)]);
+        let with_reset = compute(&WindowKind::FiveHour, &s, &five(10.0, exact(NOW + m(270))), NOW).unwrap();
+        assert!((10.0..25.0).contains(&with_reset.slope_pct_per_h), "{with_reset:?}");
         // Same result without a reset: the drop itself separates the windows.
-        let without = compute(
-            &WindowKind::FiveHour,
-            &s,
-            &five(10.0, ResetInfo::Unknown),
-            NOW,
-        )
-        .unwrap();
+        let without = compute(&WindowKind::FiveHour, &s, &five(10.0, ResetInfo::Unknown), NOW).unwrap();
         assert_eq!(without.slope_pct_per_h, with_reset.slope_pct_per_h);
         assert_eq!(without.t100_ms, with_reset.t100_ms);
         let only_new = &s[2..];
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                only_new,
-                &five(10.0, ResetInfo::Unknown),
-                NOW
-            ),
-            Some(without)
-        );
+        assert_eq!(compute(&WindowKind::FiveHour, only_new, &five(10.0, ResetInfo::Unknown), NOW), Some(without));
     }
 
     #[test]
     fn drop_inside_lookback_never_yields_a_garbled_slope() {
         // The reset is 10 min old: too little of the new window to fit, and never negative.
-        let s = series(&[
-            (NOW - m(60), 80.0),
-            (NOW - m(45), 85.0),
-            (NOW - m(30), 90.0),
-            (NOW - m(10), 3.0),
-        ]);
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(5.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        let s = series(&[(NOW - m(60), 80.0), (NOW - m(45), 85.0), (NOW - m(30), 90.0), (NOW - m(10), 3.0)]);
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(5.0, ResetInfo::Unknown), NOW), None);
         // A decrease right at the current value (e.g. fresh CLI value after a reset).
         let s = quarter_hourly();
-        assert_eq!(
-            compute(
-                &WindowKind::FiveHour,
-                &s,
-                &five(4.0, ResetInfo::Unknown),
-                NOW
-            ),
-            None
-        );
+        assert_eq!(compute(&WindowKind::FiveHour, &s, &five(4.0, ResetInfo::Unknown), NOW), None);
         // An estimated reset whose window start is fuzzy still cannot leak old samples.
         let est = ResetInfo::Estimated {
             at_ms: NOW + 5 * HOUR_MS - m(50),
             plus_minus_ms: m(15),
             confidence: Confidence::Medium,
         };
-        let s = series(&[
-            (NOW - m(60), 70.0),
-            (NOW - m(45), 72.0),
-            (NOW - m(30), 2.0),
-            (NOW - m(15), 6.0),
-        ]);
+        let s = series(&[(NOW - m(60), 70.0), (NOW - m(45), 72.0), (NOW - m(30), 2.0), (NOW - m(15), 6.0)]);
         let burn = compute(&WindowKind::FiveHour, &s, &five(10.0, est), NOW).unwrap();
         assert!(burn.slope_pct_per_h > 10.0, "{burn:?}");
     }
@@ -543,13 +351,8 @@ mod tests {
     #[test]
     fn weekly_uses_a_day_of_history() {
         // 1 %/h for the last 30 h, sampled every 15 min.
-        let s: Vec<Sample> = (1..=120)
-            .rev()
-            .map(|k| Sample {
-                t_ms: NOW - k * m(15),
-                pct: 50.0 - k as f32 / 4.0,
-            })
-            .collect();
+        let s: Vec<Sample> =
+            (1..=120).rev().map(|k| Sample { t_ms: NOW - k * m(15), pct: 50.0 - k as f32 / 4.0 }).collect();
         let st = state(WindowKind::SevenDay, 50.0, exact(NOW + DAY_MS));
         let burn = compute(&WindowKind::SevenDay, &s, &st, NOW).unwrap();
         assert!((burn.slope_pct_per_h - 1.0).abs() < 0.05, "{burn:?}");
@@ -567,18 +370,9 @@ mod tests {
         let expected = compute(&WindowKind::FiveHour, &sorted, &st, NOW);
         let mut messy = sorted.clone();
         messy.reverse();
-        messy.push(Sample {
-            t_ms: NOW + m(5),
-            pct: 99.0,
-        });
-        messy.push(Sample {
-            t_ms: NOW,
-            pct: 1.0,
-        });
-        messy.push(Sample {
-            t_ms: NOW - m(20),
-            pct: f32::NAN,
-        });
+        messy.push(Sample { t_ms: NOW + m(5), pct: 99.0 });
+        messy.push(Sample { t_ms: NOW, pct: 1.0 });
+        messy.push(Sample { t_ms: NOW - m(20), pct: f32::NAN });
         assert_eq!(compute(&WindowKind::FiveHour, &messy, &st, NOW), expected);
     }
 
@@ -591,10 +385,7 @@ mod tests {
             let now = truth.t_ms;
             let history = &fh[..=k];
             let reset = estimate_reset(&WindowKind::FiveHour, history, None, now);
-            let st = WindowState {
-                observed_at_ms: now,
-                ..state(WindowKind::FiveHour, truth.fh, reset)
-            };
+            let st = WindowState { observed_at_ms: now, ..state(WindowKind::FiveHour, truth.fh, reset) };
             let got = compute(&WindowKind::FiveHour, history, &st, now);
             if let Some(b) = &got {
                 assert!(b.slope_pct_per_h > MIN_SLOPE_PCT_PER_H, "sample {k}: {b:?}");
@@ -602,16 +393,9 @@ mod tests {
             }
 
             // Samples before a decrease inside the lookback never influence the result.
-            if let Some(j) = (1..=k)
-                .rev()
-                .find(|&j| fh[j - 1].pct - fh[j].pct >= MIXED_SOURCE_DROP_PCT)
-            {
+            if let Some(j) = (1..=k).rev().find(|&j| fh[j - 1].pct - fh[j].pct >= MIXED_SOURCE_DROP_PCT) {
                 if fh[j].t_ms > now - m(60) {
-                    assert_eq!(
-                        got,
-                        compute(&WindowKind::FiveHour, &fh[j..=k], &st, now),
-                        "sample {k}"
-                    );
+                    assert_eq!(got, compute(&WindowKind::FiveHour, &fh[j..=k], &st, now), "sample {k}");
                 }
             }
 
@@ -620,22 +404,14 @@ mod tests {
             if k >= 4 {
                 let hour = &synth.samples[k - 4..=k];
                 let incs: Vec<f32> = hour.windows(2).map(|w| w[1].fh - w[0].fh).collect();
-                let (lo, hi) = incs
-                    .iter()
-                    .fold((f32::MAX, f32::MIN), |(lo, hi), &i| (lo.min(i), hi.max(i)));
+                let (lo, hi) = incs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &i| (lo.min(i), hi.max(i)));
                 let steady_hour = lo >= 5.0
                     && hi - lo <= 1.0
-                    && hour.windows(2).all(|w| {
-                        w[1].t_ms - w[0].t_ms == m(15) && w[1].fh_reset_ms == w[0].fh_reset_ms
-                    });
+                    && hour.windows(2).all(|w| w[1].t_ms - w[0].t_ms == m(15) && w[1].fh_reset_ms == w[0].fh_reset_ms);
                 if steady_hour && truth.fh < 95.0 {
-                    let b =
-                        got.unwrap_or_else(|| panic!("sample {k}: steady hour without forecast"));
+                    let b = got.unwrap_or_else(|| panic!("sample {k}: steady hour without forecast"));
                     let pace = hour[4].fh - hour[0].fh;
-                    assert!(
-                        (b.slope_pct_per_h - pace).abs() <= 0.15 * pace,
-                        "sample {k}: {b:?} vs {pace}"
-                    );
+                    assert!((b.slope_pct_per_h - pace).abs() <= 0.15 * pace, "sample {k}: {b:?} vs {pace}");
                     steady += 1;
                 }
             }
@@ -669,12 +445,7 @@ mod tests {
 
     #[test]
     fn extreme_times_do_not_overflow() {
-        let s = series(&[
-            (Ms::MIN, 10.0),
-            (Ms::MIN + 1, 20.0),
-            (Ms::MAX - 1, 30.0),
-            (Ms::MAX, 40.0),
-        ]);
+        let s = series(&[(Ms::MIN, 10.0), (Ms::MIN + 1, 20.0), (Ms::MAX - 1, 30.0), (Ms::MAX, 40.0)]);
         for now in [Ms::MIN, 0, Ms::MAX] {
             for reset in [ResetInfo::Unknown, exact(Ms::MAX), exact(Ms::MIN)] {
                 for kind in [WindowKind::FiveHour, WindowKind::SevenDay] {

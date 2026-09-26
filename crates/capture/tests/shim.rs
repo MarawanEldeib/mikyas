@@ -71,12 +71,7 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<ExitStatus>
 /// Runs `cmd` with `input` on stdin, then closes stdin. Kills it after [`TIMEOUT`].
 fn run(cmd: &mut Command, input: &[u8]) -> Outcome {
     let start = Instant::now();
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
     let mut stdin = child.stdin.take().expect("stdin");
     let data = input.to_vec();
     let writer = thread::spawn(move || {
@@ -111,22 +106,15 @@ fn errors_log(data: &Path) -> String {
 
 /// Valid statusline JSON with non-ASCII text, JSON-escaped ANSI sequences and a CRLF ending.
 fn fancy_input() -> Vec<u8> {
-    let mut input = FULL
-        .replace(
-            "Opus 5.5 (1M context)",
-            r"Opus 5.5 — ünïcödé 日本語 ✓ \u001b[1mbold\u001b[0m",
-        )
-        .into_bytes();
+    let mut input =
+        FULL.replace("Opus 5.5 (1M context)", r"Opus 5.5 — ünïcödé 日本語 ✓ \u001b[1mbold\u001b[0m").into_bytes();
     input.extend_from_slice(b"\r\n");
     input
 }
 
 /// Resets relative to the real clock, so the `--default` countdowns are predictable.
 fn input_with_resets(five_hour_in_s: i64, seven_day_in_s: i64) -> Vec<u8> {
-    let now_s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let now_s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     let mut json: Value = serde_json::from_str(FULL).unwrap();
     json["rate_limits"]["five_hour"]["resets_at"] = (now_s + five_hour_in_s).into();
     json["rate_limits"]["seven_day"]["resets_at"] = (now_s + seven_day_in_s).into();
@@ -136,12 +124,7 @@ fn input_with_resets(five_hour_in_s: i64, seven_day_in_s: i64) -> Vec<u8> {
 fn assert_whitelisted_capture(data: &Path) {
     let text = fs::read_to_string(capture_file(data)).expect("capture file written");
     let json: Value = serde_json::from_str(&text).unwrap();
-    let mut keys: Vec<&str> = json
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
+    let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
     keys.sort_unstable();
     assert_eq!(
         keys,
@@ -159,14 +142,7 @@ fn assert_whitelisted_capture(data: &Path) {
             "written_at_ms",
         ]
     );
-    for banned in [
-        "sentinel",
-        "cwd",
-        "workspace",
-        "total_cost_usd",
-        "spend_limit",
-        "output_style",
-    ] {
+    for banned in ["sentinel", "cwd", "workspace", "total_cost_usd", "spend_limit", "output_style"] {
         assert!(!text.contains(banned), "capture leaked {banned:?}: {text}");
     }
     assert_eq!(json["api_ms"], 123_456);
@@ -186,17 +162,10 @@ fn tee_forwards_json_byte_for_byte_and_captures_whitelist() {
     let out = run(shim(tmp.path()).arg("--tee"), &input);
     assert_eq!(out.code, Some(0));
     assert_eq!(out.stdout, input);
-    assert!(
-        out.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_whitelisted_capture(tmp.path());
     let json: Value = serde_json::from_slice(&fs::read(capture_file(tmp.path())).unwrap()).unwrap();
-    assert_eq!(
-        json["model"]["display_name"],
-        "Opus 5.5 — ünïcödé 日本語 ✓ \u{1b}[1mbold\u{1b}[0m"
-    );
+    assert_eq!(json["model"]["display_name"], "Opus 5.5 — ünïcödé 日本語 ✓ \u{1b}[1mbold\u{1b}[0m");
     assert_eq!(errors_log(tmp.path()), "");
 }
 
@@ -246,16 +215,9 @@ fn missing_or_unknown_arguments_behave_like_tee() {
 #[test]
 fn default_with_extra_arguments_still_prints_the_line_and_logs_them() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = run(
-        shim(tmp.path()).args(["--default", "extra-sentinel"]),
-        FULL.as_bytes(),
-    );
+    let out = run(shim(tmp.path()).args(["--default", "extra-sentinel"]), FULL.as_bytes());
     assert_eq!(out.code, Some(0));
-    assert!(
-        String::from_utf8(out.stdout)
-            .unwrap()
-            .starts_with("\x1b[38;5;213mOpus 5.5")
-    );
+    assert!(String::from_utf8(out.stdout).unwrap().starts_with("\x1b[38;5;213mOpus 5.5"));
     let log = errors_log(tmp.path());
     assert!(log.ends_with(" default unknown_arg\n"), "{log}");
     assert!(!log.contains("sentinel"), "{log}");
@@ -274,10 +236,7 @@ fn tee_forwards_oversized_input_unchanged_and_skips_the_capture() {
     let input = too_large_input();
     let out = run(shim(tmp.path()).arg("--tee"), &input);
     assert_eq!(out.code, Some(0));
-    assert!(
-        out.stdout == input,
-        "stdout differs from the oversized input"
-    );
+    assert!(out.stdout == input, "stdout differs from the oversized input");
     assert!(out.stderr.is_empty());
     assert!(!capture_file(tmp.path()).exists());
     let log = errors_log(tmp.path());
@@ -289,10 +248,7 @@ fn tee_forwards_oversized_input_unchanged_and_skips_the_capture() {
 fn argv_mode_streams_oversized_input_to_the_child_and_skips_the_capture() {
     let tmp = tempfile::tempdir().unwrap();
     let input = too_large_input();
-    let out = run(
-        shim(tmp.path()).args(["--", CHILD.as_str(), "--exit", "9"]),
-        &input,
-    );
+    let out = run(shim(tmp.path()).args(["--", CHILD.as_str(), "--exit", "9"]), &input);
     assert_eq!(out.code, Some(9));
     assert!(out.stdout == input, "the child did not get the whole input");
     assert!(out.stderr.is_empty());
@@ -309,14 +265,7 @@ fn argv_mode_survives_a_panic_in_its_own_capture() {
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let mut cmd = shim(tmp.path());
-    cmd.env("CUW_TEST_HOOK", "panic").args([
-        "--",
-        CHILD.as_str(),
-        "--sleep-ms",
-        "300",
-        "--exit",
-        "7",
-    ]);
+    cmd.env("CUW_TEST_HOOK", "panic").args(["--", CHILD.as_str(), "--sleep-ms", "300", "--exit", "7"]);
     let out = run(&mut cmd, &input);
     assert_eq!(out.code, Some(7));
     assert_eq!(out.stdout, input);
@@ -380,10 +329,7 @@ fn version_flag() {
     let tmp = tempfile::tempdir().unwrap();
     let out = run(shim(tmp.path()).arg("--version"), b"");
     assert_eq!(out.code, Some(0));
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
-        format!("cuw-capture {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("cuw-capture {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
@@ -391,16 +337,7 @@ fn argv_mode_forwards_stdin_stdout_args_and_exit_code() {
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let out = run(
-        shim(tmp.path()).args([
-            "--",
-            CHILD.as_str(),
-            "--print-args",
-            "--exit",
-            "7",
-            "a b",
-            r#"q"uote"#,
-            "",
-        ]),
+        shim(tmp.path()).args(["--", CHILD.as_str(), "--print-args", "--exit", "7", "a b", r#"q"uote"#, ""]),
         &input,
     );
     assert_eq!(out.code, Some(7));
@@ -415,16 +352,10 @@ fn argv_mode_forwards_stdin_stdout_args_and_exit_code() {
 fn argv_mode_falls_back_to_default_line_when_spawn_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let input = input_with_resets(600, 7200);
-    let out = run(
-        shim(tmp.path()).args(["--", "cuw-no-such-program-4711", "x"]),
-        &input,
-    );
+    let out = run(shim(tmp.path()).args(["--", "cuw-no-such-program-4711", "x"]), &input);
     assert_eq!(out.code, Some(0));
     let line = String::from_utf8(out.stdout).unwrap();
-    assert!(
-        line.starts_with("\x1b[38;5;213mOpus 5.5 (1M context)\x1b[0m · ctx"),
-        "{line:?}"
-    );
+    assert!(line.starts_with("\x1b[38;5;213mOpus 5.5 (1M context)\x1b[0m · ctx"), "{line:?}");
     assert_eq!(line.lines().count(), 1);
     assert!(out.stderr.is_empty());
     assert!(capture_file(tmp.path()).exists());
@@ -441,10 +372,7 @@ fn argv_mode_without_a_program_prints_default_line_and_logs_it() {
     let out = run(shim(tmp.path()).arg("--"), FULL.as_bytes());
     assert_eq!(out.code, Some(0));
     let line = String::from_utf8(out.stdout).unwrap();
-    assert!(
-        line.starts_with("\x1b[38;5;213mOpus 5.5 (1M context)\x1b[0m · ctx"),
-        "{line:?}"
-    );
+    assert!(line.starts_with("\x1b[38;5;213mOpus 5.5 (1M context)\x1b[0m · ctx"), "{line:?}");
     assert!(out.stderr.is_empty());
     assert!(capture_file(tmp.path()).exists());
     let log = errors_log(tmp.path());
@@ -476,12 +404,7 @@ fn tee_closes_stdout_before_a_slow_capture() {
     });
     let stderr = read_in_background(child.stderr.take().unwrap());
     let mut stdout = Vec::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_end(&mut stdout)
-        .unwrap();
+    child.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
     let eof = Instant::now();
     let status = wait_with_timeout(&mut child, TIMEOUT).expect("shim hung");
     let held_open_for = eof.elapsed();
@@ -507,10 +430,7 @@ fn argv_mode_child_that_never_reads_stdin_does_not_hang() {
     let mut json: Value = serde_json::from_str(FULL).unwrap();
     json["pad"] = "x".repeat(1 << 20).into();
     let input = serde_json::to_vec(&json).unwrap();
-    let out = run(
-        shim(tmp.path()).args(["--", CHILD.as_str(), "--no-read", "--exit", "5"]),
-        &input,
-    );
+    let out = run(shim(tmp.path()).args(["--", CHILD.as_str(), "--no-read", "--exit", "5"]), &input);
     assert_eq!(out.code, Some(5));
     assert!(out.stdout.is_empty());
     assert!(out.elapsed < Duration::from_secs(20), "{:?}", out.elapsed);
@@ -519,12 +439,7 @@ fn argv_mode_child_that_never_reads_stdin_does_not_hang() {
 
 /// Writes `input` but never closes stdin; returns (exit code, stdout, elapsed).
 fn run_with_open_stdin(cmd: &mut Command, input: &[u8]) -> (Option<i32>, Vec<u8>, Duration) {
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(input).unwrap();
     stdin.flush().unwrap();
@@ -533,18 +448,13 @@ fn run_with_open_stdin(cmd: &mut Command, input: &[u8]) -> (Option<i32>, Vec<u8>
     let status = wait_with_timeout(&mut child, Duration::from_secs(15));
     let elapsed = start.elapsed();
     drop(stdin);
-    (
-        status.and_then(|s| s.code()),
-        stdout.join().unwrap(),
-        elapsed,
-    )
+    (status.and_then(|s| s.code()), stdout.join().unwrap(), elapsed)
 }
 
 #[test]
 fn watchdog_stops_waiting_for_stdin_that_never_closes() {
     let tmp = tempfile::tempdir().unwrap();
-    let (code, stdout, elapsed) =
-        run_with_open_stdin(shim(tmp.path()).arg("--tee"), FULL.as_bytes());
+    let (code, stdout, elapsed) = run_with_open_stdin(shim(tmp.path()).arg("--tee"), FULL.as_bytes());
     assert_eq!(code, Some(0), "shim hung on an open stdin ({elapsed:?})");
     assert!(elapsed >= Duration::from_millis(1500), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
@@ -556,25 +466,18 @@ fn watchdog_stops_waiting_for_stdin_that_never_closes() {
 #[test]
 fn watchdog_also_applies_in_argv_mode() {
     let tmp = tempfile::tempdir().unwrap();
-    let (code, stdout, elapsed) = run_with_open_stdin(
-        shim(tmp.path()).args(["--", CHILD.as_str(), "--exit", "2"]),
-        FULL.as_bytes(),
-    );
+    let (code, stdout, elapsed) =
+        run_with_open_stdin(shim(tmp.path()).args(["--", CHILD.as_str(), "--exit", "2"]), FULL.as_bytes());
     assert_eq!(code, Some(2), "shim hung on an open stdin ({elapsed:?})");
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
-    assert_eq!(
-        stdout,
-        FULL.as_bytes(),
-        "the child gets what arrived, then EOF"
-    );
+    assert_eq!(stdout, FULL.as_bytes(), "the child gets what arrived, then EOF");
 }
 
 #[test]
 fn diag_appends_names_but_never_values() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = shim(tmp.path());
-    cmd.arg("--diag")
-        .env("CLAUDE_CUW_DIAG_TEST", "env-value-sentinel");
+    cmd.arg("--diag").env("CLAUDE_CUW_DIAG_TEST", "env-value-sentinel");
     let out = run(&mut cmd, FULL.as_bytes());
     assert_eq!(out.code, Some(0));
     assert_eq!(out.stdout, b"cuw diag ok\n");
@@ -583,24 +486,14 @@ fn diag_appends_names_but_never_values() {
     assert_eq!(out2.stdout, b"cuw diag ok\n");
 
     let log = fs::read_to_string(capture_dir(tmp.path()).join("_diag.log")).unwrap();
-    assert_eq!(
-        log.matches("=== cuw-capture ").count(),
-        2,
-        "blocks are appended: {log}"
-    );
+    assert_eq!(log.matches("=== cuw-capture ").count(), 2, "blocks are appended: {log}");
     assert!(log.contains("args: mode=--diag argc=1\n"), "{log}");
     assert!(!log.contains("cmdline"), "{log}");
-    assert!(
-        !log.contains(&*SHIM.to_ascii_lowercase()) && !log.contains(SHIM),
-        "diag logged the shim's path: {log}"
-    );
+    assert!(!log.contains(&*SHIM.to_ascii_lowercase()) && !log.contains(SHIM), "diag logged the shim's path: {log}");
     assert!(log.contains("parent: pid="), "{log}");
     assert!(log.contains("grandparent: "), "{log}");
     assert!(log.contains("CLAUDE_CUW_DIAG_TEST"), "{log}");
-    assert!(
-        log.contains(&format!("stdin_bytes: {}\n", FULL.len())),
-        "{log}"
-    );
+    assert!(log.contains(&format!("stdin_bytes: {}\n", FULL.len())), "{log}");
     assert!(log.contains("stdin_bytes: 0\n"), "{log}");
     assert!(
         log.contains(
@@ -609,10 +502,7 @@ fn diag_appends_names_but_never_values() {
         ),
         "{log}"
     );
-    assert!(
-        log.contains("rate_limits_keys: five_hour, seven_day, seven_day_opus, spend_limit\n"),
-        "{log}"
-    );
+    assert!(log.contains("rate_limits_keys: five_hour, seven_day, seven_day_opus, spend_limit\n"), "{log}");
     for leaked in ["env-value-sentinel", "demo-cwd-sentinel", SID, "Opus 5.5"] {
         assert!(!log.contains(leaked), "diag leaked {leaked:?}: {log}");
     }
@@ -622,17 +512,11 @@ fn diag_appends_names_but_never_values() {
 #[test]
 fn diag_never_logs_argument_text() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = run(
-        shim(tmp.path()).args(["--diag", r"C:\Users\tester\arg-sentinel.ps1", "-x"]),
-        FULL.as_bytes(),
-    );
+    let out = run(shim(tmp.path()).args(["--diag", r"C:\Users\tester\arg-sentinel.ps1", "-x"]), FULL.as_bytes());
     assert_eq!(out.stdout, b"cuw diag ok\n");
     let log = fs::read_to_string(capture_dir(tmp.path()).join("_diag.log")).unwrap();
     assert!(log.contains("args: mode=--diag argc=3\n"), "{log}");
-    assert!(
-        !log.contains("arg-sentinel"),
-        "diag leaked an argument: {log}"
-    );
+    assert!(!log.contains("arg-sentinel"), "diag leaked an argument: {log}");
     assert!(!log.contains("tester"), "diag leaked an argument: {log}");
 }
 
@@ -641,9 +525,7 @@ fn errors_log_stays_under_64_kib() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = capture_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
-    let old: String = (0..3000)
-        .map(|i| format!("2026-01-01T00:00:00.000Z tee old-{i:05}\n"))
-        .collect();
+    let old: String = (0..3000).map(|i| format!("2026-01-01T00:00:00.000Z tee old-{i:05}\n")).collect();
     assert!(old.len() > 64 * 1024);
     fs::write(dir.join("_errors.log"), old).unwrap();
     for _ in 0..3 {
@@ -653,10 +535,7 @@ fn errors_log_stays_under_64_kib() {
     assert!((log.len() as u64) < 64 * 1024, "{}", log.len());
     assert!(log.ends_with(" tee not_json\n"));
     assert_eq!(log.matches(" tee not_json\n").count(), 3);
-    assert!(
-        log.lines().all(|l| l.starts_with("20") && !l.is_empty()),
-        "only whole lines are kept"
-    );
+    assert!(log.lines().all(|l| l.starts_with("20") && !l.is_empty()), "only whole lines are kept");
 }
 
 #[cfg(windows)]
@@ -666,22 +545,17 @@ fn argv_mode_resolves_extensionless_programs_via_path_and_pathext() {
     let bin = tmp.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::copy(CHILD.as_str(), bin.join("cuwchild.exe")).unwrap();
-    fs::write(
-        bin.join("cuwwrap.cmd"),
-        format!("@\"{}\" %*\r\n@exit /b %ERRORLEVEL%\r\n", *CHILD),
+    fs::write(bin.join("cuwwrap.cmd"), format!("@\"{}\" %*\r\n@exit /b %ERRORLEVEL%\r\n", *CHILD)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
     )
-    .unwrap();
-    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    )))
     .unwrap();
     let input = fancy_input();
 
     for (program, code) in [("cuwchild", 3), ("cuwwrap", 4), ("cuwwrap.cmd", 6)] {
         let data = tmp.path().join(format!("data-{program}"));
         let mut cmd = shim(&data);
-        cmd.env("PATH", &path)
-            .args(["--", program, "--exit", &code.to_string()]);
+        cmd.env("PATH", &path).args(["--", program, "--exit", &code.to_string()]);
         let out = run(&mut cmd, &input);
         assert_eq!(out.code, Some(code), "{program}");
         assert_eq!(out.stdout, input, "{program}");
@@ -699,16 +573,11 @@ fn cmd_pipe_form_preserves_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         let input = fancy_input();
         let mut cmd = Command::new("cmd");
-        cmd.raw_arg(format!(r#"/d /s /c ""{shim_path}" --tee | "{}"""#, *CHILD))
-            .env("CUW_DATA_DIR", tmp.path());
+        cmd.raw_arg(format!(r#"/d /s /c ""{shim_path}" --tee | "{}"""#, *CHILD)).env("CUW_DATA_DIR", tmp.path());
         let out = run(&mut cmd, &input);
         assert_eq!(out.code, Some(0), "{shim_path}");
         assert_eq!(out.stdout, input, "{shim_path}");
-        assert!(
-            out.stderr.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
         assert_whitelisted_capture(tmp.path());
     }
 }
@@ -720,8 +589,7 @@ fn git_bash() -> Option<PathBuf> {
     let machine = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
         .into_iter()
         .filter_map(|var| Some(PathBuf::from(std::env::var_os(var)?).join(r"Git\bin\bash.exe")));
-    let user = std::env::var_os("LOCALAPPDATA")
-        .map(|dir| PathBuf::from(dir).join(r"Programs\Git\bin\bash.exe"));
+    let user = std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join(r"Programs\Git\bin\bash.exe"));
     machine.chain(user).find(|p| p.is_file())
 }
 
@@ -731,22 +599,14 @@ fn git_bash_pipe_form_preserves_bytes() {
     let Some(bash) = git_bash() else {
         // libtest hides `eprintln!` output of passing tests; a direct write to stderr is not
         // captured, so the skip shows in the `cargo test` output instead of passing silently.
-        let _ = writeln!(
-            std::io::stderr(),
-            "skipped: bash.exe not found (git_bash_pipe_form_preserves_bytes)"
-        );
+        let _ = writeln!(std::io::stderr(), "skipped: bash.exe not found (git_bash_pipe_form_preserves_bytes)");
         return;
     };
     let tmp = tempfile::tempdir().unwrap();
     let input = fancy_input();
     let mut cmd = Command::new(bash);
-    cmd.args([
-        "-c",
-        r#""$0" --tee | "$1""#,
-        &SHIM.replace('\\', "/"),
-        &CHILD.as_str().replace('\\', "/"),
-    ])
-    .env("CUW_DATA_DIR", tmp.path());
+    cmd.args(["-c", r#""$0" --tee | "$1""#, &SHIM.replace('\\', "/"), &CHILD.as_str().replace('\\', "/")])
+        .env("CUW_DATA_DIR", tmp.path());
     let out = run(&mut cmd, &input);
     assert_eq!(out.code, Some(0));
     assert_eq!(out.stdout, input);
@@ -765,12 +625,8 @@ fn killing_the_shim_kills_the_child() {
 #[cfg(windows)]
 #[test]
 fn killing_the_shim_kills_the_child_inside_a_silent_breakaway_job() {
-    use windows_sys::Win32::System::JobObjects::{
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-    };
-    assert_child_dies_with_shim(Some(
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-    ));
+    use windows_sys::Win32::System::JobObjects::{JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK};
+    assert_child_dies_with_shim(Some(JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK));
 }
 
 /// Starts `shim -- <sleeping child>`, optionally first placing the shim in an outer job with
@@ -791,14 +647,7 @@ fn assert_child_dies_with_shim(outer_job_flags: Option<u32>) {
     let tmp = tempfile::tempdir().unwrap();
     let pid_file = tmp.path().join("child.pid");
     let mut shim_proc = shim(tmp.path())
-        .args([
-            "--",
-            CHILD.as_str(),
-            "--no-read",
-            "--sleep-ms",
-            "60000",
-            "--pid-file",
-        ])
+        .args(["--", CHILD.as_str(), "--no-read", "--sleep-ms", "60000", "--pid-file"])
         .arg(&pid_file)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -823,10 +672,7 @@ fn assert_child_dies_with_shim(outer_job_flags: Option<u32>) {
                 ),
                 0
             );
-            assert_ne!(
-                AssignProcessToJobObject(job, shim_proc.as_raw_handle() as HANDLE),
-                0
-            );
+            assert_ne!(AssignProcessToJobObject(job, shim_proc.as_raw_handle() as HANDLE), 0);
             job
         }
     });
@@ -836,10 +682,7 @@ fn assert_child_dies_with_shim(outer_job_flags: Option<u32>) {
 
     let start = Instant::now();
     let pid: u32 = loop {
-        if let Some(pid) = fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-        {
+        if let Some(pid) = fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
             break pid;
         }
         assert!(start.elapsed() < TIMEOUT, "child never started");
@@ -847,10 +690,7 @@ fn assert_child_dies_with_shim(outer_job_flags: Option<u32>) {
     };
     // SAFETY: plain Win32 calls on a handle we own and close below.
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
-    assert!(
-        !handle.is_null(),
-        "child already gone before the shim was killed"
-    );
+    assert!(!handle.is_null(), "child already gone before the shim was killed");
 
     shim_proc.kill().unwrap();
     shim_proc.wait().unwrap();

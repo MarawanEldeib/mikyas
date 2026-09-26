@@ -172,28 +172,20 @@ pub fn scan_tail(
             scanned_len: len.min(HEAD_MAX_BYTES),
         });
     }
-    let identity_1m = identity
-        .as_ref()
-        .and_then(|found| found.model_id.as_deref())
-        .map(|id| identity_is_1m_for(id, &last.model));
+    let identity_1m =
+        identity.as_ref().and_then(|found| found.model_id.as_deref()).map(|id| identity_is_1m_for(id, &last.model));
 
     let session_id = last
         .session_id
         .filter(|s| !s.is_empty())
         .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    let last_assistant_ms = last
-        .timestamp_ms
-        .or_else(|| meta.modified().ok().and_then(system_time_ms))
-        .unwrap_or(0);
+    let last_assistant_ms = last.timestamp_ms.or_else(|| meta.modified().ok().and_then(system_time_ms)).unwrap_or(0);
 
     Ok(Some(TranscriptTail {
         path: path.to_path_buf(),
         session_id,
-        entrypoint: last
-            .entrypoint
-            .as_deref()
-            .map_or(Entrypoint::Unknown, Entrypoint::from_transcript),
+        entrypoint: last.entrypoint.as_deref().map_or(Entrypoint::Unknown, Entrypoint::from_transcript),
         model_id: Some(last.model),
         ctx_tokens: last.ctx_tokens,
         max_ctx_tokens_seen: max_ctx_tokens.max(last.ctx_tokens),
@@ -545,14 +537,10 @@ fn qualify(line: RawLine) -> Option<AssistantLine> {
     let message = line.message?;
     let model = message.model.filter(|m| !m.is_empty() && m != SYNTHETIC_MODEL)?;
     let usage = message.usage?;
-    let ctx_tokens = [
-        usage.input_tokens,
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
-    ]
-    .into_iter()
-    .flatten()
-    .fold(0u64, u64::saturating_add);
+    let ctx_tokens = [usage.input_tokens, usage.cache_creation_input_tokens, usage.cache_read_input_tokens]
+        .into_iter()
+        .flatten()
+        .fold(0u64, u64::saturating_add);
     Some(AssistantLine {
         session_id: line.session_id,
         entrypoint: line.entrypoint,
@@ -629,11 +617,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 fn project_name(cwd: &str) -> Option<String> {
     let trimmed = cwd.trim().trim_end_matches(['\\', '/']);
     let name = trimmed.rsplit(['\\', '/']).next()?;
-    if name.is_empty() || name.ends_with(':') {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    if name.is_empty() || name.ends_with(':') { None } else { Some(name.to_string()) }
 }
 
 // ---- head (identity) scanning ----
@@ -1024,10 +1008,7 @@ mod tests {
         assert!(matches!(scan_tail(&e.reader, &missing, &mut None), Err(SourceError::NotFound)));
         let outside = e.tmp.path().join("elsewhere").join("s.jsonl");
         write_file(&outside, &lines(&[assistant("claude-opus-5-5", 1, 1, 1)]));
-        assert!(matches!(
-            scan_tail(&e.reader, &outside, &mut None),
-            Err(SourceError::Read(ReadError::Denied(_)))
-        ));
+        assert!(matches!(scan_tail(&e.reader, &outside, &mut None), Err(SourceError::Read(ReadError::Denied(_)))));
     }
 
     #[test]
@@ -1104,12 +1085,8 @@ mod tests {
     #[test]
     fn crlf_files() {
         let e = env();
-        let body = [
-            user("hi").to_string(),
-            assistant("claude-opus-5-5", 7, 0, 0).to_string(),
-            user("bye").to_string(),
-        ]
-        .join("\r\n")
+        let body = [user("hi").to_string(), assistant("claude-opus-5-5", 7, 0, 0).to_string(), user("bye").to_string()]
+            .join("\r\n")
             + "\r\n";
         let path = e.write("p/s.jsonl", body.as_bytes());
         let tail = e.scan(&path).unwrap();
@@ -1443,22 +1420,15 @@ mod tests {
     #[test]
     fn cached_identity_skips_head_scan() {
         let e = env();
-        let path = e.write(
-            "p/s.jsonl",
-            &lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 1, 1, 1)]),
-        );
+        let path = e
+            .write("p/s.jsonl", &lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 1, 1, 1)]));
         let len = std::fs::metadata(&path).unwrap().len();
         let scan = |cached: HeadIdentity| {
             let mut identity = cached;
             let one_m = scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap().identity_1m;
             (one_m, identity)
         };
-        let head = |id: Option<&str>| {
-            Some(HeadScan {
-                model_id: id.map(str::to_string),
-                scanned_len: len,
-            })
-        };
+        let head = |id: Option<&str>| Some(HeadScan { model_id: id.map(str::to_string), scanned_len: len });
         let found = head(Some("claude-opus-5-5[1m]"));
         assert_eq!(scan(None), (Some(true), found.clone()), "the head scan is handed back");
         let plain = head(Some("claude-opus-5-5"));
@@ -1503,10 +1473,8 @@ mod tests {
 
     #[test]
     fn a_complete_head_scan_is_final() {
-        let done = |model_id: Option<&str>, scanned_len: u64| HeadScan {
-            model_id: model_id.map(str::to_string),
-            scanned_len,
-        };
+        let done =
+            |model_id: Option<&str>, scanned_len: u64| HeadScan { model_id: model_id.map(str::to_string), scanned_len };
         assert!(done(None, HEAD_MAX_BYTES).is_final());
         assert!(done(Some("x"), HEAD_BYTES).is_final());
         assert!(!done(Some("x"), HEAD_BYTES - 1).is_final());
@@ -1523,11 +1491,7 @@ mod tests {
         let id = b"claude-opus-5-5[1m]".as_slice();
         assert_eq!(
             scan(r#"{"type":"attachment","attachment":{"identity":{"modelId":"claude-opus-5-5[1m]"}}}"#),
-            AttachmentScan {
-                is_attachment: true,
-                identity: Some(id),
-                one_m: Some(id),
-            }
+            AttachmentScan { is_attachment: true, identity: Some(id), one_m: Some(id) }
         );
         // A 1M value under another key; a plain identity next to it.
         let s = scan(r#"{"type":"attachment","a":{"modelId":"claude-opus-5-5","b":"claude-sonnet-5[1m]"}}"#);
@@ -1547,10 +1511,10 @@ mod tests {
         // Aliases in modelId count too; free text in modelId does not.
         let s = scan(r#"{"type":"attachment","identity":{"modelId":"opus[1M]"}}"#);
         assert_eq!(s.one_m, Some(b"opus[1M]".as_slice()));
-        assert_eq!(scan(r#"{"type":"attachment","modelId":"not a model [1m]"}"#), AttachmentScan {
-            is_attachment: true,
-            ..AttachmentScan::default()
-        });
+        assert_eq!(
+            scan(r#"{"type":"attachment","modelId":"not a model [1m]"}"#),
+            AttachmentScan { is_attachment: true, ..AttachmentScan::default() }
+        );
         // Garbage never panics.
         for junk in ["\"", "\"\\", "{{{{", "}}}]]]", ":::", "\"a\":", "{\"a\":\"b\\"] {
             let _ = scan(junk);
@@ -1582,10 +1546,7 @@ mod tests {
     }
 
     fn names(files: &[RecentFile]) -> Vec<String> {
-        files
-            .iter()
-            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect()
+        files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
     }
 
     #[test]
@@ -1673,11 +1634,7 @@ mod tests {
     fn duplicate_sightings_keep_only_the_newest() {
         // Overlapping roots list a file twice; if it was appended to between the two listings
         // the sightings have different mtimes and are not adjacent after sorting.
-        let rf = |name: &str, modified_ms: Ms| RecentFile {
-            path: PathBuf::from(name),
-            modified_ms,
-            len: 1,
-        };
+        let rf = |name: &str, modified_ms: Ms| RecentFile { path: PathBuf::from(name), modified_ms, len: 1 };
         let found = newest_first(vec![rf("x", 30), rf("y", 20), rf("x", 10), rf("y", 20)], 10);
         assert_eq!(found, vec![rf("x", 30), rf("y", 20)]);
         assert_eq!(newest_first(vec![rf("x", 10), rf("y", 20), rf("x", 30)], 1), vec![rf("x", 30)]);

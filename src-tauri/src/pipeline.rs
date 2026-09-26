@@ -34,20 +34,20 @@ use cuw_core::history::History;
 use cuw_core::pace_alerts::PaceSettings;
 use cuw_core::paths::Paths;
 use cuw_core::saferead::SafeReader;
+use cuw_core::sources::SourceError;
 use cuw_core::sources::desktop_sessions::{self, DesktopSession};
 use cuw_core::sources::desktop_usage::{self, DesktopUsage};
 use cuw_core::sources::statusline;
 use cuw_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
-use cuw_core::sources::SourceError;
 use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
 use cuw_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 use tauri::{AppHandle, Emitter};
 
 pub use crate::diag::log;
 use crate::localtime::local_day_starts;
-use crate::toast::Alert;
 use crate::settings::Settings;
 use crate::state::{PersistedState, Shared, load_json, lock, save_json};
+use crate::toast::Alert;
 
 pub const COALESCE_QUIET: Duration = Duration::from_millis(250);
 pub const COALESCE_MAX: Duration = Duration::from_secs(1);
@@ -93,13 +93,7 @@ pub struct Dirty {
 
 impl Dirty {
     pub fn all() -> Self {
-        Self {
-            captures: true,
-            transcripts: Vec::new(),
-            full_scan: true,
-            desktop: true,
-            sessions: true,
-        }
+        Self { captures: true, transcripts: Vec::new(), full_scan: true, desktop: true, sessions: true }
     }
 }
 
@@ -267,10 +261,7 @@ impl PipelineState {
 
         let mut alerts = self.limit_alerts(&snap, settings);
         if settings.ctx_alerts {
-            let ctx = self
-                .persisted
-                .ctx_alerts
-                .evaluate(&snap.sessions, &settings.ctx_thresholds, now);
+            let ctx = self.persisted.ctx_alerts.evaluate(&snap.sessions, &settings.ctx_thresholds, now);
             alerts.extend(ctx.into_iter().map(Alert::Context));
         }
         self.pace_and_recap_alerts(&snap, settings, now, &mut alerts);
@@ -289,11 +280,7 @@ impl PipelineState {
         let changed = self.last.as_deref().is_none_or(|last| !same_content(last, &snap));
         let snapshot = Arc::new(snap);
         self.last = Some(snapshot.clone());
-        TickOutput {
-            snapshot,
-            changed,
-            alerts,
-        }
+        TickOutput { snapshot, changed, alerts }
     }
 
     fn build(&self, now: Ms, settings: &Settings) -> Snapshot {
@@ -333,17 +320,11 @@ impl PipelineState {
     /// Threshold and reset alerts (`alerts.json`).
     fn limit_alerts(&mut self, snap: &Snapshot, settings: &Settings) -> Vec<Alert> {
         let states: Vec<_> = snap.windows.iter().map(|w| w.state.clone()).collect();
-        let alert_settings = AlertSettings {
-            thresholds: settings.thresholds.clone(),
-            notify_reset: settings.notify_reset,
-        };
+        let alert_settings =
+            AlertSettings { thresholds: settings.thresholds.clone(), notify_reset: settings.notify_reset };
         let alerts_before = self.alerts.clone();
-        let alerts = self
-            .alerts
-            .evaluate(&states, &alert_settings, self.first_eval)
-            .into_iter()
-            .map(Alert::Limit)
-            .collect();
+        let alerts =
+            self.alerts.evaluate(&states, &alert_settings, self.first_eval).into_iter().map(Alert::Limit).collect();
         self.first_eval = false;
         if self.alerts != alerts_before {
             if let Err(e) = save_json(&self.paths.alerts_file(), &self.alerts) {
@@ -355,10 +336,7 @@ impl PipelineState {
 
     /// Pace forecasts, reset heads-ups and the weekly recap (state in `self.persisted`).
     fn pace_and_recap_alerts(&mut self, snap: &Snapshot, settings: &Settings, now: Ms, alerts: &mut Vec<Alert>) {
-        let pace = PaceSettings {
-            forecast: settings.pace_alerts,
-            heads_up: settings.reset_heads_up,
-        };
+        let pace = PaceSettings { forecast: settings.pace_alerts, heads_up: settings.reset_heads_up };
         if pace.forecast || pace.heads_up {
             let events = self.persisted.pace_alerts.evaluate(&snap.windows, pace, now);
             alerts.extend(events.into_iter().map(Alert::Pace));
@@ -374,7 +352,8 @@ impl PipelineState {
             return;
         }
         self.recap_checked = Some(key);
-        let day_starts = local_day_starts(now.saturating_sub(RECAP_DAYS as Ms * DAY_MS), now, RECAP_DAYS, &chrono::Local);
+        let day_starts =
+            local_day_starts(now.saturating_sub(RECAP_DAYS as Ms * DAY_MS), now, RECAP_DAYS, &chrono::Local);
         if let Some(recap) = self.persisted.recap.evaluate(&self.history, &day_starts, now) {
             alerts.push(Alert::Recap(recap));
         }
@@ -389,11 +368,7 @@ impl PipelineState {
             .filter(|r| !r.e && WindowKind::from_short(&r.w) == WindowKind::SevenDay)
             .find_map(|r| r.r)
             .map(|r| (r, r <= now));
-        RecapKey {
-            rows: rows.len(),
-            newest_ms: rows.last().map(|r| r.t),
-            weekly_reset,
-        }
+        RecapKey { rows: rows.len(), newest_ms: rows.last().map(|r| r.t), weekly_reset }
     }
 
     /// Long turns that ended (in-memory dedupe; only turns that end after the first tick).
@@ -424,12 +399,8 @@ impl PipelineState {
 
     fn full_transcript_scan(&mut self, now: Ms) {
         let roots = self.transcript_roots();
-        let recent = transcript::find_recent(
-            &self.reader,
-            &roots,
-            now.saturating_sub(TRANSCRIPT_MAX_AGE_MS),
-            MAX_TAILS,
-        );
+        let recent =
+            transcript::find_recent(&self.reader, &roots, now.saturating_sub(TRANSCRIPT_MAX_AGE_MS), MAX_TAILS);
         let mut next = HashMap::with_capacity(recent.len());
         for file in recent {
             let cached = self.tails.remove(&file.path);
@@ -456,12 +427,7 @@ impl PipelineState {
         self.tails.insert(path.to_path_buf(), entry);
         if self.tails.len() > MAX_TAILS {
             // Drop the least recently modified.
-            if let Some(oldest) = self
-                .tails
-                .iter()
-                .min_by_key(|(_, c)| c.modified_ms)
-                .map(|(p, _)| p.clone())
-            {
+            if let Some(oldest) = self.tails.iter().min_by_key(|(_, c)| c.modified_ms).map(|(p, _)| p.clone()) {
                 self.tails.remove(&oldest);
             }
         }
@@ -473,30 +439,17 @@ impl PipelineState {
         }
         let mut identity = cached.as_ref().and_then(|c| c.identity.clone());
         match transcript::scan_tail(&self.reader, path, &mut identity) {
-            Ok(Some(tail)) => CachedTail {
-                modified_ms,
-                len,
-                tail: Some(tail),
-                identity,
-            },
+            Ok(Some(tail)) => CachedTail { modified_ms, len, tail: Some(tail), identity },
             // A line longer than the tail scan reads (a huge paste or tool result) can follow the
             // last assistant line. While the file only grows, the last tail seen still describes
             // the session; it keeps its timestamp, so the session ages out of the list as usual.
-            Ok(None) => CachedTail {
-                modified_ms,
-                len,
-                tail: cached.filter(|c| len > c.len).and_then(|c| c.tail),
-                identity,
-            },
+            Ok(None) => {
+                CachedTail { modified_ms, len, tail: cached.filter(|c| len > c.len).and_then(|c| c.tail), identity }
+            }
             // Unreadable for now (e.g. locked mid-write): keep what was known, with the old
             // stamps so the next event or scan reads it again. A deleted file is dropped by
             // `update_transcript` / the full scan.
-            Err(_) => cached.unwrap_or(CachedTail {
-                modified_ms: 0,
-                len: 0,
-                tail: None,
-                identity,
-            }),
+            Err(_) => cached.unwrap_or(CachedTail { modified_ms: 0, len: 0, tail: None, identity }),
         }
     }
 
@@ -511,14 +464,9 @@ impl PipelineState {
         let max_t_ms = now.saturating_add(snapshot::FUTURE_SLACK_MS);
         match desktop_usage::load(&self.reader, &self.paths, max_t_ms) {
             Ok(Some(usage)) => {
-                self.desktop_health = DesktopHealth::Ok {
-                    last_sample_ms: usage.last_sample_ms,
-                };
+                self.desktop_health = DesktopHealth::Ok { last_sample_ms: usage.last_sample_ms };
                 if self.history_ok {
-                    match self
-                        .history
-                        .backfill_desktop(&usage, self.persisted.desktop_watermark_ms)
-                    {
+                    match self.history.backfill_desktop(&usage, self.persisted.desktop_watermark_ms) {
                         Ok(w) => self.persisted.desktop_watermark_ms = w,
                         Err(e) => log(&format!("history backfill failed: {e}")),
                     }
@@ -596,9 +544,7 @@ fn empty_history(paths: &Paths) -> History {
 }
 
 fn mtime_ms(modified: Option<SystemTime>) -> Ms {
-    modified
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_millis() as Ms)
+    modified.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as Ms)
 }
 
 fn stamp_of(files: Vec<PathBuf>) -> Stamp {
@@ -646,9 +592,7 @@ fn same_content(a: &Snapshot, b: &Snapshot) -> bool {
 /// A `.jsonl` file outside any `subagents` directory.
 fn transcript_event_path(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jsonl"))
-        && !path
-            .components()
-            .any(|c| c.as_os_str().eq_ignore_ascii_case("subagents"))
+        && !path.components().any(|c| c.as_os_str().eq_ignore_ascii_case("subagents"))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -840,10 +784,8 @@ mod tests {
     fn write_desktop(paths: &Paths, samples: &[(Ms, u32, u32)]) {
         let root = &paths.desktop_roots()[0];
         std::fs::create_dir_all(root).unwrap();
-        let samples: Vec<String> = samples
-            .iter()
-            .map(|(t, fh, sd)| format!(r#"{{"t":{t},"org":"o","u":{{"fh":{fh},"sd":{sd}}}}}"#))
-            .collect();
+        let samples: Vec<String> =
+            samples.iter().map(|(t, fh, sd)| format!(r#"{{"t":{t},"org":"o","u":{{"fh":{fh},"sd":{sd}}}}}"#)).collect();
         std::fs::write(
             root.join("plan-usage-history.json"),
             format!(r#"{{"version":2,"samples":[{}]}}"#, samples.join(",")),
@@ -925,19 +867,13 @@ mod tests {
         assert!(first.snapshot.windows.is_empty());
 
         let path = write_transcript(&paths, "s2", &chrono_like(now - 1_000));
-        let dirty = Dirty {
-            transcripts: vec![path],
-            ..Dirty::default()
-        };
+        let dirty = Dirty { transcripts: vec![path], ..Dirty::default() };
         let out = engine.tick(now + 1, &settings, &dirty);
         assert!(out.changed);
         assert!(out.snapshot.session.is_some());
 
         write_capture(&paths, "s2", now, 85.0, now + 3_600_000);
-        let dirty = Dirty {
-            captures: true,
-            ..Dirty::default()
-        };
+        let dirty = Dirty { captures: true, ..Dirty::default() };
         let out = engine.tick(now + 2, &settings, &dirty);
         assert_eq!(out.alerts.len(), 1, "80% threshold fires");
         let out = engine.tick(now + 3, &settings, &dirty);
@@ -977,10 +913,7 @@ mod tests {
 
         // Turned off: a second session at 90% stays quiet.
         write_transcript_ctx(&paths, "s2", &chrono_like(now), 899_990);
-        let off = Settings {
-            ctx_alerts: false,
-            ..Settings::default()
-        };
+        let off = Settings { ctx_alerts: false, ..Settings::default() };
         let out = restarted.tick(now + 3, &off, &Dirty::all());
         assert!(out.alerts.is_empty());
         assert_eq!(out.snapshot.sessions.len(), 2);
@@ -1008,10 +941,7 @@ mod tests {
             "context":{{"context_window_size":200000}}}}"#
         );
         std::fs::write(paths.capture_dir().join("s1.json"), capture).unwrap();
-        let dirty = Dirty {
-            captures: true,
-            ..Dirty::default()
-        };
+        let dirty = Dirty { captures: true, ..Dirty::default() };
         let out = engine.tick(now + 1, &Settings::default(), &dirty);
         assert_eq!(context_alerts(&out).iter().map(|e| e.threshold).collect::<Vec<_>>(), vec![90]);
     }
@@ -1028,10 +958,7 @@ mod tests {
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert_eq!(out.snapshot.windows[0].state.pct, 31.0);
-        assert_eq!(
-            out.snapshot.health.desktop,
-            DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS) }
-        );
+        assert_eq!(out.snapshot.health.desktop, DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS) });
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.desktop_watermark_ms, now - 5 * MINUTE_MS);
     }
@@ -1043,10 +970,7 @@ mod tests {
         write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 499_990); // 50% of 1M
         let mut engine = PipelineState::new(paths.clone());
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).alerts.is_empty());
-        let low = Settings {
-            ctx_thresholds: vec![40, 45],
-            ..Settings::default()
-        };
+        let low = Settings { ctx_thresholds: vec![40, 45], ..Settings::default() };
         let fired = engine.tick(now + 1, &low, &Dirty::default());
         assert_eq!(context_alerts(&fired).iter().map(|e| e.threshold).collect::<Vec<_>>(), vec![45]);
     }
@@ -1060,10 +984,7 @@ mod tests {
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).changed);
         // An older second session changes only the list, not the header session.
         let path = write_transcript(&paths, "s2", &chrono_like(now - 3_600_000));
-        let dirty = Dirty {
-            transcripts: vec![path],
-            ..Dirty::default()
-        };
+        let dirty = Dirty { transcripts: vec![path], ..Dirty::default() };
         let out = engine.tick(now, &Settings::default(), &dirty);
         assert!(out.changed);
         assert_eq!(out.snapshot.sessions.len(), 2);
@@ -1083,10 +1004,7 @@ mod tests {
         let settings = Settings::default();
         let mut engine = PipelineState::new(paths.clone());
         let before = engine.tick(now, &settings, &Dirty::all()).snapshot.session.clone().expect("session");
-        let dirty = Dirty {
-            transcripts: vec![path.clone()],
-            ..Dirty::default()
-        };
+        let dirty = Dirty { transcripts: vec![path.clone()], ..Dirty::default() };
 
         // A pasted prompt longer than the tail scan reads now follows the assistant line.
         let pad = "x".repeat(transcript::TAIL_RETRY_BYTES as usize + 1024);
@@ -1115,7 +1033,8 @@ mod tests {
                 chrono_like(ts)
             ) + "\n"
         };
-        let identity = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}"#;
+        let identity =
+            r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}"#;
         std::fs::write(&path, format!("{identity}\n{}", line("claude-opus-5-5", now - 2_000))).unwrap();
         let settings = Settings::default();
         let mut engine = PipelineState::new(paths.clone());
@@ -1123,10 +1042,7 @@ mod tests {
         assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(1_000_000));
 
         append(&path, &line("claude-sonnet-5", now - 1_000));
-        let dirty = Dirty {
-            transcripts: vec![path.clone()],
-            ..Dirty::default()
-        };
+        let dirty = Dirty { transcripts: vec![path.clone()], ..Dirty::default() };
         let out = engine.tick(now + 1, &settings, &dirty);
         assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(200_000), "identity was for opus");
     }
@@ -1267,22 +1183,13 @@ mod tests {
         let path = dir.join("s1.jsonl");
         let prompt = turn_line("user", now - 5 * MINUTE_MS, "null", r#""fix the build""#);
         let working = turn_line("assistant", now - 4 * MINUTE_MS, r#""tool_use""#, r#"[{"type":"tool_use"}]"#);
-        let dirty = Dirty {
-            transcripts: vec![path.clone()],
-            ..Dirty::default()
-        };
+        let dirty = Dirty { transcripts: vec![path.clone()], ..Dirty::default() };
 
         for show_project in [false, true] {
-            let settings = Settings {
-                show_project,
-                ..Settings::default()
-            };
+            let settings = Settings { show_project, ..Settings::default() };
             let mut engine = PipelineState::new(paths.clone());
             let finished = |out: TickOutput| -> Vec<FinishedTurn> {
-                out.alerts
-                    .into_iter()
-                    .filter_map(|a| if let Alert::Finished(t) = a { Some(t) } else { None })
-                    .collect()
+                out.alerts.into_iter().filter_map(|a| if let Alert::Finished(t) = a { Some(t) } else { None }).collect()
             };
             std::fs::write(&path, format!("{prompt}{working}")).unwrap();
             assert!(finished(engine.tick(now, &settings, &Dirty::all())).is_empty(), "still working");
@@ -1297,10 +1204,7 @@ mod tests {
         }
 
         // Turned off: nothing is reported.
-        let settings = Settings {
-            finished_alerts: false,
-            ..Settings::default()
-        };
+        let settings = Settings { finished_alerts: false, ..Settings::default() };
         let mut engine = PipelineState::new(paths.clone());
         std::fs::write(&path, format!("{prompt}{working}")).unwrap();
         engine.tick(now, &settings, &Dirty::all());
@@ -1321,11 +1225,7 @@ mod tests {
             identity_1m: None,
             last_assistant_ms: last,
             project: Some("from-transcript".into()),
-            turn: TurnInfo {
-                ended_ms: Some(ended),
-                started_ms: Some(0),
-                start_is_lower_bound: false,
-            },
+            turn: TurnInfo { ended_ms: Some(ended), started_ms: Some(0), start_is_lower_bound: false },
         };
         let tails = [tail("a1", "a", 10, 10), tail("a2", "a", 20, 20), tail("b", "b", 5, 5)];
         let view = |session: &str| SessionView {
@@ -1406,19 +1306,13 @@ mod pace_recap_tests {
         let now = now_ms();
         let reset = (now + 5 * MINUTE_MS) / 1000 * 1000;
         write_capture(&paths, now - 1_000, 100.0, reset);
-        let off = Settings {
-            reset_heads_up: false,
-            ..Settings::default()
-        };
+        let off = Settings { reset_heads_up: false, ..Settings::default() };
         let mut engine = PipelineState::new(paths.clone());
         assert!(pace(&engine.tick(now, &off, &Dirty::all())).is_empty(), "turned off");
 
         let settings = Settings::default();
         let out = engine.tick(now + 1, &settings, &Dirty::default());
-        let expected = PaceAlertEvent::HeadsUp {
-            kind: WindowKind::FiveHour,
-            reset_at_ms: reset,
-        };
+        let expected = PaceAlertEvent::HeadsUp { kind: WindowKind::FiveHour, reset_at_ms: reset };
         assert_eq!(pace(&out), vec![&expected]);
         assert!(pace(&engine.tick(now + 2, &settings, &Dirty::default())).is_empty(), "once");
 
@@ -1444,10 +1338,7 @@ mod pace_recap_tests {
         std::fs::create_dir_all(paths.history_file().parent().unwrap()).unwrap();
         std::fs::write(paths.history_file(), text).unwrap();
 
-        let off = Settings {
-            weekly_recap: false,
-            ..Settings::default()
-        };
+        let off = Settings { weekly_recap: false, ..Settings::default() };
         let mut engine = PipelineState::new(paths.clone());
         assert_eq!(recaps(&engine.tick(now, &off, &Dirty::all())), 0);
         let persisted: PersistedState = load_json(&paths.state_file());

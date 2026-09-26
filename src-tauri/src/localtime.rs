@@ -6,10 +6,8 @@ use cuw_core::time::{HOUR_MS, Ms};
 
 /// The next full hour of the local clock after `now_ms` (half-hour zones included).
 pub fn next_local_hour<Tz: TimeZone>(now_ms: Ms, tz: &Tz) -> Ms {
-    let offset_ms = tz
-        .timestamp_millis_opt(now_ms)
-        .single()
-        .map_or(0, |dt| i64::from(dt.offset().fix().local_minus_utc()) * 1_000);
+    let offset_ms =
+        tz.timestamp_millis_opt(now_ms).single().map_or(0, |dt| i64::from(dt.offset().fix().local_minus_utc()) * 1_000);
     (now_ms + offset_ms).div_euclid(HOUR_MS).saturating_add(1) * HOUR_MS - offset_ms
 }
 

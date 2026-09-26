@@ -102,12 +102,7 @@ pub struct CardRows {
 
 impl Default for CardRows {
     fn default() -> Self {
-        Self {
-            sparklines: true,
-            burn: true,
-            session: true,
-            sources: true,
-        }
+        Self { sparklines: true, burn: true, session: true, sources: true }
     }
 }
 
@@ -313,8 +308,7 @@ pub fn apply_patch(current: &Settings, patch: &serde_json::Value) -> Result<Sett
             obj.insert(k.clone(), v.clone());
         }
     }
-    let next: Settings =
-        serde_json::from_value(value).map_err(|e| format!("invalid settings value: {e}"))?;
+    let next: Settings = serde_json::from_value(value).map_err(|e| format!("invalid settings value: {e}"))?;
     Ok(next.sanitized())
 }
 
@@ -400,10 +394,7 @@ mod tests {
 
     #[test]
     fn patches_never_change_the_hide_hint_flag() {
-        let shown = Settings {
-            hide_hint_shown: true,
-            ..Settings::default()
-        };
+        let shown = Settings { hide_hint_shown: true, ..Settings::default() };
         let next = apply_patch(&shown, &serde_json::json!({"hide_hint_shown": false, "opacity": 0.8})).unwrap();
         assert!(next.hide_hint_shown, "a UI patch cannot reset it");
         assert_eq!(next.opacity, 0.8, "the rest of the patch still applies");
@@ -479,10 +470,7 @@ mod tests {
     fn save_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("sub").join("settings.json");
-        let mut s = Settings {
-            effect: EffectName::Mica,
-            ..Settings::default()
-        };
+        let mut s = Settings { effect: EffectName::Mica, ..Settings::default() };
         s.ctx_overrides.insert("claude-opus-5-5".into(), 1_000_000);
         save(&p, &s).unwrap();
         assert_eq!(load(&p), s);

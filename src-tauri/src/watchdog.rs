@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::connect::{self, ConnectionStatus};
-use crate::toast::Alert;
 use crate::state::{Shared, load_json, lock, save_json};
+use crate::toast::Alert;
 
 /// Periodic re-check (a missed file event, or a watch that could not be set up).
 pub const RECHECK: Duration = Duration::from_secs(5 * 60);
@@ -88,10 +88,7 @@ pub fn change_id(command: Option<&str>) -> String {
 
 /// Fingerprint of a `cuw-capture.exe` wrapper that is not ours.
 fn wrapper_change_id(shim_path: &str, original: Option<&str>) -> String {
-    format!(
-        "{:016x}",
-        Fnv64::new().write_str("wrapper").write_str(shim_path).write_opt_str(original).finish()
-    )
+    format!("{:016x}", Fnv64::new().write_str("wrapper").write_str(shim_path).write_opt_str(original).finish())
 }
 
 /// How long the thread sleeps between checks (`None`: until woken).
@@ -137,28 +134,18 @@ pub struct Outcome {
 }
 
 pub fn decide(observed: &Observed, enabled: bool, file: &WatchdogFile) -> Outcome {
-    let keep = |lost| Outcome {
-        lost,
-        toast: false,
-        warned: file.warned.clone(),
-    };
+    let keep = |lost| Outcome { lost, toast: false, warned: file.warned.clone() };
     if !enabled {
         return keep(Some(false));
     }
     match observed {
         // Connected again (or disconnected on purpose): the next change warns again.
-        Observed::NotWrapped | Observed::Connected => Outcome {
-            lost: Some(false),
-            toast: false,
-            warned: None,
-        },
+        Observed::NotWrapped | Observed::Connected => Outcome { lost: Some(false), toast: false, warned: None },
         Observed::Unknown => keep(None),
         Observed::Changed(id) if file.dismissed.contains(id) => keep(Some(false)),
-        Observed::Changed(id) => Outcome {
-            lost: Some(true),
-            toast: file.warned.as_ref() != Some(id),
-            warned: Some(id.clone()),
-        },
+        Observed::Changed(id) => {
+            Outcome { lost: Some(true), toast: file.warned.as_ref() != Some(id), warned: Some(id.clone()) }
+        }
     }
 }
 
@@ -248,9 +235,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(Mutex::new(tx.clone())));
     let app = app.clone();
-    std::thread::Builder::new()
-        .name("cuw-watchdog".into())
-        .spawn(move || run(&app, &shared, &tx, &rx))?;
+    std::thread::Builder::new().name("cuw-watchdog".into()).spawn(move || run(&app, &shared, &tx, &rx))?;
     Ok(())
 }
 
@@ -264,11 +249,10 @@ pub fn wake(app: &AppHandle) {
 /// Is this a change to Claude Code's `settings.json` (in the watched directory)?
 fn is_settings_event(settings_file: &Path, event: &notify::Event) -> bool {
     !matches!(event.kind, EventKind::Access(_))
-        && event.paths.iter().any(|p| {
-            p.file_name()
-                .zip(settings_file.file_name())
-                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-        })
+        && event
+            .paths
+            .iter()
+            .any(|p| p.file_name().zip(settings_file.file_name()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// Watches the directory holding `settings.json` (editors and Connect replace the file by
@@ -358,11 +342,7 @@ mod tests {
     const SHIM: &str = "C:/data/bin/cuw-capture.exe";
 
     fn connected() -> ConnectionStatus {
-        ConnectionStatus::Connected {
-            mode: WrapMode::Pipe,
-            original: None,
-            shim_path: SHIM.into(),
-        }
+        ConnectionStatus::Connected { mode: WrapMode::Pipe, original: None, shim_path: SHIM.into() }
     }
 
     fn record(original: Option<&str>) -> WrapRecord {
@@ -378,9 +358,7 @@ mod tests {
     }
 
     fn foreign(cmd: &str) -> ConnectionStatus {
-        ConnectionStatus::Foreign {
-            command: Some(cmd.into()),
-        }
+        ConnectionStatus::Foreign { command: Some(cmd.into()) }
     }
 
     #[test]
@@ -446,10 +424,7 @@ mod tests {
                 std::fs::write(&sidecar, b"fake shim").unwrap();
                 let env = connect::ConnectEnv {
                     paths: paths.clone(),
-                    shell: connect::Shell {
-                        kind,
-                        exe: PathBuf::from("shell.exe"),
-                    },
+                    shell: connect::Shell { kind, exe: PathBuf::from("shell.exe") },
                     shim_source: Some(sidecar),
                     selftest: false,
                 };
@@ -499,10 +474,7 @@ mod tests {
 
     #[test]
     fn reconnecting_clears_and_rearms() {
-        let file = WatchdogFile {
-            dismissed: vec![],
-            warned: Some("a".into()),
-        };
+        let file = WatchdogFile { dismissed: vec![], warned: Some("a".into()) };
         for o in [Observed::Connected, Observed::NotWrapped] {
             assert_eq!(decide(&o, true, &file), Outcome { lost: Some(false), toast: false, warned: None });
         }
@@ -519,11 +491,11 @@ mod tests {
 
     #[test]
     fn unknown_keeps_the_flag_and_off_clears_it() {
-        let file = WatchdogFile {
-            dismissed: vec![],
-            warned: Some("a".into()),
-        };
-        assert_eq!(decide(&Observed::Unknown, true, &file), Outcome { lost: None, toast: false, warned: Some("a".into()) });
+        let file = WatchdogFile { dismissed: vec![], warned: Some("a".into()) };
+        assert_eq!(
+            decide(&Observed::Unknown, true, &file),
+            Outcome { lost: None, toast: false, warned: Some("a".into()) }
+        );
         let off = decide(&Observed::Changed("b".into()), false, &file);
         assert_eq!(off, Outcome { lost: Some(false), toast: false, warned: Some("a".into()) });
     }
@@ -547,10 +519,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join(FILE_NAME);
         assert_eq!(load_json::<WatchdogFile>(&p), WatchdogFile::default());
-        let file = WatchdogFile {
-            dismissed: vec!["00ff".into()],
-            warned: Some("00ff".into()),
-        };
+        let file = WatchdogFile { dismissed: vec!["00ff".into()], warned: Some("00ff".into()) };
         save_json(&p, &file).unwrap();
         assert_eq!(load_json::<WatchdogFile>(&p), file);
         std::fs::write(&p, b"{").unwrap();
@@ -589,11 +558,7 @@ mod tests {
     #[test]
     fn only_settings_json_events_count() {
         let settings = Path::new("C:/h/.claude/settings.json");
-        let ev = |kind, path: &str| notify::Event {
-            kind,
-            paths: vec![path.into()],
-            attrs: Default::default(),
-        };
+        let ev = |kind, path: &str| notify::Event { kind, paths: vec![path.into()], attrs: Default::default() };
         let modify = EventKind::Modify(notify::event::ModifyKind::Any);
         assert!(is_settings_event(settings, &ev(modify, "C:/h/.claude/settings.json")));
         assert!(is_settings_event(settings, &ev(modify, "C:/h/.claude/Settings.JSON")));

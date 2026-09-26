@@ -54,21 +54,13 @@ impl TrayValue {
 
 /// The snapshot's five-hour and weekly windows with the tray's rules applied.
 pub fn tray_values(snapshot: &Snapshot) -> impl Iterator<Item = TrayValue> + '_ {
-    snapshot
-        .windows
-        .iter()
-        .filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay))
-        .map(|w| {
-            let awaiting = w.state.phase == Phase::ResetAwaitingData;
-            let pct = if awaiting { 0.0 } else { w.state.pct };
-            let reached = w.state.limit_reached && !awaiting;
-            let rounded = pct.clamp(0.0, 100.0).round() as u8;
-            TrayValue {
-                kind: w.state.kind.clone(),
-                pct: if reached { 100 } else { rounded },
-                stale: w.state.stale,
-            }
-        })
+    snapshot.windows.iter().filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay)).map(|w| {
+        let awaiting = w.state.phase == Phase::ResetAwaitingData;
+        let pct = if awaiting { 0.0 } else { w.state.pct };
+        let reached = w.state.limit_reached && !awaiting;
+        let rounded = pct.clamp(0.0, 100.0).round() as u8;
+        TrayValue { kind: w.state.kind.clone(), pct: if reached { 100 } else { rounded }, stale: w.state.stale }
+    })
 }
 
 /// Taskbar colour scheme.
@@ -103,11 +95,7 @@ impl Style {
 
     /// The primary monitor's scale (the taskbar with the tray lives there) and the taskbar theme.
     pub fn current(app: &tauri::AppHandle) -> Self {
-        let scale = app
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .map_or(1.0, |m| m.scale_factor());
+        let scale = app.primary_monitor().ok().flatten().map_or(1.0, |m| m.scale_factor());
         Self::for_scale(scale, taskbar_theme())
     }
 }
@@ -133,10 +121,7 @@ pub fn reading(snapshot: &Snapshot, mode: TrayNumber) -> Option<Reading> {
     let fresh: Vec<&TrayValue> = values.iter().filter(|v| !v.stale).collect();
     let pool = if fresh.is_empty() { values.iter().collect() } else { fresh };
     let v = pool.into_iter().max_by_key(|v| v.pct)?;
-    Some(Reading {
-        pct: v.pct,
-        level: v.level(),
-    })
+    Some(Reading { pct: v.pct, level: v.level() })
 }
 
 /// The number icon for `snapshot`, or `None` for the dot icons.
@@ -210,10 +195,7 @@ struct Shapes {
 impl Shapes {
     fn covers(&self, p: Pt) -> bool {
         self.fills.iter().any(|&(x0, y0, x1, y1)| p.0 >= x0 && p.0 < x1 && p.1 >= y0 && p.1 < y1)
-            || self
-                .lines
-                .iter()
-                .any(|l| l.windows(2).any(|s| on_segment(p, s[0], s[1], self.half)))
+            || self.lines.iter().any(|l| l.windows(2).any(|s| on_segment(p, s[0], s[1], self.half)))
     }
 }
 
@@ -245,11 +227,7 @@ fn layout(r: Reading, size: u32) -> Shapes {
             (shackle_x.1, top + s * 0.1),
             (shackle_x.1, body_top),
         ];
-        return Shapes {
-            lines: vec![shackle],
-            half,
-            fills: vec![(x0, body_top, x1, s - margin)],
-        };
+        return Shapes { lines: vec![shackle], half, fills: vec![(x0, body_top, x1, s - margin)] };
     }
     let digits: Vec<u8> = if r.pct >= 10 { vec![r.pct / 10, r.pct % 10] } else { vec![r.pct] };
     let total = width * digits.len() as f64 + stroke * (digits.len() as f64 - 1.0);
@@ -433,7 +411,9 @@ mod tests {
         assert_eq!(shapes.len(), 10);
         // The lock is centred: its left and right halves mirror each other.
         let a = alpha(&render(Reading { pct: 100, level: Level::Red }, style(32, Theme::Dark)));
-        let ink = |x0: usize, x1: usize| (0..32).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| u32::from(a[y * 32 + x])).sum::<u32>();
+        let ink = |x0: usize, x1: usize| {
+            (0..32).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| u32::from(a[y * 32 + x])).sum::<u32>()
+        };
         let (l, r) = (ink(0, 16), ink(16, 32));
         assert!(l.abs_diff(r) * 10 < l, "left {l} vs right {r}");
     }

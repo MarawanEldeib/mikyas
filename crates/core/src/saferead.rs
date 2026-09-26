@@ -77,10 +77,7 @@ pub struct SafeReader {
 
 impl Clone for SafeReader {
     fn clone(&self) -> Self {
-        Self {
-            rules: self.rules.clone(),
-            canonical: RwLock::new(self.canonical_rules().clone()),
-        }
+        Self { rules: self.rules.clone(), canonical: RwLock::new(self.canonical_rules().clone()) }
     }
 }
 
@@ -142,7 +139,9 @@ impl SafeReader {
     pub fn allows_dir(&self, dir: &Path) -> bool {
         let d = normalize(dir);
         self.rules.iter().any(|r| match r {
-            Rule::TreeExt(root, _) | Rule::CoworkTranscripts(root) => below_root(&d, root).is_some_and(|rest| !is_denied(rest)),
+            Rule::TreeExt(root, _) | Rule::CoworkTranscripts(root) => {
+                below_root(&d, root).is_some_and(|rest| !is_denied(rest))
+            }
             Rule::File(f) => f.parent().is_some_and(|p| p == d),
         })
     }
@@ -220,9 +219,7 @@ fn canonical_rule(rule: &Rule) -> Rule {
 /// rule's root only.
 fn rule_matches(rule: &Rule, path: &Path) -> bool {
     match rule {
-        Rule::TreeExt(root, ext) => {
-            below_root(path, root).is_some_and(|rest| !is_denied(rest)) && has_ext(path, ext)
-        }
+        Rule::TreeExt(root, ext) => below_root(path, root).is_some_and(|rest| !is_denied(rest)) && has_ext(path, ext),
         Rule::File(f) => path == f && f.file_name().is_some_and(|n| !is_denied(Path::new(n))),
         Rule::CoworkTranscripts(root) => {
             below_root(path, root).is_some_and(|rest| !is_denied(rest))
@@ -238,8 +235,7 @@ fn below_root<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
 }
 
 fn has_ext(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext))
+    path.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext))
 }
 
 /// True if a `.claude` directory directly followed by a `projects` directory lies between `root`
@@ -248,10 +244,7 @@ fn under_claude_projects(root: &Path, path: &Path) -> bool {
     let Some(dirs) = path.strip_prefix(root).ok().and_then(Path::parent) else {
         return false;
     };
-    let names: Vec<String> = dirs
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-        .collect();
+    let names: Vec<String> = dirs.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
     names.windows(2).any(|w| w[0] == ".claude" && w[1] == "projects")
 }
 
@@ -265,15 +258,11 @@ fn is_denied(path: &Path) -> bool {
     })
 }
 
-
 /// Lexical normalisation: absolute, `.`/`..` resolved, `\\?\` stripped, and lowercased on
 /// Windows (case-insensitive file system) so comparisons are stable.
 fn normalize(path: &Path) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
+    let abs =
+        if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(path) };
     let text = abs.to_string_lossy();
     let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
     let mut out = PathBuf::new();
@@ -286,11 +275,7 @@ fn normalize(path: &Path) -> PathBuf {
             other => out.push(other.as_os_str()),
         }
     }
-    if cfg!(windows) {
-        PathBuf::from(out.to_string_lossy().to_lowercase())
-    } else {
-        out
-    }
+    if cfg!(windows) { PathBuf::from(out.to_string_lossy().to_lowercase()) } else { out }
 }
 
 #[cfg(test)]
@@ -376,11 +361,7 @@ mod tests {
         // A profile below a folder that happens to be named like a denied component.
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().join("Network").join("ant-home");
-        let p = Paths::with_roots(
-            base.join(".claude"),
-            vec![base.join("Roaming").join("Claude")],
-            base.join("data"),
-        );
+        let p = Paths::with_roots(base.join(".claude"), vec![base.join("Roaming").join("Claude")], base.join("data"));
         let r = SafeReader::new(&p);
         assert!(r.allows(&p.projects_dir().join("proj").join("abc.jsonl")));
         assert!(r.allows(&p.capture_dir().join("s1.json")));
@@ -500,10 +481,7 @@ mod tests {
         let r = SafeReader::new(&p);
         assert_eq!(r.read(&f, 100).unwrap(), b"0123456789");
         assert!(matches!(r.read(&f, 5), Err(ReadError::TooLarge { .. })));
-        assert!(matches!(
-            r.read(&p.claude_home().join(".credentials.json"), 100),
-            Err(ReadError::Denied(_))
-        ));
+        assert!(matches!(r.read(&p.claude_home().join(".credentials.json"), 100), Err(ReadError::Denied(_))));
     }
 
     #[test]

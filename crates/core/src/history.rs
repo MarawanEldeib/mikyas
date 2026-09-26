@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::types::{Phase, RESET_DROP_PCT, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState, is_reset_drop};
+use crate::engine::types::{
+    Phase, RESET_DROP_PCT, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState, is_reset_drop,
+};
 use crate::sources::desktop_usage::DesktopUsage;
 use crate::time::{DAY_MS, FIVE_HOURS_MS, HOUR_MS, MINUTE_MS, Ms};
 
@@ -115,8 +117,7 @@ impl History {
         };
         // Windows editors may have saved the file with a UTF-8 BOM.
         let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-        let mut rows: Vec<HistoryRow> =
-            text.split(|&b| b == b'\n').filter_map(parse_line).collect();
+        let mut rows: Vec<HistoryRow> = text.split(|&b| b == b'\n').filter_map(parse_line).collect();
         rows.sort_by_key(|r| r.t);
         Ok(Self { path, rows })
     }
@@ -162,10 +163,8 @@ impl History {
     pub fn backfill_desktop(&mut self, usage: &DesktopUsage, watermark_ms: Ms) -> io::Result<Ms> {
         // Only rows after the watermark can collide with a sample that is added.
         let after = self.rows.partition_point(|r| r.t <= watermark_ms);
-        let mut existing: HashSet<(WindowKind, Ms)> = self.rows[after..]
-            .iter()
-            .map(|r| (WindowKind::from_short(&r.w), r.t))
-            .collect();
+        let mut existing: HashSet<(WindowKind, Ms)> =
+            self.rows[after..].iter().map(|r| (WindowKind::from_short(&r.w), r.t)).collect();
         let mut new_watermark = watermark_ms;
         let mut added = Vec::new();
         for (kind, samples) in &usage.series {
@@ -218,14 +217,7 @@ impl History {
     /// Rows of `kind` with `t >= since_ms`, as samples sorted ascending.
     pub fn samples(&self, kind: &WindowKind, since_ms: Ms) -> Vec<Sample> {
         let start = self.rows.partition_point(|r| r.t < since_ms);
-        self.rows[start..]
-            .iter()
-            .filter(|r| r.is_kind(kind))
-            .map(|r| Sample {
-                t_ms: r.t,
-                pct: r.p,
-            })
-            .collect()
+        self.rows[start..].iter().filter(|r| r.is_kind(kind)).map(|r| Sample { t_ms: r.t, pct: r.p }).collect()
     }
 
     /// `buckets` evenly spaced points over `[from_ms, to_ms]`. Each bucket's value is the MAX pct of
@@ -238,13 +230,7 @@ impl History {
     /// carried value is the pct of the newest row before the bucket (the current usage at that
     /// point, which after a reset is lower than the previous bucket's max). Rows before `from_ms`
     /// seed the carry for the first buckets. `buckets` is capped at [`MAX_SPARK_BUCKETS`].
-    pub fn spark(
-        &self,
-        kind: &WindowKind,
-        from_ms: Ms,
-        to_ms: Ms,
-        buckets: usize,
-    ) -> Vec<SparkPoint> {
+    pub fn spark(&self, kind: &WindowKind, from_ms: Ms, to_ms: Ms, buckets: usize) -> Vec<SparkPoint> {
         let buckets = buckets.min(MAX_SPARK_BUCKETS);
         if buckets == 0 || to_ms <= from_ms {
             return Vec::new();
@@ -252,11 +238,8 @@ impl History {
         // Rows older than this can never be carried into the first bucket.
         let seed_from = from_ms.saturating_sub(SPARK_MAX_CARRY_MS);
         let first = self.rows.partition_point(|r| r.t < seed_from);
-        let rows: Vec<&HistoryRow> = self.rows[first..]
-            .iter()
-            .take_while(|r| r.t <= to_ms)
-            .filter(|r| r.is_kind(kind))
-            .collect();
+        let rows: Vec<&HistoryRow> =
+            self.rows[first..].iter().take_while(|r| r.t <= to_ms).filter(|r| r.is_kind(kind)).collect();
         let span = i128::from(to_ms) - i128::from(from_ms);
         let count = buckets as i128;
         // Always within [from_ms, to_ms], so the narrowing cannot truncate.
@@ -274,14 +257,8 @@ impl History {
                 last = Some(row);
                 next += 1;
             }
-            let carried = || {
-                last.filter(|r| start.saturating_sub(r.t) <= SPARK_MAX_CARRY_MS)
-                    .map(|r| r.p)
-            };
-            out.push(SparkPoint {
-                t_ms: start,
-                pct: max.or_else(carried),
-            });
+            let carried = || last.filter(|r| start.saturating_sub(r.t) <= SPARK_MAX_CARRY_MS).map(|r| r.p);
+            out.push(SparkPoint { t_ms: start, pct: max.or_else(carried) });
         }
         out
     }
@@ -324,12 +301,7 @@ impl History {
         let mut days: Vec<DayUsage> = range
             .day_starts
             .iter()
-            .map(|&day_start_ms| DayUsage {
-                day_start_ms,
-                peak_pct: 0.0,
-                consumed_pct: 0.0,
-                samples: 0,
-            })
+            .map(|&day_start_ms| DayUsage { day_start_ms, peak_pct: 0.0, consumed_pct: 0.0, samples: 0 })
             .collect();
         let mut marks: Vec<Ms> = Vec::new();
         let mut known_reset: Option<Ms> = None;
@@ -338,9 +310,7 @@ impl History {
         let five_hour = *kind == WindowKind::FiveHour;
 
         for row in self.rows.iter().filter(|r| r.t <= range.to_ms && r.is_kind(kind)) {
-            let exact_reset = prev
-                .zip(known_reset)
-                .is_some_and(|(p, r)| p.t < r && r <= row.t);
+            let exact_reset = prev.zip(known_reset).is_some_and(|(p, r)| p.t < r && r <= row.t);
             let dropped = prev.is_some_and(|p| is_reset_drop(p.p, row.p));
             let expired = prev.filter(|p| five_hour && row.t.saturating_sub(p.t) > FIVE_HOURS_MS);
             if !exact_reset {
@@ -383,12 +353,7 @@ impl History {
                 resets_ms.push(t);
             }
         }
-        WindowHistory {
-            kind: kind.clone(),
-            points,
-            resets_ms,
-            days,
-        }
+        WindowHistory { kind: kind.clone(), points, resets_ms, days }
     }
 
     /// Atomically rewrites the file with `rows`, then adopts them (memory is untouched on failure).
@@ -434,11 +399,7 @@ fn append_line(path: &Path, row: &HistoryRow) -> io::Result<()> {
 /// [`append_line`] for several rows, in one write.
 fn append_lines(path: &Path, rows: &[HistoryRow]) -> io::Result<()> {
     ensure_parent(path)?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().read(true).append(true).create(true).open(path)?;
     let mut line = Vec::with_capacity(96 * rows.len());
     if !ends_with_newline(&mut file)? {
         line.push(b'\n');
@@ -495,10 +456,7 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("history.jsonl"));
+    let mut name = path.file_name().map(OsString::from).unwrap_or_else(|| OsString::from("history.jsonl"));
     name.push(".tmp");
     path.with_file_name(name)
 }
@@ -535,25 +493,11 @@ mod tests {
     }
 
     fn fh(pct: f32, t: Ms) -> WindowState {
-        state(
-            WindowKind::FiveHour,
-            pct,
-            ResetInfo::Exact {
-                at_ms: T0 + 5 * HOUR_MS,
-            },
-            t,
-        )
+        state(WindowKind::FiveHour, pct, ResetInfo::Exact { at_ms: T0 + 5 * HOUR_MS }, t)
     }
 
     fn row(t: Ms, w: &str, p: f32) -> HistoryRow {
-        HistoryRow {
-            t,
-            w: w.to_owned(),
-            p,
-            r: None,
-            s: Source::Cli,
-            e: false,
-        }
+        HistoryRow { t, w: w.to_owned(), p, r: None, s: Source::Cli, e: false }
     }
 
     /// A history whose rows are set directly (for the pure query functions). Its path lives in a
@@ -564,31 +508,16 @@ mod tests {
     }
 
     fn file_lines(path: &Path) -> Vec<String> {
-        fs::read_to_string(path)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        fs::read_to_string(path).unwrap().lines().map(str::to_owned).collect()
     }
 
     fn usage(series: Vec<(WindowKind, Vec<(Ms, f32)>)>) -> DesktopUsage {
         let series: BTreeMap<WindowKind, Vec<Sample>> = series
             .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    v.into_iter()
-                        .map(|(t_ms, pct)| Sample { t_ms, pct })
-                        .collect(),
-                )
-            })
+            .map(|(k, v)| (k, v.into_iter().map(|(t_ms, pct)| Sample { t_ms, pct }).collect()))
             .collect();
         let last_sample_ms = series.values().flatten().map(|s| s.t_ms).max();
-        DesktopUsage {
-            version: 2,
-            series,
-            last_sample_ms,
-        }
+        DesktopUsage { version: 2, series, last_sample_ms }
     }
 
     // ---- open ----
@@ -599,10 +528,7 @@ mod tests {
         let h = History::open(path.clone()).unwrap();
         assert!(h.rows().is_empty());
         assert!(!path.exists());
-        assert!(
-            !dir.path().join("data").exists(),
-            "parent dirs are created on first write only"
-        );
+        assert!(!dir.path().join("data").exists(), "parent dirs are created on first write only");
     }
 
     #[test]
@@ -622,10 +548,7 @@ mod tests {
             ]
         );
         let defaulted = &h.rows()[3];
-        assert_eq!(
-            (defaulted.r, defaulted.e, defaulted.s),
-            (None, false, Source::Desktop)
-        );
+        assert_eq!((defaulted.r, defaulted.e, defaulted.s), (None, false, Source::Desktop));
     }
 
     #[test]
@@ -687,21 +610,12 @@ mod tests {
         let mut est = state(
             WindowKind::SevenDay,
             41.5,
-            ResetInfo::Estimated {
-                at_ms: T0 + 3 * DAY_MS,
-                plus_minus_ms: DAY_MS,
-                confidence: Confidence::Low,
-            },
+            ResetInfo::Estimated { at_ms: T0 + 3 * DAY_MS, plus_minus_ms: DAY_MS, confidence: Confidence::Low },
             T0 + 1,
         );
         est.source = Source::Desktop;
         assert!(h.record(&est).unwrap());
-        let unknown = state(
-            WindowKind::Other("seven_day_opus".into()),
-            7.0,
-            ResetInfo::Unknown,
-            T0 + 2,
-        );
+        let unknown = state(WindowKind::Other("seven_day_opus".into()), 7.0, ResetInfo::Unknown, T0 + 2);
         assert!(h.record(&unknown).unwrap());
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -725,22 +639,11 @@ mod tests {
         let mut h = History::open(path.clone()).unwrap();
         assert!(h.record(&fh(22.0, T0)).unwrap(), "first row of a window");
         assert!(!h.record(&fh(22.0, T0 + MINUTE_MS)).unwrap(), "unchanged");
-        assert!(
-            !h.record(&fh(22.04, T0 + 2 * MINUTE_MS)).unwrap(),
-            "within epsilon"
-        );
-        assert!(
-            !h.record(&fh(21.96, T0 + 2 * MINUTE_MS)).unwrap(),
-            "within epsilon, downwards"
-        );
-        assert!(
-            h.record(&fh(22.1, T0 + 3 * MINUTE_MS)).unwrap(),
-            "beyond epsilon"
-        );
+        assert!(!h.record(&fh(22.04, T0 + 2 * MINUTE_MS)).unwrap(), "within epsilon");
+        assert!(!h.record(&fh(21.96, T0 + 2 * MINUTE_MS)).unwrap(), "within epsilon, downwards");
+        assert!(h.record(&fh(22.1, T0 + 3 * MINUTE_MS)).unwrap(), "beyond epsilon");
         let mut moved = fh(22.1, T0 + 4 * MINUTE_MS);
-        moved.reset = ResetInfo::Exact {
-            at_ms: T0 + 6 * HOUR_MS,
-        };
+        moved.reset = ResetInfo::Exact { at_ms: T0 + 6 * HOUR_MS };
         assert!(h.record(&moved).unwrap(), "reset changed");
         let mut unknown = fh(22.1, T0 + 5 * MINUTE_MS);
         unknown.reset = ResetInfo::Unknown;
@@ -775,10 +678,7 @@ mod tests {
         let mut h = History::open(path).unwrap();
         let weekly = state(WindowKind::SevenDay, 40.0, ResetInfo::Unknown, T0 + HOUR_MS);
         assert!(h.record(&weekly).unwrap());
-        assert!(
-            h.record(&fh(40.0, T0)).unwrap(),
-            "other window's newer row does not block"
-        );
+        assert!(h.record(&fh(40.0, T0)).unwrap(), "other window's newer row does not block");
         let ts: Vec<Ms> = h.rows().iter().map(|r| r.t).collect();
         assert_eq!(ts, vec![T0, T0 + HOUR_MS]);
     }
@@ -804,19 +704,12 @@ mod tests {
         let mut h = History::open(path.clone()).unwrap();
         assert!(h.record(&fh(12.0, T0 + 2_000)).unwrap());
         let u = usage(vec![
-            (
-                WindowKind::FiveHour,
-                vec![(T0 + 1_000, 10.0), (T0 + 2_000, 12.0), (T0 + 3_000, 15.0)],
-            ),
-            (
-                WindowKind::SevenDay,
-                vec![(T0 + 1_500, 40.0), (T0 + 3_000, 41.0)],
-            ),
+            (WindowKind::FiveHour, vec![(T0 + 1_000, 10.0), (T0 + 2_000, 12.0), (T0 + 3_000, 15.0)]),
+            (WindowKind::SevenDay, vec![(T0 + 1_500, 40.0), (T0 + 3_000, 41.0)]),
         ]);
         let wm = h.backfill_desktop(&u, T0 + 1_000).unwrap();
         assert_eq!(wm, T0 + 3_000);
-        let got: Vec<(Ms, &str, Source)> =
-            h.rows().iter().map(|r| (r.t, r.w.as_str(), r.s)).collect();
+        let got: Vec<(Ms, &str, Source)> = h.rows().iter().map(|r| (r.t, r.w.as_str(), r.s)).collect();
         assert_eq!(
             got,
             vec![
@@ -826,22 +719,10 @@ mod tests {
                 (T0 + 3_000, "7d", Source::Desktop),
             ]
         );
-        assert!(
-            h.rows()
-                .iter()
-                .filter(|r| r.s == Source::Desktop)
-                .all(|r| r.r.is_none() && !r.e)
-        );
-        assert_eq!(
-            History::open(path.clone()).unwrap().rows(),
-            h.rows(),
-            "file rewritten sorted"
-        );
+        assert!(h.rows().iter().filter(|r| r.s == Source::Desktop).all(|r| r.r.is_none() && !r.e));
+        assert_eq!(History::open(path.clone()).unwrap().rows(), h.rows(), "file rewritten sorted");
         assert_eq!(file_lines(&path).len(), 4);
-        let leftovers: Vec<_> = fs::read_dir(dir.path().join("data"))
-            .unwrap()
-            .flatten()
-            .collect();
+        let leftovers: Vec<_> = fs::read_dir(dir.path().join("data")).unwrap().flatten().collect();
         assert_eq!(leftovers.len(), 1, "no temp file left behind");
 
         // Same input again: nothing new, same watermark, no rewrite.
@@ -890,10 +771,7 @@ mod tests {
     fn backfill_clamps_and_skips_nan() {
         let (_dir, path) = tmp_history();
         let mut h = History::open(path).unwrap();
-        let u = usage(vec![(
-            WindowKind::FiveHour,
-            vec![(T0, f32::NAN), (T0 + 1, 150.0), (T0 + 2, -3.0)],
-        )]);
+        let u = usage(vec![(WindowKind::FiveHour, vec![(T0, f32::NAN), (T0 + 1, 150.0), (T0 + 2, -3.0)])]);
         assert_eq!(h.backfill_desktop(&u, 0).unwrap(), T0 + 2);
         let ps: Vec<f32> = h.rows().iter().map(|r| r.p).collect();
         assert_eq!(ps, vec![100.0, 0.0]);
@@ -908,10 +786,7 @@ mod tests {
         let u = usage(vec![(WindowKind::FiveHour, vec![(T0, 10.0)])]);
         assert!(h.backfill_desktop(&u, 0).is_err());
         assert!(h.rows().is_empty());
-        let entries: Vec<_> = fs::read_dir(dir.path().join("data"))
-            .unwrap()
-            .flatten()
-            .collect();
+        let entries: Vec<_> = fs::read_dir(dir.path().join("data")).unwrap().flatten().collect();
         assert_eq!(entries.len(), 1, "temp file removed");
     }
 
@@ -924,11 +799,7 @@ mod tests {
         let mut h = History::open(path.clone()).unwrap();
         let u = usage(vec![(
             WindowKind::FiveHour,
-            vec![
-                (now - 15 * DAY_MS, 1.0),
-                (now - RETAIN_MS, 2.0),
-                (now - DAY_MS, 3.0),
-            ],
+            vec![(now - 15 * DAY_MS, 1.0), (now - RETAIN_MS, 2.0), (now - DAY_MS, 3.0)],
         )]);
         h.backfill_desktop(&u, 0).unwrap();
         h.compact(now).unwrap();
@@ -962,21 +833,11 @@ mod tests {
         let got = h.samples(&WindowKind::FiveHour, 3);
         assert_eq!(
             got,
-            vec![
-                Sample { t_ms: 3, pct: 3.0 },
-                Sample { t_ms: 4, pct: 4.0 },
-                Sample { t_ms: 5, pct: 5.0 },
-            ]
+            vec![Sample { t_ms: 3, pct: 3.0 }, Sample { t_ms: 4, pct: 4.0 }, Sample { t_ms: 5, pct: 5.0 },]
         );
-        assert_eq!(
-            h.samples(&WindowKind::SevenDay, 0),
-            vec![Sample { t_ms: 2, pct: 50.0 }]
-        );
+        assert_eq!(h.samples(&WindowKind::SevenDay, 0), vec![Sample { t_ms: 2, pct: 50.0 }]);
         assert!(h.samples(&WindowKind::SevenDay, 3).is_empty());
-        assert!(
-            h.samples(&WindowKind::Other("seven_day_opus".into()), 0)
-                .is_empty()
-        );
+        assert!(h.samples(&WindowKind::Other("seven_day_opus".into()), 0).is_empty());
     }
 
     // ---- spark ----
@@ -996,10 +857,7 @@ mod tests {
         ]);
         let points = h.spark(&WindowKind::FiveHour, T0, T0 + 4 * HOUR_MS, 4);
         let starts: Vec<Ms> = points.iter().map(|p| p.t_ms).collect();
-        assert_eq!(
-            starts,
-            vec![T0, T0 + HOUR_MS, T0 + 2 * HOUR_MS, T0 + 3 * HOUR_MS]
-        );
+        assert_eq!(starts, vec![T0, T0 + HOUR_MS, T0 + 2 * HOUR_MS, T0 + 3 * HOUR_MS]);
         // Bucket 0 shows the peak; later buckets carry the post-reset value, not the peak, until
         // the last row is more than 2 h old at the bucket start (3h - 50m > 2h).
         assert_eq!(pcts(&points), vec![Some(80.0), Some(5.0), Some(5.0), None]);
@@ -1010,18 +868,12 @@ mod tests {
         let (_dir, h) = with_rows(vec![row(T0 + HOUR_MS, "5h", 42.0)]);
         let points = h.spark(&WindowKind::FiveHour, T0, T0 + 4 * HOUR_MS, 4);
         // Bucket 3 starts exactly 2 h after the row.
-        assert_eq!(
-            pcts(&points),
-            vec![None, Some(42.0), Some(42.0), Some(42.0)]
-        );
+        assert_eq!(pcts(&points), vec![None, Some(42.0), Some(42.0), Some(42.0)]);
     }
 
     #[test]
     fn spark_seeds_carry_from_rows_before_range() {
-        let (_dir, h) = with_rows(vec![
-            row(T0 - 3 * HOUR_MS, "5h", 99.0),
-            row(T0 - 90 * MINUTE_MS, "5h", 17.0),
-        ]);
+        let (_dir, h) = with_rows(vec![row(T0 - 3 * HOUR_MS, "5h", 99.0), row(T0 - 90 * MINUTE_MS, "5h", 17.0)]);
         let points = h.spark(&WindowKind::FiveHour, T0, T0 + 2 * HOUR_MS, 4);
         // Buckets start at +0, +30, +60, +90 min, when the newest row is 90, 120, 150, 180 min old.
         assert_eq!(pcts(&points), vec![Some(17.0), Some(17.0), None, None]);
@@ -1045,10 +897,7 @@ mod tests {
     #[test]
     fn spark_degenerate_ranges() {
         let (_dir, h) = with_rows(vec![row(T0, "5h", 1.0)]);
-        assert!(
-            h.spark(&WindowKind::FiveHour, T0, T0 + HOUR_MS, 0)
-                .is_empty()
-        );
+        assert!(h.spark(&WindowKind::FiveHour, T0, T0 + HOUR_MS, 0).is_empty());
         assert!(h.spark(&WindowKind::FiveHour, T0, T0, 4).is_empty());
         assert!(h.spark(&WindowKind::FiveHour, T0 + 1, T0, 4).is_empty());
         // More buckets than milliseconds: starts are T0, T0, T0+1, T0+1, T0+2, T0+2. The first
@@ -1056,10 +905,7 @@ mod tests {
         let points = h.spark(&WindowKind::FiveHour, T0, T0 + 3, 6);
         let starts: Vec<Ms> = points.iter().map(|p| p.t_ms - T0).collect();
         assert_eq!(starts, vec![0, 0, 1, 1, 2, 2]);
-        assert_eq!(
-            pcts(&points),
-            vec![None, Some(1.0), Some(1.0), Some(1.0), Some(1.0), Some(1.0)]
-        );
+        assert_eq!(pcts(&points), vec![None, Some(1.0), Some(1.0), Some(1.0), Some(1.0), Some(1.0)]);
         let wide = h.spark(&WindowKind::FiveHour, Ms::MIN, Ms::MAX, 3);
         assert_eq!(wide.first().map(|p| p.t_ms), Some(Ms::MIN));
         assert_eq!(wide.len(), 3);
@@ -1072,26 +918,15 @@ mod tests {
 
     /// A 5h row with an exact reset time.
     fn exact(t: Ms, p: f32, r: Ms) -> HistoryRow {
-        HistoryRow {
-            r: Some(r),
-            ..row(t, "5h", p)
-        }
+        HistoryRow { r: Some(r), ..row(t, "5h", p) }
     }
 
     fn range(from_ms: Ms, to_ms: Ms, now_ms: Ms, day_starts: &[Ms]) -> ViewRange<'_> {
-        ViewRange {
-            from_ms,
-            to_ms,
-            now_ms,
-            day_starts,
-        }
+        ViewRange { from_ms, to_ms, now_ms, day_starts }
     }
 
     fn day_values(v: &WindowHistory) -> Vec<(f32, f32)> {
-        v.days
-            .iter()
-            .map(|d| ((d.peak_pct * 10.0).round() / 10.0, (d.consumed_pct * 10.0).round() / 10.0))
-            .collect()
+        v.days.iter().map(|d| ((d.peak_pct * 10.0).round() / 10.0, (d.consumed_pct * 10.0).round() / 10.0)).collect()
     }
 
     #[test]
@@ -1105,11 +940,7 @@ mod tests {
         ]);
         assert_eq!(
             h.kinds(),
-            vec![
-                WindowKind::FiveHour,
-                WindowKind::SevenDay,
-                WindowKind::Other("seven_day_opus".into())
-            ]
+            vec![WindowKind::FiveHour, WindowKind::SevenDay, WindowKind::Other("seven_day_opus".into())]
         );
         assert!(with_rows(vec![]).1.kinds().is_empty());
     }
@@ -1257,10 +1088,7 @@ mod tests {
         // 75 → 84 is 9 points, then 43.5 in the new window.
         assert_eq!(day_values(&v), vec![(84.0, 52.5)]);
         // A dip smaller than two points still starts a new window when an exact reset explains it.
-        let (_dir, h) = with_rows(vec![
-            exact(H0, 3.0, H0 + HOUR_MS),
-            exact(H0 + 2 * HOUR_MS, 1.5, H0 + 6 * HOUR_MS),
-        ]);
+        let (_dir, h) = with_rows(vec![exact(H0, 3.0, H0 + HOUR_MS), exact(H0 + 2 * HOUR_MS, 1.5, H0 + 6 * HOUR_MS)]);
         let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 3 * HOUR_MS, &days));
         assert_eq!(v.resets_ms, vec![H0 + HOUR_MS]);
         assert_eq!(day_values(&v), vec![(3.0, 1.5)]);
@@ -1284,10 +1112,8 @@ mod tests {
         let (_dir, h) = with_rows(vec![row(H0, "5h", 70.0), row(H0 + 8 * HOUR_MS, "5h", 20.0)]);
         assert_eq!(h.view(&WindowKind::FiveHour, &r(H0)).resets_ms, vec![H0 + 5 * HOUR_MS]);
         // An exact reset inside the gap is marked at its own time only.
-        let (_dir, h) = with_rows(vec![
-            exact(H0, 30.0, H0 + 2 * HOUR_MS),
-            exact(H0 + 8 * HOUR_MS, 50.0, H0 + 13 * HOUR_MS),
-        ]);
+        let (_dir, h) =
+            with_rows(vec![exact(H0, 30.0, H0 + 2 * HOUR_MS), exact(H0 + 8 * HOUR_MS, 50.0, H0 + 13 * HOUR_MS)]);
         let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 9 * HOUR_MS, &days));
         assert_eq!(v.resets_ms, vec![H0 + 2 * HOUR_MS]);
         assert_eq!(day_values(&v), vec![(50.0, 50.0)]);

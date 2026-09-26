@@ -83,11 +83,7 @@ impl PositionsFile {
         let used_ms = latest.map_or(now, |l| now.max(l));
         self.setups.insert(signature.to_owned(), Saved { rect, used_ms });
         while self.setups.len() > KEEP_SETUPS {
-            let oldest = self
-                .setups
-                .iter()
-                .min_by_key(|(_, s)| s.used_ms)
-                .map(|(k, _)| k.clone());
+            let oldest = self.setups.iter().min_by_key(|(_, s)| s.used_ms).map(|(k, _)| k.clone());
             match oldest {
                 Some(k) => self.setups.remove(&k),
                 None => break,
@@ -132,22 +128,14 @@ pub struct Tracker {
 impl Tracker {
     /// Takes the current setup and position as they are (the setting was just switched on).
     pub fn adopt(&mut self, signature: &str) {
-        *self = Self {
-            signature: Some(signature.to_owned()),
-            ..Self::default()
-        };
+        *self = Self { signature: Some(signature.to_owned()), ..Self::default() };
     }
 
     pub fn step(&mut self, signature: &str, rect: Rect, savable: bool) -> Step {
         if self.signature.as_deref() != Some(signature) {
             // Startup restores at once; a change waits one poll for the setup to settle.
             let settle = u8::from(self.signature.is_some());
-            *self = Self {
-                signature: Some(signature.to_owned()),
-                pending: true,
-                settle,
-                saved: None,
-            };
+            *self = Self { signature: Some(signature.to_owned()), pending: true, settle, saved: None };
         }
         if self.pending {
             if self.settle > 0 {
@@ -182,10 +170,7 @@ fn monitors(window: &WebviewWindow) -> Vec<MonitorInfo> {
         .iter()
         .map(|m| {
             let (p, s) = (m.position(), m.size());
-            MonitorInfo {
-                rect: (p.x, p.y, s.width as i32, s.height as i32),
-                scale: m.scale_factor(),
-            }
+            MonitorInfo { rect: (p.x, p.y, s.width as i32, s.height as i32), scale: m.scale_factor() }
         })
         .collect()
 }
@@ -266,9 +251,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(tx));
     let app = app.clone();
-    std::thread::Builder::new()
-        .name("cuw-displays".into())
-        .spawn(move || run(&app, &shared, poller, &rx))?;
+    std::thread::Builder::new().name("cuw-displays".into()).spawn(move || run(&app, &shared, poller, &rx))?;
     Ok(())
 }
 
@@ -290,14 +273,8 @@ fn run(app: &AppHandle, shared: &Shared, mut poller: Poller, rx: &Receiver<()>) 
 mod tests {
     use super::*;
 
-    const LAPTOP: MonitorInfo = MonitorInfo {
-        rect: (0, 0, 1920, 1080),
-        scale: 1.25,
-    };
-    const DESK: MonitorInfo = MonitorInfo {
-        rect: (1920, -200, 2560, 1440),
-        scale: 1.0,
-    };
+    const LAPTOP: MonitorInfo = MonitorInfo { rect: (0, 0, 1920, 1080), scale: 1.25 };
+    const DESK: MonitorInfo = MonitorInfo { rect: (1920, -200, 2560, 1440), scale: 1.0 };
 
     #[test]
     fn signature_is_order_free_and_scale_aware() {
@@ -306,10 +283,7 @@ mod tests {
         assert_eq!(signature(&[DESK, LAPTOP]), "0,0,1920x1080@125;1920,-200,2560x1440@100");
         let scaled = MonitorInfo { scale: 1.5, ..LAPTOP };
         assert_ne!(signature(&[scaled]), signature(&[LAPTOP]));
-        let moved = MonitorInfo {
-            rect: (-2560, 0, 2560, 1440),
-            ..DESK
-        };
+        let moved = MonitorInfo { rect: (-2560, 0, 2560, 1440), ..DESK };
         assert_ne!(signature(&[LAPTOP, moved]), signature(&[LAPTOP, DESK]), "arrangement counts");
     }
 

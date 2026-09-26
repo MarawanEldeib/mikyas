@@ -53,7 +53,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ConnectionStatus {
     NotConfigured,
-    Foreign { command: Option<String> },
+    Foreign {
+        command: Option<String>,
+    },
     Connected {
         mode: WrapMode,
         original: Option<String>,
@@ -61,7 +63,9 @@ pub enum ConnectionStatus {
         #[serde(skip)]
         shim_path: String,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// `ConnectPreview` in `src/lib/types.ts`.
@@ -88,10 +92,7 @@ pub struct Shell {
 /// machine where Claude Code picks differently is caught by the self-test after Connect (and
 /// `cuw-capture --diag` shows the shell actually used); every shell decision stays in here.
 pub fn detect_shell() -> Shell {
-    if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH")
-        .map(PathBuf::from)
-        .filter(|p| p.is_file())
-    {
+    if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(PathBuf::from).filter(|p| p.is_file()) {
         return Shell { kind: ShellKind::Bash, exe: bash };
     }
     let mut candidates = Vec::new();
@@ -116,9 +117,7 @@ pub fn detect_shell() -> Shell {
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
 }
 
 fn pwsh_at_least_7_4(exe: &Path) -> bool {
@@ -139,12 +138,7 @@ fn parse_version_at_least(text: &str, major: u32, minor: u32) -> bool {
 /// The shim sidecar shipped next to the app executable.
 pub fn find_sidecar() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    [
-        dir.join(SHIM_EXE_NAME),
-        dir.join("cuw-capture-x86_64-pc-windows-msvc.exe"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    [dir.join(SHIM_EXE_NAME), dir.join("cuw-capture-x86_64-pc-windows-msvc.exe")].into_iter().find(|p| p.is_file())
 }
 
 /// Everything Connect needs; injectable for tests.
@@ -159,12 +153,7 @@ pub struct ConnectEnv {
 
 impl ConnectEnv {
     pub fn detect(paths: Paths) -> Self {
-        Self {
-            paths,
-            shell: detect_shell(),
-            shim_source: find_sidecar(),
-            selftest: true,
-        }
+        Self { paths, shell: detect_shell(), shim_source: find_sidecar(), selftest: true }
     }
 
     fn installed_shim(&self) -> PathBuf {
@@ -204,7 +193,9 @@ pub fn status(paths: &Paths) -> ConnectionStatus {
     match claude_settings::status(&bytes) {
         Ok(Status::NotConfigured) => ConnectionStatus::NotConfigured,
         Ok(Status::Foreign { command }) => ConnectionStatus::Foreign { command },
-        Ok(Status::Connected { mode, original, shim_path }) => ConnectionStatus::Connected { mode, original, shim_path },
+        Ok(Status::Connected { mode, original, shim_path }) => {
+            ConnectionStatus::Connected { mode, original, shim_path }
+        }
         Err(e) => ConnectionStatus::Error { message: settings_error(e) },
     }
 }
@@ -224,8 +215,8 @@ fn warnings(paths: &Paths) -> Vec<String> {
 /// Computes what Connect would write, without writing anything.
 pub fn preview(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
     let bytes = read_settings(&env.paths)?;
-    let (_, record) = claude_settings::connect(&bytes, &env.shim_command_path(), env.shell.kind, now)
-        .map_err(settings_error)?;
+    let (_, record) =
+        claude_settings::connect(&bytes, &env.shim_command_path(), env.shell.kind, now).map_err(settings_error)?;
     let after = cmdline::wrap(record.original_command.as_deref(), &env.shim_command_path(), env.shell.kind)
         .map_err(|e| e.to_string())?
         .command;
@@ -240,10 +231,8 @@ pub fn preview(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
 
 /// Performs Connect (see the module docs).
 pub fn connect(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
-    let source = env
-        .shim_source
-        .as_deref()
-        .ok_or("the capture shim (cuw-capture.exe) was not found next to the app")?;
+    let source =
+        env.shim_source.as_deref().ok_or("the capture shim (cuw-capture.exe) was not found next to the app")?;
     install_shim(source, &env.installed_shim()).map_err(|e| format!("cannot install the capture shim: {e}"))?;
     let shim = env.shim_command_path();
 
@@ -268,12 +257,9 @@ pub fn connect(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
         other => return Err(format!("connect did not take effect ({other:?})")),
     }
 
-    let after = cmdline::wrap(record.original_command.as_deref(), &shim, env.shell.kind)
-        .map_err(|e| e.to_string())?
-        .command;
-    let selftest_ok = env
-        .selftest
-        .then(|| selftest(&env.shell, record.original_command.as_deref(), &after));
+    let after =
+        cmdline::wrap(record.original_command.as_deref(), &shim, env.shell.kind).map_err(|e| e.to_string())?.command;
+    let selftest_ok = env.selftest.then(|| selftest(&env.shell, record.original_command.as_deref(), &after));
     Ok(ConnectPreview {
         before: record.original_command.as_deref().map(mask_secrets),
         after: mask_secrets(&after),
@@ -315,10 +301,9 @@ fn write_connected(env: &ConnectEnv, shim: &str, now: Ms) -> Result<WrapRecord, 
 fn keep_first_record(wrap_file: &Path, rec: WrapRecord) -> WrapRecord {
     let prev: Option<WrapRecord> = fs::read(wrap_file).ok().and_then(|b| serde_json::from_slice(&b).ok());
     match prev {
-        Some(p) if p.original_command == rec.original_command && p.original_command_raw.is_some() => WrapRecord {
-            original_command_raw: p.original_command_raw,
-            ..rec
-        },
+        Some(p) if p.original_command == rec.original_command && p.original_command_raw.is_some() => {
+            WrapRecord { original_command_raw: p.original_command_raw, ..rec }
+        }
         _ => rec,
     }
 }
@@ -420,9 +405,7 @@ fn prune_backups(dir: &Path, now: Ms) {
 /// Key names whose values are treated as secrets.
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    ["key", "token", "secret", "password", "passwd", "auth", "credential", "cookie"]
-        .iter()
-        .any(|w| key.contains(w))
+    ["key", "token", "secret", "password", "passwd", "auth", "credential", "cookie"].iter().any(|w| key.contains(w))
 }
 
 /// Replaces every value under an `env` object, and every scalar whose key looks secret
@@ -482,9 +465,7 @@ fn next_secret(s: &str) -> Option<(usize, usize)> {
             continue;
         }
         let name_end = s[..i].trim_end().len();
-        let name_start = s[..name_end]
-            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .map_or(0, |p| p + 1);
+        let name_start = s[..name_end].rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |p| p + 1);
         if !is_secret_key(&s[name_start..name_end]) {
             continue;
         }
@@ -502,9 +483,7 @@ fn next_secret(s: &str) -> Option<(usize, usize)> {
 fn value_len(s: &str) -> usize {
     match s.chars().next() {
         Some(q @ ('"' | '\'')) => s[1..].find(q).map_or(s.len(), |end| end + 2),
-        _ => s
-            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '"' | '\'' | ')'))
-            .unwrap_or(s.len()),
+        _ => s.find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '"' | '\'' | ')')).unwrap_or(s.len()),
     }
 }
 
@@ -536,9 +515,7 @@ fn synthetic_input() -> Vec<u8> {
 }
 
 fn dirs_home() -> String {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into())
+    std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into())
 }
 
 /// True when the wrapped command prints what the original prints (digits ignored). Without an
@@ -674,10 +651,7 @@ mod tests {
         fs::write(&shim, b"fake shim").unwrap();
         let env = ConnectEnv {
             paths,
-            shell: Shell {
-                kind: ShellKind::Pwsh,
-                exe: PathBuf::from("pwsh.exe"),
-            },
+            shell: Shell { kind: ShellKind::Pwsh, exe: PathBuf::from("pwsh.exe") },
             shim_source: Some(shim),
             selftest: false,
         };
@@ -875,18 +849,9 @@ mod tests {
     #[test]
     fn previews_mask_secret_looking_values() {
         assert_eq!(mask_secrets("my-line --flag"), "my-line --flag");
-        assert_eq!(
-            mask_secrets("API_KEY=PLACEHOLDER npx line"),
-            format!("API_KEY={MASK} npx line")
-        );
-        assert_eq!(
-            mask_secrets(r#"$env:MY_TOKEN="PLACEHOLDER"; line"#),
-            format!("$env:MY_TOKEN={MASK}; line")
-        );
-        assert_eq!(
-            mask_secrets("my-line --auth 'Bearer PLACEHOLDER' x"),
-            format!("my-line --auth 'Bearer {MASK}' x")
-        );
+        assert_eq!(mask_secrets("API_KEY=PLACEHOLDER npx line"), format!("API_KEY={MASK} npx line"));
+        assert_eq!(mask_secrets(r#"$env:MY_TOKEN="PLACEHOLDER"; line"#), format!("$env:MY_TOKEN={MASK}; line"));
+        assert_eq!(mask_secrets("my-line --auth 'Bearer PLACEHOLDER' x"), format!("my-line --auth 'Bearer {MASK}' x"));
         assert_eq!(mask_secrets("run sk-ant-PLACEHOLDER end"), format!("run sk-ant-{MASK} end"));
         assert_eq!(mask_secrets("VERSION=2 line"), "VERSION=2 line");
         assert_eq!(
@@ -894,9 +859,7 @@ mod tests {
             format!("A_KEY=;MY_TOKEN={MASK} line"),
             "an empty value does not end the search"
         );
-        let (_t, env) = setup(Some(
-            r#"{"statusLine":{"type":"command","command":"SECRET=PLACEHOLDER my-line"}}"#,
-        ));
+        let (_t, env) = setup(Some(r#"{"statusLine":{"type":"command","command":"SECRET=PLACEHOLDER my-line"}}"#));
         let p = preview(&env, 1).unwrap();
         assert_eq!(p.before, Some(format!("SECRET={MASK} my-line")));
         assert!(!p.after.contains("PLACEHOLDER"), "{}", p.after);

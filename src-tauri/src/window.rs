@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use tauri::webview::PageLoadEvent;
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 
 use crate::dock::{self, DockState, Placement, Side};
@@ -204,7 +204,9 @@ pub fn visible_rect(window: &WebviewWindow) -> Option<(Rect, (i32, i32))> {
 pub fn set_visible_rect(window: &WebviewWindow, rect: Rect, inset: (i32, i32)) {
     let current = window.inner_size().ok();
     let frame = match (window.outer_size(), current) {
-        (Ok(outer), Some(inner)) => (outer.width as i32 - inner.width as i32, outer.height as i32 - inner.height as i32),
+        (Ok(outer), Some(inner)) => {
+            (outer.width as i32 - inner.width as i32, outer.height as i32 - inner.height as i32)
+        }
         _ => (0, 0),
     };
     let outer = outer_rect(rect, inset, frame);
@@ -280,10 +282,7 @@ pub type Anchor = (bool, bool);
 
 /// The corner nearest to the screen edges.
 pub fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
-    (
-        rect.0 + rect.2 / 2 > area.0 + area.2 / 2,
-        rect.1 + rect.3 / 2 > area.1 + area.3 / 2,
-    )
+    (rect.0 + rect.2 / 2 > area.0 + area.2 / 2, rect.1 + rect.3 / 2 > area.1 + area.3 / 2)
 }
 
 /// The anchor for a view switch: the one saved on opening a panel is kept while panels are
@@ -358,10 +357,7 @@ pub fn ensure_on_screen(window: &WebviewWindow) {
 fn undocked_on_screen(visible: Rect, areas: &[Rect], fallback: Rect, margin: i32) -> (i32, i32) {
     match area_for(visible, areas) {
         Some(area) => clamp_into(visible, area),
-        None => (
-            fallback.0 + fallback.2 - visible.2 - margin,
-            fallback.1 + fallback.3 - visible.3 - margin,
-        ),
+        None => (fallback.0 + fallback.2 - visible.2 - margin, fallback.1 + fallback.3 - visible.3 - margin),
     }
 }
 
@@ -665,12 +661,7 @@ mod tests {
     }
 
     fn rows(sparklines: bool, burn: bool, session: bool, sources: bool) -> CardRows {
-        CardRows {
-            sparklines,
-            burn,
-            session,
-            sources,
-        }
+        CardRows { sparklines, burn, session, sources }
     }
 
     #[test]

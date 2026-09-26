@@ -76,10 +76,7 @@ impl FinishedTurns {
                 continue;
             }
             self.reported.insert(session.key.clone(), ended);
-            out.push(FinishedTurn {
-                duration_ms,
-                ..session.clone()
-            });
+            out.push(FinishedTurn { duration_ms, ..session.clone() });
         }
         out
     }
@@ -105,11 +102,7 @@ mod tests {
     }
 
     fn turn(started_ms: Ms, ended_ms: Ms) -> TurnInfo {
-        TurnInfo {
-            ended_ms: Some(ended_ms),
-            started_ms: Some(started_ms),
-            start_is_lower_bound: false,
-        }
+        TurnInfo { ended_ms: Some(ended_ms), started_ms: Some(started_ms), start_is_lower_bound: false }
     }
 
     fn keys(done: &[FinishedTurn]) -> Vec<(&str, Ms)> {
@@ -175,14 +168,7 @@ mod tests {
         let now = START + 30 * MINUTE_MS;
         let input = [
             (session("running"), TurnInfo::default()),
-            (
-                session("no_start"),
-                TurnInfo {
-                    ended_ms: Some(now),
-                    started_ms: None,
-                    start_is_lower_bound: false,
-                },
-            ),
+            (session("no_start"), TurnInfo { ended_ms: Some(now), started_ms: None, start_is_lower_bound: false }),
             // The clock went backwards: no negative durations.
             (session("backwards"), turn(now + MINUTE_MS, now)),
         ];
@@ -209,10 +195,7 @@ mod tests {
     fn lower_bound_start_counts_when_long_enough() {
         let mut f = FinishedTurns::default();
         let end = START + 30 * MINUTE_MS;
-        let bound = |d: Ms| TurnInfo {
-            start_is_lower_bound: true,
-            ..turn(end - d, end)
-        };
+        let bound = |d: Ms| TurnInfo { start_is_lower_bound: true, ..turn(end - d, end) };
         let input = [(session("short"), bound(MINUTE_MS)), (session("long"), bound(8 * MINUTE_MS))];
         assert_eq!(keys(&f.observe(&input, START, MIN, end)), vec![("long", 8 * MINUTE_MS)]);
     }
@@ -231,18 +214,8 @@ mod tests {
     fn view_fields_are_kept() {
         let mut f = FinishedTurns::default();
         let end = START + 30 * MINUTE_MS;
-        let view = FinishedTurn {
-            project: Some("demo-app".into()),
-            entrypoint: Entrypoint::Cowork,
-            ..session("a")
-        };
+        let view = FinishedTurn { project: Some("demo-app".into()), entrypoint: Entrypoint::Cowork, ..session("a") };
         let done = f.observe(&[(view.clone(), turn(end - 4 * MINUTE_MS, end))], START, MIN, end);
-        assert_eq!(
-            done,
-            vec![FinishedTurn {
-                duration_ms: 4 * MINUTE_MS,
-                ..view
-            }]
-        );
+        assert_eq!(done, vec![FinishedTurn { duration_ms: 4 * MINUTE_MS, ..view }]);
     }
 }

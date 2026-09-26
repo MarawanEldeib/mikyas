@@ -164,11 +164,7 @@ impl StdinPump {
                 }
             }
         });
-        Self {
-            rx,
-            deadline: Instant::now() + STDIN_WATCHDOG,
-            timed_out: false,
-        }
+        Self { rx, deadline: Instant::now() + STDIN_WATCHDOG, timed_out: false }
     }
 
     /// The next chunk, or `None` at EOF or once the watchdog has fired.
@@ -285,11 +281,7 @@ fn argv(command: &[OsString]) -> i32 {
             capture_and_print_line("argv", &head, timed_out);
             // The user's statusline was replaced by the fallback line: record why (kind only;
             // the program name could be a private path).
-            log_failure(
-                &Paths::detect_capture_dir(),
-                "argv",
-                &format!("spawn_{:?}", e.kind()),
-            );
+            log_failure(&Paths::detect_capture_dir(), "argv", &format!("spawn_{:?}", e.kind()));
             if let Some(job) = &job {
                 release_job(job);
             }
@@ -408,10 +400,7 @@ fn test_hook() {
     if hook == "panic" {
         panic!("CUW_TEST_HOOK=panic");
     }
-    if let Some(ms) = hook
-        .strip_prefix("capture_delay_ms=")
-        .and_then(|ms| ms.parse().ok())
-    {
+    if let Some(ms) = hook.strip_prefix("capture_delay_ms=").and_then(|ms| ms.parse().ok()) {
         thread::sleep(Duration::from_millis(ms));
     }
 }
@@ -423,11 +412,7 @@ fn test_hook() {}
 /// error kind, never input content.
 fn log_failure(capture_dir: &Path, mode: &str, note: &str) {
     let line = format!("{} {mode} {note}\n", iso_now());
-    let _ = append_capped(
-        &capture_dir.join(ERRORS_LOG),
-        line.as_bytes(),
-        ERRORS_LOG_MAX,
-    );
+    let _ = append_capped(&capture_dir.join(ERRORS_LOG), line.as_bytes(), ERRORS_LOG_MAX);
 }
 
 fn error_kind(e: &CaptureError) -> String {
@@ -451,11 +436,7 @@ fn append_capped(path: &Path, text: &[u8], max: u64) -> io::Result<()> {
         kept.extend_from_slice(text);
         return fs::write(path, kept);
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?
-        .write_all(text)
+    OpenOptions::new().create(true).append(true).open(path)?.write_all(text)
 }
 
 /// The last `keep` bytes of the file, starting at a line boundary.
@@ -466,16 +447,12 @@ fn newest_lines(path: &Path, keep: u64) -> Vec<u8> {
     let len = file.metadata().map_or(0, |m| m.len());
     let start = len.saturating_sub(keep);
     let mut buf = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err() || file.take(keep).read_to_end(&mut buf).is_err()
-    {
+    if file.seek(SeekFrom::Start(start)).is_err() || file.take(keep).read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
     if start > 0 {
         // Drop the partial first line.
-        let cut = buf
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(buf.len(), |i| i + 1);
+        let cut = buf.iter().position(|&b| b == b'\n').map_or(buf.len(), |i| i + 1);
         buf.drain(..cut);
     }
     buf
@@ -483,10 +460,8 @@ fn newest_lines(path: &Path, keep: u64) -> Vec<u8> {
 
 fn iso_now() -> String {
     let now = time::now_ms();
-    chrono::DateTime::from_timestamp_millis(now).map_or_else(
-        || now.to_string(),
-        |t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-    )
+    chrono::DateTime::from_timestamp_millis(now)
+        .map_or_else(|| now.to_string(), |t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 /// Writes to stdout, ignoring every error (a closed pipe must never turn into a panic).
@@ -543,12 +518,7 @@ fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
             .model
             .as_ref()
             .and_then(|m| m.display_name.as_deref().or(m.id.as_deref()))
-            .map(|n| {
-                printable(n)
-                    .chars()
-                    .take(MAX_MODEL_NAME_CHARS)
-                    .collect::<String>()
-            })
+            .map(|n| printable(n).chars().take(MAX_MODEL_NAME_CHARS).collect::<String>())
             .filter(|n| !n.is_empty());
         if let Some(name) = name {
             parts.push(format!("{PINK}{name}{RESET}"));
@@ -632,10 +602,8 @@ fn countdown(resets_at_s: i64, now_ms: Ms) -> String {
 fn resolve_program(program: &OsStr) -> PathBuf {
     let path = Path::new(program);
     let exts = path_exts();
-    let has_exec_ext = path.extension().is_some_and(|e| {
-        exts.iter()
-            .any(|x| x.get(1..).is_some_and(|x| e.eq_ignore_ascii_case(x)))
-    });
+    let has_exec_ext =
+        path.extension().is_some_and(|e| exts.iter().any(|x| x.get(1..).is_some_and(|x| e.eq_ignore_ascii_case(x))));
     if program.is_empty() || has_exec_ext {
         return path.to_path_buf();
     }
@@ -674,11 +642,7 @@ fn path_exts() -> Vec<String> {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
-    raw.split(';')
-        .map(str::trim)
-        .filter(|e| e.len() > 1 && e.starts_with('.'))
-        .map(str::to_owned)
-        .collect()
+    raw.split(';').map(str::trim).filter(|e| e.len() > 1 && e.starts_with('.')).map(str::to_owned).collect()
 }
 
 #[cfg(windows)]
@@ -689,8 +653,7 @@ mod job {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -707,8 +670,7 @@ mod job {
                 return None;
             }
             let job = Job(handle);
-            job.set_limit_flags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
-                .then_some(job)
+            job.set_limit_flags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).then_some(job)
         }
 
         fn set_limit_flags(&self, flags: u32) -> bool {
@@ -788,13 +750,7 @@ mod job {
 // ---------------------------------------------------------------------------------------------
 
 /// Environment variables whose presence tells which shell ran us. Only names are ever logged.
-const DIAG_ENV_NAMES: &[&str] = &[
-    "SHELL",
-    "COMSPEC",
-    "MSYSTEM",
-    "TERM_PROGRAM",
-    "PSMODULEPATH",
-];
+const DIAG_ENV_NAMES: &[&str] = &["SHELL", "COMSPEC", "MSYSTEM", "TERM_PROGRAM", "PSMODULEPATH"];
 const DIAG_MAX_KEYS: usize = 64;
 const DIAG_MAX_KEY_LEN: usize = 64;
 
@@ -805,28 +761,14 @@ fn diag_block(stdin: &[u8], timed_out: bool, argc: usize) -> String {
         serde_json::from_slice(stdin.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(stdin)).ok();
     let (parent, grandparent) = ancestry();
     let mut s = String::new();
-    let _ = writeln!(
-        s,
-        "=== cuw-capture {} --diag at {} ===",
-        env!("CARGO_PKG_VERSION"),
-        iso_now()
-    );
+    let _ = writeln!(s, "=== cuw-capture {} --diag at {} ===", env!("CARGO_PKG_VERSION"), iso_now());
     let _ = writeln!(s, "args: mode=--diag argc={argc}");
     let _ = writeln!(s, "parent: {parent}");
     let _ = writeln!(s, "grandparent: {grandparent}");
     let _ = writeln!(s, "env_names: {}", diag_env_names().join(", "));
-    let _ = writeln!(
-        s,
-        "stdin_bytes: {}{}",
-        stdin.len(),
-        if timed_out { " (watchdog fired)" } else { "" }
-    );
+    let _ = writeln!(s, "stdin_bytes: {}{}", stdin.len(), if timed_out { " (watchdog fired)" } else { "" });
     let _ = writeln!(s, "json_keys: {}", key_names(json.as_ref()));
-    let _ = writeln!(
-        s,
-        "rate_limits_keys: {}",
-        key_names(json.as_ref().and_then(|j| j.get("rate_limits")))
-    );
+    let _ = writeln!(s, "rate_limits_keys: {}", key_names(json.as_ref().and_then(|j| j.get("rate_limits"))));
     s.push('\n');
     s
 }
@@ -835,11 +777,8 @@ fn key_names(value: Option<&serde_json::Value>) -> String {
     let Some(obj) = value.and_then(serde_json::Value::as_object) else {
         return "(none)".to_owned();
     };
-    let names: Vec<String> = obj
-        .keys()
-        .take(DIAG_MAX_KEYS)
-        .map(|k| printable(k).chars().take(DIAG_MAX_KEY_LEN).collect())
-        .collect();
+    let names: Vec<String> =
+        obj.keys().take(DIAG_MAX_KEYS).map(|k| printable(k).chars().take(DIAG_MAX_KEY_LEN).collect()).collect();
     names.join(", ")
 }
 
@@ -866,9 +805,7 @@ fn ancestry() -> (String, String) {
     let Some(&(parent, _)) = table.get(&std::process::id()) else {
         return ("unknown".to_owned(), "unknown".to_owned());
     };
-    let grandparent = table
-        .get(&parent)
-        .map_or_else(|| "unknown".to_owned(), |&(gp, _)| describe(gp));
+    let grandparent = table.get(&parent).map_or_else(|| "unknown".to_owned(), |&(gp, _)| describe(gp));
     (describe(parent), grandparent)
 }
 
@@ -877,8 +814,7 @@ fn ancestry() -> (String, String) {
 fn process_table() -> std::collections::HashMap<u32, (u32, String)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
 
     let mut table = std::collections::HashMap::new();
@@ -889,21 +825,12 @@ fn process_table() -> std::collections::HashMap<u32, (u32, String)> {
         if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
             return table;
         }
-        let mut entry = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
+        let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         let mut ok = Process32FirstW(snapshot, &mut entry) != 0;
         while ok {
             let name = &entry.szExeFile;
             let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-            table.insert(
-                entry.th32ProcessID,
-                (
-                    entry.th32ParentProcessID,
-                    String::from_utf16_lossy(&name[..len]),
-                ),
-            );
+            table.insert(entry.th32ProcessID, (entry.th32ParentProcessID, String::from_utf16_lossy(&name[..len])));
             ok = Process32NextW(snapshot, &mut entry) != 0;
         }
         CloseHandle(snapshot);
@@ -914,24 +841,15 @@ fn process_table() -> std::collections::HashMap<u32, (u32, String)> {
 #[cfg(unix)]
 fn ancestry() -> (String, String) {
     fn comm(pid: u32) -> String {
-        fs::read_to_string(format!("/proc/{pid}/comm"))
-            .map_or_else(|_| "?".to_owned(), |s| s.trim().to_owned())
+        fs::read_to_string(format!("/proc/{pid}/comm")).map_or_else(|_| "?".to_owned(), |s| s.trim().to_owned())
     }
     fn parent_of(pid: u32) -> Option<u32> {
         // /proc/<pid>/stat: "pid (comm) state ppid ..."; comm may contain spaces, so split after ')'.
         let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        stat.rsplit_once(')')?
-            .1
-            .split_whitespace()
-            .nth(1)?
-            .parse()
-            .ok()
+        stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
     }
     let parent = std::os::unix::process::parent_id();
-    let grandparent = parent_of(parent).map_or_else(
-        || "unknown".to_owned(),
-        |gp| format!("pid={gp} exe={}", comm(gp)),
-    );
+    let grandparent = parent_of(parent).map_or_else(|| "unknown".to_owned(), |gp| format!("pid={gp} exe={}", comm(gp)));
     (format!("pid={parent} exe={}", comm(parent)), grandparent)
 }
 
@@ -954,25 +872,13 @@ mod tests {
         let mut rate_limits = BTreeMap::new();
         rate_limits.insert(
             "five_hour".to_owned(),
-            RateLimit {
-                used_percentage: 22.4,
-                resets_at: NOW_S + 3 * 3600 + 12 * 60 + 5,
-            },
+            RateLimit { used_percentage: 22.4, resets_at: NOW_S + 3 * 3600 + 12 * 60 + 5 },
         );
         rate_limits.insert(
             "seven_day".to_owned(),
-            RateLimit {
-                used_percentage: 61.0,
-                resets_at: NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60,
-            },
+            RateLimit { used_percentage: 61.0, resets_at: NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60 },
         );
-        rate_limits.insert(
-            "seven_day_opus".to_owned(),
-            RateLimit {
-                used_percentage: 99.0,
-                resets_at: NOW_S + 60,
-            },
-        );
+        rate_limits.insert("seven_day_opus".to_owned(), RateLimit { used_percentage: 99.0, resets_at: NOW_S + 60 });
         CaptureRecord {
             v: capture::CAPTURE_VERSION,
             session_id: "00000000-0000-4000-8000-000000000001".to_owned(),
@@ -1021,10 +927,7 @@ mod tests {
     #[test]
     fn countdown_matches_powershell_statusline() {
         let now = NOW_S * 1000;
-        assert_eq!(
-            countdown(NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60, now),
-            "2d4h"
-        );
+        assert_eq!(countdown(NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60, now), "2d4h");
         assert_eq!(countdown(NOW_S + 86_400, now), "1d0h");
         assert_eq!(countdown(NOW_S + 3 * 3600 + 12 * 60 + 59, now), "3h12m");
         assert_eq!(countdown(NOW_S + 3600, now), "1h0m");
@@ -1033,10 +936,7 @@ mod tests {
         assert_eq!(countdown(NOW_S, now), "now");
         assert_eq!(countdown(NOW_S - 100, now), "now");
         assert_eq!(countdown(i64::MIN, now), "now");
-        assert_eq!(
-            countdown(i64::MAX, i64::MIN),
-            format!("{}d{}h", i64::MAX / 86_400, i64::MAX % 86_400 / 3600)
-        );
+        assert_eq!(countdown(i64::MAX, i64::MIN), format!("{}d{}h", i64::MAX / 86_400, i64::MAX % 86_400 / 3600));
     }
 
     #[test]
@@ -1065,10 +965,7 @@ mod tests {
     #[test]
     fn renders_gracefully_with_missing_fields() {
         let mut rec = record();
-        rec.model = Some(ModelInfo {
-            id: Some("claude-x".to_owned()),
-            display_name: None,
-        });
+        rec.model = Some(ModelInfo { id: Some("claude-x".to_owned()), display_name: None });
         rec.context = None;
         rec.rate_limits.remove("five_hour");
         assert_eq!(
@@ -1076,15 +973,9 @@ mod tests {
             format!("{PINK}claude-x{RESET} · 7d {ORANGE}61%{RESET} {DIM}2d4h{RESET}\n")
         );
 
-        rec.model = Some(ModelInfo {
-            id: None,
-            display_name: Some("\x1b]0;evil\x07Opus".to_owned()),
-        });
+        rec.model = Some(ModelInfo { id: None, display_name: Some("\x1b]0;evil\x07Opus".to_owned()) });
         rec.rate_limits.clear();
-        assert_eq!(
-            render_line(Some(&rec), 0),
-            format!("{PINK}]0;evilOpus{RESET}\n")
-        );
+        assert_eq!(render_line(Some(&rec), 0), format!("{PINK}]0;evilOpus{RESET}\n"));
 
         // Bidi overrides/isolates and zero-width characters could reorder or hide what follows.
         rec.model = Some(ModelInfo {
@@ -1094,14 +985,8 @@ mod tests {
         assert_eq!(render_line(Some(&rec), 0), format!("{PINK}Opusx{RESET}\n"));
 
         // Names are capped so a huge one cannot push the rest of the line off screen.
-        rec.model = Some(ModelInfo {
-            id: None,
-            display_name: Some("é".repeat(500)),
-        });
-        assert_eq!(
-            render_line(Some(&rec), 0),
-            format!("{PINK}{}{RESET}\n", "é".repeat(MAX_MODEL_NAME_CHARS))
-        );
+        rec.model = Some(ModelInfo { id: None, display_name: Some("é".repeat(500)) });
+        assert_eq!(render_line(Some(&rec), 0), format!("{PINK}{}{RESET}\n", "é".repeat(MAX_MODEL_NAME_CHARS)));
 
         rec.model = None;
         assert_eq!(render_line(Some(&rec), 0), "Claude\n");
@@ -1127,10 +1012,7 @@ mod tests {
         }
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.ends_with("line 0199\n"));
-        assert!(
-            text.lines().all(|l| l.starts_with("line ") && l.len() == 9),
-            "{text}"
-        );
+        assert!(text.lines().all(|l| l.starts_with("line ") && l.len() == 9), "{text}");
     }
 
     #[test]
@@ -1138,15 +1020,9 @@ mod tests {
         let stdin = br#"{"session_id":"00000000-0000-4000-8000-000000000001","cwd":"C:\\work\\value-sentinel","rate_limits":{"five_hour":{"used_percentage":5}}}"#;
         let block = diag_block(stdin, false, 2);
         assert!(block.contains("args: mode=--diag argc=2\n"), "{block}");
-        assert!(
-            block.contains("json_keys: session_id, cwd, rate_limits\n"),
-            "{block}"
-        );
+        assert!(block.contains("json_keys: session_id, cwd, rate_limits\n"), "{block}");
         assert!(block.contains("rate_limits_keys: five_hour\n"), "{block}");
-        assert!(
-            block.contains(&format!("stdin_bytes: {}\n", stdin.len())),
-            "{block}"
-        );
+        assert!(block.contains(&format!("stdin_bytes: {}\n", stdin.len())), "{block}");
         assert!(!block.contains("value-sentinel"));
         assert!(!block.contains("00000000-0000-4000-8000-000000000001"));
         assert!(diag_block(b"garbage", true, 1).contains("json_keys: (none)"));
@@ -1165,21 +1041,9 @@ mod tests {
     #[test]
     fn resolves_extensionless_names_through_path() {
         let comspec = resolve_program(OsStr::new("cmd"));
-        assert!(
-            comspec.is_absolute() && comspec.is_file(),
-            "{}",
-            comspec.display()
-        );
-        assert!(
-            comspec
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .ends_with("cmd.exe")
-        );
+        assert!(comspec.is_absolute() && comspec.is_file(), "{}", comspec.display());
+        assert!(comspec.to_string_lossy().to_ascii_lowercase().ends_with("cmd.exe"));
         assert_eq!(resolve_program(OsStr::new("x.exe")), PathBuf::from("x.exe"));
-        assert_eq!(
-            resolve_program(OsStr::new("cuw-no-such-program")),
-            PathBuf::from("cuw-no-such-program")
-        );
+        assert_eq!(resolve_program(OsStr::new("cuw-no-such-program")), PathBuf::from("cuw-no-such-program"));
     }
 }

@@ -89,8 +89,7 @@ impl Version {
             None => (text, None),
         };
         let number = |part: Option<&str>| {
-            part.filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-                .and_then(|p| p.parse::<u64>().ok())
+            part.filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).and_then(|p| p.parse::<u64>().ok())
         };
         let mut parts = core.split('.');
         let (major, minor, patch) = (number(parts.next())?, number(parts.next())?, number(parts.next())?);
@@ -112,26 +111,21 @@ impl Version {
                 })
                 .collect::<Option<Vec<_>>>()?,
         };
-        Some(Self {
-            major,
-            minor,
-            patch,
-            pre,
-        })
+        Some(Self { major, minor, patch, pre })
     }
 }
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.major, self.minor, self.patch)
-            .cmp(&(other.major, other.minor, other.patch))
-            .then_with(|| match (self.pre.is_empty(), other.pre.is_empty()) {
+        (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)).then_with(|| {
+            match (self.pre.is_empty(), other.pre.is_empty()) {
                 // A release sorts above its own pre-releases.
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Greater,
                 (false, true) => Ordering::Less,
                 (false, false) => self.pre.cmp(&other.pre),
-            })
+            }
+        })
     }
 }
 
@@ -247,12 +241,7 @@ fn collect_update(mut newer: Vec<(Version, ReleaseInfo)>) -> Option<UpdateInfo> 
     newer.dedup_by(|a, b| a.0 == b.0);
     let releases: Vec<ReleaseInfo> = newer.into_iter().map(|(_, info)| info).collect();
     let latest = releases.first()?.version.clone();
-    Some(UpdateInfo {
-        latest,
-        count: releases.len(),
-        releases,
-        dismissed: false,
-    })
+    Some(UpdateInfo { latest, count: releases.len(), releases, dismissed: false })
 }
 
 /// Up to `MAX_NOTES` bullets ("- text" / "* text" lines) of a release body as short plain text:
@@ -271,12 +260,8 @@ fn note(line: &str) -> Option<String> {
 
 /// Plain, single-line, clipped text; `None` when nothing is left.
 fn plain_note(text: &str) -> Option<String> {
-    let plain: String = text
-        .replace("**", "")
-        .replace("__", "")
-        .chars()
-        .filter(|c| !c.is_control() && *c != '`')
-        .collect();
+    let plain: String =
+        text.replace("**", "").replace("__", "").chars().filter(|c| !c.is_control() && *c != '`').collect();
     let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
     // Nothing but punctuation (a "* * *" rule, a lone "-"): not a note.
     plain.chars().any(char::is_alphanumeric).then(|| clip(&plain))
@@ -480,7 +465,12 @@ pub struct CheckRecord {
 
 impl CheckRecord {
     /// Records a finished check; returns the releases to announce with a toast, if any.
-    pub fn record(&mut self, result: &Result<Option<UpdateInfo>, CheckError>, now: Ms, toast: bool) -> Option<UpdateInfo> {
+    pub fn record(
+        &mut self,
+        result: &Result<Option<UpdateInfo>, CheckError>,
+        now: Ms,
+        toast: bool,
+    ) -> Option<UpdateInfo> {
         let reached = match result {
             Ok(_) => true,
             Err(e) => e.reached_github(),
@@ -530,11 +520,7 @@ pub fn remembered(record: &CheckRecord, current: &Version) -> Option<UpdateInfo>
         .filter_map(|r| {
             let version = Version::parse(&r.version).filter(|v| v > current)?;
             let notes = r.notes.iter().filter_map(|n| plain_note(n)).take(MAX_NOTES).collect();
-            let info = ReleaseInfo {
-                version: version.to_string(),
-                url: r.url.clone(),
-                notes,
-            };
+            let info = ReleaseInfo { version: version.to_string(), url: r.url.clone(), notes };
             Some((version, info))
         })
         .collect();
@@ -588,16 +574,9 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
         shared.ui().update = remembered(&record, &current);
     }
     let (tx, rx) = mpsc::channel();
-    app.manage(Updater {
-        waker: Mutex::new(tx),
-        record: Mutex::new(record),
-        path,
-        busy: Mutex::new(()),
-    });
+    app.manage(Updater { waker: Mutex::new(tx), record: Mutex::new(record), path, busy: Mutex::new(()) });
     let app = app.clone();
-    std::thread::Builder::new()
-        .name("cuw-updates".into())
-        .spawn(move || run(&app, &shared, &rx))?;
+    std::thread::Builder::new().name("cuw-updates".into()).spawn(move || run(&app, &shared, &rx))?;
     Ok(())
 }
 
@@ -699,11 +678,7 @@ pub fn open_url(url: String) -> Result<(), String> {
         return Err("Only this app's GitHub release pages can be opened".into());
     }
     let windows = windows_dir().ok_or("The Windows folder was not found")?;
-    Command::new(explorer_path(&windows))
-        .arg(&url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    Command::new(explorer_path(&windows)).arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -727,12 +702,7 @@ mod tests {
     }
 
     fn info(releases: Vec<ReleaseInfo>) -> UpdateInfo {
-        UpdateInfo {
-            latest: releases[0].version.clone(),
-            count: releases.len(),
-            releases,
-            dismissed: false,
-        }
+        UpdateInfo { latest: releases[0].version.clone(), count: releases.len(), releases, dismissed: false }
     }
 
     /// One entry of the GitHub releases list.
@@ -752,7 +722,22 @@ mod tests {
         assert_eq!(v("1.0.0-beta.2").to_string(), "1.0.0-beta.2");
         assert_eq!(v("1.0.0-alpha-1.x").to_string(), "1.0.0-alpha-1.x");
         assert!(Version::parse(CURRENT_VERSION).is_some(), "this build's own version");
-        for garbage in ["", "v", "latest", "1", "1.2", "1.2.3.4", "1..3", "1.2.x", "-1.2.3", "1.2.3-", "1.2.3-a..b", "1.2.3-ä", "v1.2.3 beta", "99999999999999999999.0.0"] {
+        for garbage in [
+            "",
+            "v",
+            "latest",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1..3",
+            "1.2.x",
+            "-1.2.3",
+            "1.2.3-",
+            "1.2.3-a..b",
+            "1.2.3-ä",
+            "v1.2.3 beta",
+            "99999999999999999999.0.0",
+        ] {
             assert_eq!(Version::parse(garbage), None, "{garbage:?}");
         }
     }
@@ -760,8 +745,18 @@ mod tests {
     #[test]
     fn orders_like_semver() {
         let ordered = [
-            "0.9.9", "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11",
-            "1.0.0-rc.1", "1.0.0", "1.0.1", "1.1.0", "2.0.0",
+            "0.9.9",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1",
+            "1.1.0",
+            "2.0.0",
         ];
         for pair in ordered.windows(2) {
             assert!(v(pair[0]) < v(pair[1]), "{} < {}", pair[0], pair[1]);
@@ -944,7 +939,11 @@ mod tests {
         assert!(args.iter().all(|a| !a.to_ascii_lowercase().contains("authorization")));
         assert!(args.iter().all(|a| !a.contains(['\n', '\r', '"'])), "single-line, unquoted arguments");
         assert!(args.windows(2).any(|w| w[0] == "--write-out" && w[1] == r"\n%{http_code}"));
-        assert!(args.iter().all(|a| !["-L", "--location", "--cookie", "-b", "--user", "-u", "-K", "--config"].contains(&a.as_str())));
+        assert!(
+            args.iter().all(
+                |a| !["-L", "--location", "--cookie", "-b", "--user", "-u", "-K", "--config"].contains(&a.as_str())
+            )
+        );
     }
 
     #[test]
@@ -1070,11 +1069,7 @@ mod tests {
                         url: format!("{RELEASES_PREFIX}tag/latest"),
                         notes: vec![],
                     },
-                    ReleaseInfo {
-                        version: "0.2.0".into(),
-                        url: page("0.2.0"),
-                        notes: vec![long.clone(); 9],
-                    },
+                    ReleaseInfo { version: "0.2.0".into(), url: page("0.2.0"), notes: vec![long.clone(); 9] },
                 ],
                 dismissed: false,
             }),

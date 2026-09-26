@@ -34,17 +34,12 @@ pub fn system_time_ms(t: SystemTime) -> Option<Ms> {
 /// Current wall-clock time. Only the app shell and the capture shim should call this;
 /// engine functions take `now_ms` as a parameter.
 pub fn now_ms() -> Ms {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as Ms)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as Ms).unwrap_or(0)
 }
 
 /// Parses an RFC 3339 / ISO 8601 timestamp such as `2026-09-24T12:34:56.789Z` into epoch ms.
 pub fn parse_rfc3339_ms(s: &str) -> Option<Ms> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp_millis())
 }
 
 /// Interprets a JSON value that may be epoch seconds, epoch milliseconds, or an RFC 3339 string.

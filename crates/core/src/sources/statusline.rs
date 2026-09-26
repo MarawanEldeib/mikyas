@@ -59,10 +59,7 @@ impl CaptureCache {
             let stamp = (meta.modified().ok(), meta.len());
             let path = entry.path();
             let cached = self.files.remove(&path).filter(|c| c.stamp == stamp);
-            let slot = cached.unwrap_or_else(|| CachedCapture {
-                stamp,
-                record: read_record(reader, entry),
-            });
+            let slot = cached.unwrap_or_else(|| CachedCapture { stamp, record: read_record(reader, entry) });
             next.insert(path, slot);
         });
         self.files = next;
@@ -91,11 +88,7 @@ fn read_record(reader: &SafeReader, entry: &DirEntry) -> Option<CaptureRecord> {
 fn finish(mut records: Vec<CaptureRecord>, now_ms: Ms) -> Vec<CaptureRecord> {
     let latest = now_ms.saturating_add(FUTURE_TOLERANCE_MS);
     records.retain(|r| r.changed_at_ms <= latest && r.written_at_ms <= latest);
-    records.sort_by(|a, b| {
-        b.changed_at_ms
-            .cmp(&a.changed_at_ms)
-            .then_with(|| a.session_id.cmp(&b.session_id))
-    });
+    records.sort_by(|a, b| b.changed_at_ms.cmp(&a.changed_at_ms).then_with(|| a.session_id.cmp(&b.session_id)));
     records
 }
 
@@ -108,11 +101,7 @@ pub fn prune(capture_dir: &Path, now_ms: Ms) -> io::Result<usize> {
 
 /// [`prune`], calling `before_remove` between judging a file expired and removing it (tests use
 /// it to replace the file there, as the shim can).
-fn prune_with(
-    capture_dir: &Path,
-    now_ms: Ms,
-    mut before_remove: impl FnMut(&Path),
-) -> io::Result<usize> {
+fn prune_with(capture_dir: &Path, now_ms: Ms, mut before_remove: impl FnMut(&Path)) -> io::Result<usize> {
     let entries = match fs::read_dir(capture_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -134,18 +123,12 @@ fn prune_with(
         };
         let mtime_ms = before.modified().ok().and_then(system_time_ms);
         let (stamp, retain) = match kind {
-            Prunable::Capture => (
-                read_capture_file(&path)
-                    .map(|r| r.written_at_ms)
-                    .or(mtime_ms),
-                CAPTURE_RETAIN_MS,
-            ),
+            Prunable::Capture => (read_capture_file(&path).map(|r| r.written_at_ms).or(mtime_ms), CAPTURE_RETAIN_MS),
             Prunable::Tmp => (mtime_ms, TMP_RETAIN_MS),
         };
         // Unknown age → keep.
-        let expired = stamp.is_some_and(|t| {
-            now_ms.saturating_sub(t) > retain || t.saturating_sub(now_ms) > FUTURE_RETAIN_MS
-        });
+        let expired =
+            stamp.is_some_and(|t| now_ms.saturating_sub(t) > retain || t.saturating_sub(now_ms) > FUTURE_RETAIN_MS);
         if expired {
             before_remove(&path);
             if remove_if_unchanged(&path, &before) {
@@ -160,9 +143,8 @@ fn prune_with(
 /// size and modification time still match `before`. This narrows the race to the gap between
 /// this check and the delete; closing it fully would need a delete through the handle we read.
 fn remove_if_unchanged(path: &Path, before: &fs::Metadata) -> bool {
-    let unchanged = fs::metadata(path).is_ok_and(|now| {
-        now.len() == before.len() && now.modified().ok() == before.modified().ok()
-    });
+    let unchanged =
+        fs::metadata(path).is_ok_and(|now| now.len() == before.len() && now.modified().ok() == before.modified().ok());
     unchanged && fs::remove_file(path).is_ok()
 }
 
@@ -237,15 +219,7 @@ mod tests {
     fn record(session_id: &str, changed_at_ms: Ms, windows: &[(&str, f32, i64)]) -> CaptureRecord {
         let rate_limits: BTreeMap<String, RateLimit> = windows
             .iter()
-            .map(|&(k, pct, resets_at)| {
-                (
-                    k.to_owned(),
-                    RateLimit {
-                        used_percentage: pct,
-                        resets_at,
-                    },
-                )
-            })
+            .map(|&(k, pct, resets_at)| (k.to_owned(), RateLimit { used_percentage: pct, resets_at }))
             .collect();
         let mut rec = CaptureRecord {
             v: CAPTURE_VERSION,
@@ -278,19 +252,12 @@ mod tests {
 
     fn set_mtime(path: &Path, ms: Ms) {
         let t = UNIX_EPOCH + Duration::from_millis(u64::try_from(ms).unwrap());
-        fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(t)
-            .unwrap();
+        fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
     }
 
     fn names(dir: &Path) -> Vec<String> {
-        let mut v: Vec<String> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
+        let mut v: Vec<String> =
+            fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         v.sort();
         v
     }
@@ -340,11 +307,7 @@ mod tests {
         write_json(&dir.join(format!(".{SID2}.123.456.tmp")), &other);
         write_json(&dir.join("_meta.json"), &other);
         write_json(&dir.join("notes.txt"), &other);
-        fs::write(
-            dir.join("_errors.log"),
-            b"2026-09-24T00:00:00.000Z tee not_json\n",
-        )
-        .unwrap();
+        fs::write(dir.join("_errors.log"), b"2026-09-24T00:00:00.000Z tee not_json\n").unwrap();
         fs::write(dir.join("corrupt.json"), b"{\"v\":1,\"session_id\":").unwrap();
         fs::write(dir.join("array.json"), b"[]").unwrap();
         let mut v2 = other.clone();
@@ -355,17 +318,11 @@ mod tests {
         big.pop();
         big.extend(std::iter::repeat_n(b' ', MAX_CAPTURE_FILE_BYTES as usize));
         big.push(b'}');
-        assert!(
-            parse_capture(&big).is_some(),
-            "only the size makes this file unacceptable"
-        );
+        assert!(parse_capture(&big).is_some(), "only the size makes this file unacceptable");
         fs::write(dir.join("oversize.json"), &big).unwrap();
 
         fs::create_dir(dir.join("nested.json")).unwrap();
-        write_json(
-            &dir.join("nested.json").join(format!("{SID2}.json")),
-            &other,
-        );
+        write_json(&dir.join("nested.json").join(format!("{SID2}.json")), &other);
 
         assert_eq!(load_captures(&reader, &dir, NOW), vec![good]);
     }
@@ -377,14 +334,8 @@ mod tests {
 
         let outside = tmp.path().join("elsewhere");
         fs::create_dir_all(&outside).unwrap();
-        write_json(
-            &outside.join(format!("{SID1}.json")),
-            &record(SID1, NOW, &[]),
-        );
-        assert!(
-            load_captures(&reader, &outside, NOW).is_empty(),
-            "the reader's allowlist applies"
-        );
+        write_json(&outside.join(format!("{SID1}.json")), &record(SID1, NOW, &[]));
+        assert!(load_captures(&reader, &outside, NOW).is_empty(), "the reader's allowlist applies");
     }
 
     #[test]
@@ -440,10 +391,7 @@ mod tests {
                 "old.json".to_owned(),
             ]
         );
-        assert!(
-            inner.exists(),
-            "files below subdirectories are never touched"
-        );
+        assert!(inner.exists(), "files below subdirectories are never touched");
         assert_eq!(prune(&dir, NOW).unwrap(), 0);
     }
 
@@ -487,10 +435,7 @@ mod tests {
         set_mtime(&tmp_hours_ahead, NOW + 12 * HOUR_MS);
 
         assert_eq!(prune(&dir, NOW).unwrap(), 3);
-        assert_eq!(
-            names(&dir),
-            [format!(".{SID2}.1.2.tmp"), format!("{SID2}.json")]
-        );
+        assert_eq!(names(&dir), [format!(".{SID2}.1.2.tmp"), format!("{SID2}.json")]);
     }
 
     #[test]

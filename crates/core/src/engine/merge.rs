@@ -90,38 +90,21 @@ pub fn merge_window_with(
             let d_pct = sanitize_pct(d.pct);
             let later_window = d.observed_at_ms >= c.resets_at_ms;
             let early_reset = is_reset_drop(c.pct, d_pct);
-            let reset = if later_window || early_reset {
-                desktop_estimate
-            } else {
-                ResetInfo::Exact {
-                    at_ms: c.resets_at_ms,
-                }
-            };
+            let reset =
+                if later_window || early_reset { desktop_estimate } else { ResetInfo::Exact { at_ms: c.resets_at_ms } };
             Draft::active(d_pct, reset, Source::Desktop, d.observed_at_ms)
         }
         // 3b: CLI only, or Desktop not newer.
-        (Some(c), _) => Draft::active(
-            c.pct,
-            ResetInfo::Exact {
-                at_ms: c.resets_at_ms,
-            },
-            Source::Cli,
-            c.observed_at_ms,
-        ),
+        (Some(c), _) => Draft::active(c.pct, ResetInfo::Exact { at_ms: c.resets_at_ms }, Source::Cli, c.observed_at_ms),
         // 3c: Desktop only (plus possibly expired CLI observations).
         (None, Some(d)) => {
             let reset_since_d = |t: Ms| t > d.observed_at_ms && t <= now_ms;
-            let has_reset = expired.iter().any(|&(r, _)| reset_since_d(r))
-                || estimate.at_ms().is_some_and(reset_since_d);
+            let has_reset =
+                expired.iter().any(|&(r, _)| reset_since_d(r)) || estimate.at_ms().is_some_and(reset_since_d);
             if has_reset {
                 Draft::awaiting(estimate, Source::Desktop, d.observed_at_ms)
             } else {
-                Draft::active(
-                    sanitize_pct(d.pct),
-                    estimate,
-                    Source::Desktop,
-                    d.observed_at_ms,
-                )
+                Draft::active(sanitize_pct(d.pct), estimate, Source::Desktop, d.observed_at_ms)
             }
         }
         // 3d / 3e: only expired CLI observations, or nothing at all.
@@ -148,14 +131,8 @@ fn winning_group(live: &[(Ms, &Observation)]) -> Option<CliWinner> {
     let (pct, observed_at_ms) = live
         .iter()
         .filter(|&&(r, _)| r >= floor)
-        .fold((0.0_f32, Ms::MIN), |(p, t), &(_, o)| {
-            (p.max(sanitize_pct(o.pct)), t.max(o.observed_at_ms))
-        });
-    Some(CliWinner {
-        pct,
-        observed_at_ms,
-        resets_at_ms: anchor,
-    })
+        .fold((0.0_f32, Ms::MIN), |(p, t), &(_, o)| (p.max(sanitize_pct(o.pct)), t.max(o.observed_at_ms)));
+    Some(CliWinner { pct, observed_at_ms, resets_at_ms: anchor })
 }
 
 /// The merged state before the derived `stale` / `limit_reached` flags are computed.
@@ -169,29 +146,16 @@ struct Draft {
 
 impl Draft {
     fn active(pct: f32, reset: ResetInfo, source: Source, observed_at_ms: Ms) -> Self {
-        Self {
-            pct,
-            reset,
-            source,
-            observed_at_ms,
-            phase: Phase::Active,
-        }
+        Self { pct, reset, source, observed_at_ms, phase: Phase::Active }
     }
 
     fn awaiting(reset: ResetInfo, source: Source, observed_at_ms: Ms) -> Self {
-        Self {
-            pct: 0.0,
-            reset,
-            source,
-            observed_at_ms,
-            phase: Phase::ResetAwaitingData,
-        }
+        Self { pct: 0.0, reset, source, observed_at_ms, phase: Phase::ResetAwaitingData }
     }
 
     fn finish(self, kind: WindowKind, now_ms: Ms, stale_after_ms: Ms) -> WindowState {
         let pct = sanitize_pct(self.pct);
-        let stale = self.phase == Phase::Active
-            && now_ms.saturating_sub(self.observed_at_ms) > stale_after_ms;
+        let stale = self.phase == Phase::Active && now_ms.saturating_sub(self.observed_at_ms) > stale_after_ms;
         WindowState {
             kind,
             pct,
@@ -207,11 +171,7 @@ impl Draft {
 
 /// Clamps to `0..=100`; NaN (malformed input) becomes 0.
 fn sanitize_pct(pct: f32) -> f32 {
-    if pct.is_nan() {
-        0.0
-    } else {
-        pct.clamp(0.0, 100.0)
-    }
+    if pct.is_nan() { 0.0 } else { pct.clamp(0.0, 100.0) }
 }
 
 #[cfg(test)]
@@ -232,42 +192,22 @@ mod tests {
     }
 
     fn cli_kind(kind: WindowKind, pct: f32, resets_at_ms: Option<Ms>, ago: Ms) -> Observation {
-        Observation {
-            kind,
-            pct,
-            resets_at_ms,
-            observed_at_ms: NOW - ago,
-            source: Source::Cli,
-        }
+        Observation { kind, pct, resets_at_ms, observed_at_ms: NOW - ago, source: Source::Cli }
     }
 
     fn desk(pct: f32, ago: Ms) -> Observation {
-        Observation {
-            kind: FH,
-            pct,
-            resets_at_ms: None,
-            observed_at_ms: NOW - ago,
-            source: Source::Desktop,
-        }
+        Observation { kind: FH, pct, resets_at_ms: None, observed_at_ms: NOW - ago, source: Source::Desktop }
     }
 
     fn est(at_ms: Ms) -> ResetInfo {
-        ResetInfo::Estimated {
-            at_ms,
-            plus_minus_ms: 10 * MINUTE_MS,
-            confidence: Confidence::Medium,
-        }
+        ResetInfo::Estimated { at_ms, plus_minus_ms: 10 * MINUTE_MS, confidence: Confidence::Medium }
     }
 
     fn exact(in_ms: Ms) -> ResetInfo {
         ResetInfo::Exact { at_ms: NOW + in_ms }
     }
 
-    fn merge(
-        cli: &[Observation],
-        desktop: Option<&Observation>,
-        estimate: ResetInfo,
-    ) -> Option<WindowState> {
+    fn merge(cli: &[Observation], desktop: Option<&Observation>, estimate: ResetInfo) -> Option<WindowState> {
         merge_window(&FH, cli, desktop, estimate, NOW, STALE)
     }
 
@@ -275,12 +215,7 @@ mod tests {
 
     #[test]
     fn live_cli_gives_exact_reset() {
-        let s = merge(
-            &[cli(22.5, 2 * HOUR_MS, MINUTE_MS)],
-            None,
-            ResetInfo::Unknown,
-        )
-        .unwrap();
+        let s = merge(&[cli(22.5, 2 * HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(
             s,
             WindowState {
@@ -298,15 +233,9 @@ mod tests {
 
     #[test]
     fn live_beats_expired() {
-        let obs = [
-            cli(90.0, -HOUR_MS, 2 * HOUR_MS),
-            cli(30.0, 2 * HOUR_MS, 10 * MINUTE_MS),
-        ];
+        let obs = [cli(90.0, -HOUR_MS, 2 * HOUR_MS), cli(30.0, 2 * HOUR_MS, 10 * MINUTE_MS)];
         let s = merge(&obs, None, ResetInfo::Unknown).unwrap();
-        assert_eq!(
-            (s.pct, s.reset, s.phase),
-            (30.0, exact(2 * HOUR_MS), Phase::Active)
-        );
+        assert_eq!((s.pct, s.reset, s.phase), (30.0, exact(2 * HOUR_MS), Phase::Active));
     }
 
     #[test]
@@ -317,38 +246,17 @@ mod tests {
 
     #[test]
     fn other_kinds_are_ignored() {
-        let weekly = cli_kind(
-            WindowKind::SevenDay,
-            70.0,
-            Some(NOW + 3 * HOUR_MS),
-            MINUTE_MS,
-        );
-        assert_eq!(
-            merge(std::slice::from_ref(&weekly), None, ResetInfo::Unknown),
-            None
-        );
-        let s = merge(
-            &[weekly, cli(10.0, HOUR_MS, MINUTE_MS)],
-            None,
-            ResetInfo::Unknown,
-        )
-        .unwrap();
+        let weekly = cli_kind(WindowKind::SevenDay, 70.0, Some(NOW + 3 * HOUR_MS), MINUTE_MS);
+        assert_eq!(merge(std::slice::from_ref(&weekly), None, ResetInfo::Unknown), None);
+        let s = merge(&[weekly, cli(10.0, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(s.pct, 10.0);
     }
 
     #[test]
     fn cli_without_reset_is_ignored() {
         let no_reset = cli_kind(FH, 50.0, None, MINUTE_MS);
-        assert_eq!(
-            merge(std::slice::from_ref(&no_reset), None, ResetInfo::Unknown),
-            None
-        );
-        let s = merge(
-            &[no_reset, cli(20.0, HOUR_MS, MINUTE_MS)],
-            None,
-            ResetInfo::Unknown,
-        )
-        .unwrap();
+        assert_eq!(merge(std::slice::from_ref(&no_reset), None, ResetInfo::Unknown), None);
+        let s = merge(&[no_reset, cli(20.0, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(s.pct, 20.0);
     }
 
@@ -357,32 +265,19 @@ mod tests {
     #[test]
     fn resets_within_tolerance_are_one_group_with_max_pct() {
         let r = 3 * HOUR_MS;
-        let obs = [
-            cli(40.0, r, 5 * MINUTE_MS),
-            cli(42.0, r - 90 * SECOND_MS, 10 * MINUTE_MS),
-        ];
+        let obs = [cli(40.0, r, 5 * MINUTE_MS), cli(42.0, r - 90 * SECOND_MS, 10 * MINUTE_MS)];
         let s = merge(&obs, None, ResetInfo::Unknown).unwrap();
         assert_eq!(s.pct, 42.0);
-        assert_eq!(
-            s.observed_at_ms,
-            NOW - 5 * MINUTE_MS,
-            "newest observation of the group"
-        );
+        assert_eq!(s.observed_at_ms, NOW - 5 * MINUTE_MS, "newest observation of the group");
         assert_eq!(s.reset, exact(r), "latest reset of the group");
     }
 
     #[test]
     fn group_tolerance_boundary() {
         let r = 3 * HOUR_MS;
-        let at_edge = [
-            cli(10.0, r, MINUTE_MS),
-            cli(80.0, r - RESET_GROUP_TOLERANCE_MS, MINUTE_MS),
-        ];
+        let at_edge = [cli(10.0, r, MINUTE_MS), cli(80.0, r - RESET_GROUP_TOLERANCE_MS, MINUTE_MS)];
         assert_eq!(merge(&at_edge, None, ResetInfo::Unknown).unwrap().pct, 80.0);
-        let beyond = [
-            cli(10.0, r, MINUTE_MS),
-            cli(80.0, r - RESET_GROUP_TOLERANCE_MS - 1, MINUTE_MS),
-        ];
+        let beyond = [cli(10.0, r, MINUTE_MS), cli(80.0, r - RESET_GROUP_TOLERANCE_MS - 1, MINUTE_MS)];
         assert_eq!(merge(&beyond, None, ResetInfo::Unknown).unwrap().pct, 10.0);
     }
 
@@ -393,20 +288,14 @@ mod tests {
         let idle = cli(20.0, r, 3 * HOUR_MS);
         for obs in [[active.clone(), idle.clone()], [idle, active]] {
             let s = merge(&obs, None, ResetInfo::Unknown).unwrap();
-            assert_eq!(
-                (s.pct, s.observed_at_ms, s.stale),
-                (55.0, NOW - MINUTE_MS, false)
-            );
+            assert_eq!((s.pct, s.observed_at_ms, s.stale), (55.0, NOW - MINUTE_MS, false));
         }
     }
 
     #[test]
     fn latest_reset_group_wins_over_higher_older_window() {
         // An idle session still reports the pre-early-reset window (its reset is still ahead).
-        let obs = [
-            cli(90.0, HOUR_MS, 2 * HOUR_MS),
-            cli(5.0, 4 * HOUR_MS, MINUTE_MS),
-        ];
+        let obs = [cli(90.0, HOUR_MS, 2 * HOUR_MS), cli(5.0, 4 * HOUR_MS, MINUTE_MS)];
         let s = merge(&obs, None, ResetInfo::Unknown).unwrap();
         assert_eq!((s.pct, s.reset), (5.0, exact(4 * HOUR_MS)));
     }
@@ -421,13 +310,7 @@ mod tests {
             let s = merge(std::slice::from_ref(&c), Some(&d), est(NOW + 5 * HOUR_MS)).unwrap();
             assert_eq!(
                 (s.pct, s.reset, s.source, s.observed_at_ms, s.phase),
-                (
-                    d_pct,
-                    exact(2 * HOUR_MS),
-                    Source::Desktop,
-                    NOW - 2 * MINUTE_MS,
-                    Phase::Active
-                ),
+                (d_pct, exact(2 * HOUR_MS), Source::Desktop, NOW - 2 * MINUTE_MS, Phase::Active),
                 "desktop {d_pct}"
             );
         }
@@ -437,24 +320,10 @@ mod tests {
     fn desktop_tolerance_boundary() {
         let c = cli(40.0, 2 * HOUR_MS, 10 * MINUTE_MS);
         let within = desk(38.1, MINUTE_MS);
-        let s = merge(
-            std::slice::from_ref(&c),
-            Some(&within),
-            est(NOW + 5 * HOUR_MS),
-        )
-        .unwrap();
-        assert_eq!(
-            s.reset,
-            exact(2 * HOUR_MS),
-            "a drop below two points is noise"
-        );
+        let s = merge(std::slice::from_ref(&c), Some(&within), est(NOW + 5 * HOUR_MS)).unwrap();
+        assert_eq!(s.reset, exact(2 * HOUR_MS), "a drop below two points is noise");
         let beyond = desk(38.0, MINUTE_MS);
-        let s = merge(
-            std::slice::from_ref(&c),
-            Some(&beyond),
-            est(NOW + 5 * HOUR_MS),
-        )
-        .unwrap();
+        let s = merge(std::slice::from_ref(&c), Some(&beyond), est(NOW + 5 * HOUR_MS)).unwrap();
         assert_eq!(s.reset, est(NOW + 5 * HOUR_MS));
     }
 
@@ -466,13 +335,7 @@ mod tests {
         let s = merge(&[c], Some(&d), estimate.clone()).unwrap();
         assert_eq!(
             (s.pct, s.reset, s.source, s.phase, s.observed_at_ms),
-            (
-                12.0,
-                estimate,
-                Source::Desktop,
-                Phase::Active,
-                NOW - MINUTE_MS
-            )
+            (12.0, estimate, Source::Desktop, Phase::Active, NOW - MINUTE_MS)
         );
     }
 
@@ -488,8 +351,8 @@ mod tests {
         let c = cli(60.0, 2 * HOUR_MS, 20 * MINUTE_MS);
         let d = desk(12.0, MINUTE_MS);
         let desktop_estimate = est(NOW + 4 * HOUR_MS);
-        let s = merge_window_with(&FH, &[c], Some(&d), exact(2 * HOUR_MS), desktop_estimate.clone(), NOW, STALE)
-            .unwrap();
+        let s =
+            merge_window_with(&FH, &[c], Some(&d), exact(2 * HOUR_MS), desktop_estimate.clone(), NOW, STALE).unwrap();
         assert_eq!((s.pct, s.reset), (12.0, desktop_estimate));
         // Without an early reset the other estimate is unused: the CLI reset stays exact.
         let c = cli(60.0, 2 * HOUR_MS, 20 * MINUTE_MS);
@@ -505,22 +368,10 @@ mod tests {
         let d = desk(35.0, -2 * MINUTE_MS);
         let estimate = est(NOW + 5 * HOUR_MS);
         let s = merge(&[c], Some(&d), estimate.clone()).unwrap();
-        assert_eq!(
-            (s.pct, s.reset, s.source),
-            (35.0, estimate, Source::Desktop)
-        );
+        assert_eq!((s.pct, s.reset, s.source), (35.0, estimate, Source::Desktop));
         let at_reset = desk(35.0, -MINUTE_MS);
-        let s = merge(
-            &[cli(30.0, MINUTE_MS, 10 * MINUTE_MS)],
-            Some(&at_reset),
-            ResetInfo::Unknown,
-        )
-        .unwrap();
-        assert_eq!(
-            s.reset,
-            ResetInfo::Unknown,
-            "D.observed_at == C.resets_at is a later window"
-        );
+        let s = merge(&[cli(30.0, MINUTE_MS, 10 * MINUTE_MS)], Some(&at_reset), ResetInfo::Unknown).unwrap();
+        assert_eq!(s.reset, ResetInfo::Unknown, "D.observed_at == C.resets_at is a later window");
     }
 
     #[test]
@@ -540,12 +391,7 @@ mod tests {
     fn desktop_of_another_kind_is_ignored() {
         let mut d = desk(10.0, MINUTE_MS);
         d.kind = WindowKind::SevenDay;
-        let s = merge(
-            &[cli(50.0, HOUR_MS, 5 * MINUTE_MS)],
-            Some(&d),
-            ResetInfo::Unknown,
-        )
-        .unwrap();
+        let s = merge(&[cli(50.0, HOUR_MS, 5 * MINUTE_MS)], Some(&d), ResetInfo::Unknown).unwrap();
         assert_eq!(s.source, Source::Cli);
         assert_eq!(merge(&[], Some(&d), ResetInfo::Unknown), None);
     }
@@ -579,14 +425,7 @@ mod tests {
         let s = merge(&[expired], Some(&d), estimate.clone()).unwrap();
         assert_eq!(
             (s.phase, s.pct, s.reset, s.source, s.observed_at_ms, s.stale),
-            (
-                Phase::ResetAwaitingData,
-                0.0,
-                estimate,
-                Source::Desktop,
-                NOW - 2 * HOUR_MS,
-                false
-            )
+            (Phase::ResetAwaitingData, 0.0, estimate, Source::Desktop, NOW - 2 * HOUR_MS, false)
         );
     }
 
@@ -595,10 +434,7 @@ mod tests {
         let d = desk(8.0, 10 * MINUTE_MS);
         let expired = cli(70.0, -HOUR_MS, 2 * HOUR_MS);
         let s = merge(&[expired], Some(&d), ResetInfo::Unknown).unwrap();
-        assert_eq!(
-            (s.phase, s.pct, s.source),
-            (Phase::Active, 8.0, Source::Desktop)
-        );
+        assert_eq!((s.phase, s.pct, s.source), (Phase::Active, 8.0, Source::Desktop));
     }
 
     #[test]
@@ -606,11 +442,7 @@ mod tests {
         let d = desk(8.0, HOUR_MS);
         let expired = cli(70.0, -HOUR_MS, 2 * HOUR_MS);
         let s = merge(&[expired], Some(&d), ResetInfo::Unknown).unwrap();
-        assert_eq!(
-            s.phase,
-            Phase::Active,
-            "the interval is (D.observed_at, now]"
-        );
+        assert_eq!(s.phase, Phase::Active, "the interval is (D.observed_at, now]");
     }
 
     #[test]
@@ -618,25 +450,14 @@ mod tests {
         let d = desk(64.0, 2 * HOUR_MS);
         let estimate = est(NOW - 30 * MINUTE_MS);
         let s = merge(&[], Some(&d), estimate.clone()).unwrap();
-        assert_eq!(
-            (s.phase, s.pct, s.reset),
-            (Phase::ResetAwaitingData, 0.0, estimate)
-        );
-        assert_eq!(
-            merge(&[], Some(&d), est(NOW)).unwrap().phase,
-            Phase::ResetAwaitingData
-        );
+        assert_eq!((s.phase, s.pct, s.reset), (Phase::ResetAwaitingData, 0.0, estimate));
+        assert_eq!(merge(&[], Some(&d), est(NOW)).unwrap().phase, Phase::ResetAwaitingData);
     }
 
     #[test]
     fn estimate_before_desktop_sample_or_in_future_stays_active() {
         let d = desk(64.0, 2 * HOUR_MS);
-        for estimate in [
-            est(NOW - 3 * HOUR_MS),
-            est(NOW - 2 * HOUR_MS),
-            est(NOW + MINUTE_MS),
-            ResetInfo::Unknown,
-        ] {
+        for estimate in [est(NOW - 3 * HOUR_MS), est(NOW - 2 * HOUR_MS), est(NOW + MINUTE_MS), ResetInfo::Unknown] {
             let s = merge(&[], Some(&d), estimate.clone()).unwrap();
             assert_eq!((s.phase, s.pct), (Phase::Active, 64.0), "{estimate:?}");
         }
@@ -646,10 +467,7 @@ mod tests {
 
     #[test]
     fn only_expired_cli_awaits_data() {
-        let obs = [
-            cli(88.0, -2 * HOUR_MS, 3 * HOUR_MS),
-            cli(91.0, -HOUR_MS, 90 * MINUTE_MS),
-        ];
+        let obs = [cli(88.0, -2 * HOUR_MS, 3 * HOUR_MS), cli(91.0, -HOUR_MS, 90 * MINUTE_MS)];
         let estimate = est(NOW + 4 * HOUR_MS);
         let s = merge(&obs, None, estimate.clone()).unwrap();
         assert_eq!(
@@ -703,12 +521,7 @@ mod tests {
         assert_eq!((high.pct, high.limit_reached), (100.0, true));
         let low = merge(&[cli(-5.0, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(low.pct, 0.0);
-        let nan = merge(
-            &[cli(f32::NAN, HOUR_MS, MINUTE_MS)],
-            None,
-            ResetInfo::Unknown,
-        )
-        .unwrap();
+        let nan = merge(&[cli(f32::NAN, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(nan.pct, 0.0);
         let d = merge(&[], Some(&desk(150.0, MINUTE_MS)), ResetInfo::Unknown).unwrap();
         assert_eq!(d.pct, 100.0);
@@ -718,10 +531,7 @@ mod tests {
 
     #[test]
     fn extreme_times_do_not_panic() {
-        let obs = [
-            cli_kind(FH, 10.0, Some(Ms::MAX), NOW - Ms::MIN / 2),
-            cli_kind(FH, 10.0, Some(Ms::MIN), 0),
-        ];
+        let obs = [cli_kind(FH, 10.0, Some(Ms::MAX), NOW - Ms::MIN / 2), cli_kind(FH, 10.0, Some(Ms::MIN), 0)];
         let d = desk(5.0, NOW);
         let s = merge_window(&FH, &obs, Some(&d), est(Ms::MIN), Ms::MAX, Ms::MAX);
         assert!(s.is_some());
@@ -736,28 +546,20 @@ mod tests {
         // Resets cluster around a few anchors so tolerance grouping is exercised.
         let reset = proptest::option::weighted(
             0.9,
-            (
-                proptest::sample::select(vec![-2 * HOUR_MS, HOUR_MS, 3 * HOUR_MS]),
-                -150 * SECOND_MS..150 * SECOND_MS,
-            )
+            (proptest::sample::select(vec![-2 * HOUR_MS, HOUR_MS, 3 * HOUR_MS]), -150 * SECOND_MS..150 * SECOND_MS)
                 .prop_map(|(base, jitter)| NOW + base + jitter),
         );
-        (kind, 0.0_f32..=100.0, reset, 0..10 * HOUR_MS).prop_map(
-            |(kind, pct, resets_at_ms, ago)| Observation {
-                kind,
-                pct,
-                resets_at_ms,
-                observed_at_ms: NOW - ago,
-                source: Source::Cli,
-            },
-        )
+        (kind, 0.0_f32..=100.0, reset, 0..10 * HOUR_MS).prop_map(|(kind, pct, resets_at_ms, ago)| Observation {
+            kind,
+            pct,
+            resets_at_ms,
+            observed_at_ms: NOW - ago,
+            source: Source::Cli,
+        })
     }
 
     fn desktop_strategy() -> impl Strategy<Value = Option<Observation>> {
-        proptest::option::of(
-            (0.0_f32..=100.0, -MINUTE_MS..10 * HOUR_MS)
-                .prop_map(|(pct, ago)| desk(pct.round(), ago)),
-        )
+        proptest::option::of((0.0_f32..=100.0, -MINUTE_MS..10 * HOUR_MS).prop_map(|(pct, ago)| desk(pct.round(), ago)))
     }
 
     fn estimate_strategy() -> impl Strategy<Value = ResetInfo> {
@@ -769,8 +571,7 @@ mod tests {
     }
 
     fn cli_and_shuffled() -> impl Strategy<Value = (Vec<Observation>, Vec<Observation>)> {
-        proptest::collection::vec(obs_strategy(), 0..8)
-            .prop_flat_map(|v| (Just(v.clone()), Just(v).prop_shuffle()))
+        proptest::collection::vec(obs_strategy(), 0..8).prop_flat_map(|v| (Just(v.clone()), Just(v).prop_shuffle()))
     }
 
     proptest! {

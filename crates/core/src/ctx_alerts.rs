@@ -78,11 +78,7 @@ impl CtxAlertState {
                 entry.last_seen_ms = now_ms;
             }
             let guessed = session.ctx_basis == CtxBasis::Default && session.ctx_is_estimate;
-            let Some(pct) = session
-                .ctx_pct
-                .filter(|p| !p.is_nan() && !guessed)
-                .map(|p| p.clamp(0.0, 100.0))
-            else {
+            let Some(pct) = session.ctx_pct.filter(|p| !p.is_nan() && !guessed).map(|p| p.clamp(0.0, 100.0)) else {
                 continue;
             };
             let rearm = self
@@ -109,14 +105,13 @@ impl CtxAlertState {
                 model: session.display_name.clone().or_else(|| session.model_id.clone()),
                 project: session.project.clone(),
             });
-            let entry = self.sessions.entry(session.key.clone()).or_insert_with(|| SessionCtxState {
-                fired: BTreeSet::new(),
-                last_seen_ms: now_ms,
-            });
+            let entry = self
+                .sessions
+                .entry(session.key.clone())
+                .or_insert_with(|| SessionCtxState { fired: BTreeSet::new(), last_seen_ms: now_ms });
             entry.fired.extend(crossed());
         }
-        self.sessions
-            .retain(|_, e| now_ms.abs_diff(e.last_seen_ms) <= FORGET_AFTER_MS.unsigned_abs());
+        self.sessions.retain(|_, e| now_ms.abs_diff(e.last_seen_ms) <= FORGET_AFTER_MS.unsigned_abs());
         events
     }
 }
@@ -148,20 +143,12 @@ mod tests {
     }
 
     fn fired(state: &CtxAlertState, key: &str) -> Vec<u8> {
-        state
-            .sessions
-            .get(key)
-            .map(|e| e.fired.iter().copied().collect())
-            .unwrap_or_default()
+        state.sessions.get(key).map(|e| e.fired.iter().copied().collect()).unwrap_or_default()
     }
 
     /// Evaluates one session "a" at `pct`, active now.
     fn step(state: &mut CtxAlertState, pct: f32) -> Vec<u8> {
-        state
-            .evaluate(&[session("a", Some(pct))], T, NOW)
-            .iter()
-            .map(|e| e.threshold)
-            .collect()
+        state.evaluate(&[session("a", Some(pct))], T, NOW).iter().map(|e| e.threshold).collect()
     }
 
     #[test]
@@ -337,13 +324,9 @@ mod tests {
         assert_eq!(s.evaluate(&[session("z", Some(100.0))], &[], NOW), vec![]);
         // A far-future last_seen (clock change) is refreshed rather than kept forever.
         let mut future = CtxAlertState::default();
-        future.sessions.insert(
-            "a".into(),
-            SessionCtxState {
-                fired: BTreeSet::from([80]),
-                last_seen_ms: NOW + 400 * DAY_MS,
-            },
-        );
+        future
+            .sessions
+            .insert("a".into(), SessionCtxState { fired: BTreeSet::from([80]), last_seen_ms: NOW + 400 * DAY_MS });
         future.evaluate(&[session("a", Some(85.0))], T, NOW);
         assert_eq!(future.sessions["a"].last_seen_ms, NOW);
     }

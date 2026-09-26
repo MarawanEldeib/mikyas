@@ -79,10 +79,7 @@ impl DesktopSessionCache {
             let stamp = (modified, meta.len());
             let path = entry.path();
             let cached = self.files.remove(&path).filter(|c| c.stamp == stamp);
-            let slot = cached.unwrap_or_else(|| CachedSession {
-                stamp,
-                session: read_session(reader, entry),
-            });
+            let slot = cached.unwrap_or_else(|| CachedSession { stamp, session: read_session(reader, entry) });
             next.insert(path, slot);
         });
         self.files = next;
@@ -176,11 +173,7 @@ mod tests {
         let root = tmp.path().join("Roaming").join("Claude");
         let paths = Paths::with_roots(tmp.path().join(".claude"), vec![root.clone()], tmp.path().join("data"));
         let reader = SafeReader::new(&paths);
-        Env {
-            dir: root.join("claude-code-sessions"),
-            tmp,
-            reader,
-        }
+        Env { dir: root.join("claude-code-sessions"), tmp, reader }
     }
 
     fn write(path: &Path, bytes: &[u8]) {
@@ -189,9 +182,7 @@ mod tests {
     }
 
     fn session_json(id: &str, activity: serde_json::Value) -> Vec<u8> {
-        json!({"cliSessionId": id, "model": "claude-opus-5-5", "lastActivityAt": activity})
-            .to_string()
-            .into_bytes()
+        json!({"cliSessionId": id, "model": "claude-opus-5-5", "lastActivityAt": activity}).to_string().into_bytes()
     }
 
     #[test]
@@ -235,12 +226,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             s,
-            DesktopSession {
-                cli_session_id: None,
-                model: None,
-                last_focused_ms: None,
-                last_activity_ms: None,
-            }
+            DesktopSession { cli_session_id: None, model: None, last_focused_ms: None, last_activity_ms: None }
         );
         let s = parse(b"\xEF\xBB\xBF {\"cliSessionId\": \"  \", \"model\": \" claude-sonnet-5 \"}").unwrap();
         assert_eq!(s.cli_session_id, None, "blank id is missing");

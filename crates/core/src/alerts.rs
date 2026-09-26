@@ -90,25 +90,15 @@ pub struct AlertSettings {
 
 impl Default for AlertSettings {
     fn default() -> Self {
-        Self {
-            thresholds: vec![80, 95],
-            notify_reset: true,
-        }
+        Self { thresholds: vec![80, 95], notify_reset: true }
     }
 }
 
 /// Something the app should turn into an OS notification.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlertEvent {
-    Threshold {
-        kind: WindowKind,
-        threshold: u8,
-        pct: f32,
-        reset_at_ms: Option<Ms>,
-    },
-    Reset {
-        kind: WindowKind,
-    },
+    Threshold { kind: WindowKind, threshold: u8, pct: f32, reset_at_ms: Option<Ms> },
+    Reset { kind: WindowKind },
 }
 
 /// Alert bookkeeping for one window kind.
@@ -140,12 +130,7 @@ impl AlertState {
     ///
     /// `first_run` = this is the first evaluation since the app started (suppresses Reset toasts
     /// for resets that happened while the app was closed).
-    pub fn evaluate(
-        &mut self,
-        windows: &[WindowState],
-        settings: &AlertSettings,
-        first_run: bool,
-    ) -> Vec<AlertEvent> {
+    pub fn evaluate(&mut self, windows: &[WindowState], settings: &AlertSettings, first_run: bool) -> Vec<AlertEvent> {
         let mut events = Vec::new();
         for window in windows.iter().filter(|w| !w.stale) {
             let entry = self.kinds.entry(window.kind.key().to_owned()).or_default();
@@ -163,11 +148,7 @@ impl KindAlertState {
         first_run: bool,
         events: &mut Vec<AlertEvent>,
     ) {
-        let pct = if window.pct.is_nan() {
-            0.0
-        } else {
-            window.pct.clamp(0.0, 100.0)
-        };
+        let pct = if window.pct.is_nan() { 0.0 } else { window.pct.clamp(0.0, 100.0) };
         let key = window.reset.at_ms().map(instance_key);
         let plus_minus_ms = plus_minus(&window.reset);
 
@@ -179,9 +160,7 @@ impl KindAlertState {
         );
         if window.phase == Phase::ResetAwaitingData || dropped || moved_far {
             if self.last_pct > 0.0 && settings.notify_reset && !first_run {
-                events.push(AlertEvent::Reset {
-                    kind: window.kind.clone(),
-                });
+                events.push(AlertEvent::Reset { kind: window.kind.clone() });
             }
             self.fired.clear();
             self.instance_key = key;
@@ -192,13 +171,7 @@ impl KindAlertState {
             self.plus_minus_ms = plus_minus_ms;
         }
 
-        let crossed = || {
-            settings
-                .thresholds
-                .iter()
-                .copied()
-                .filter(|&t| pct >= f32::from(t))
-        };
+        let crossed = || settings.thresholds.iter().copied().filter(|&t| pct >= f32::from(t));
         if let Some(threshold) = crossed().filter(|t| !self.fired.contains(t)).max() {
             events.push(AlertEvent::Threshold {
                 kind: window.kind.clone(),
@@ -215,10 +188,7 @@ impl KindAlertState {
 /// Rounds a reset time to the nearest [`INSTANCE_ROUND_MS`] (saturating at the extremes). Shared
 /// with `pace_alerts`.
 pub(crate) fn instance_key(at_ms: Ms) -> Ms {
-    at_ms
-        .saturating_add(INSTANCE_ROUND_MS / 2)
-        .div_euclid(INSTANCE_ROUND_MS)
-        .saturating_mul(INSTANCE_ROUND_MS)
+    at_ms.saturating_add(INSTANCE_ROUND_MS / 2).div_euclid(INSTANCE_ROUND_MS).saturating_mul(INSTANCE_ROUND_MS)
 }
 
 #[cfg(test)]
@@ -259,18 +229,11 @@ mod tests {
     }
 
     fn threshold(t: u8, pct: f32, reset_at_ms: Option<Ms>) -> AlertEvent {
-        AlertEvent::Threshold {
-            kind: WindowKind::FiveHour,
-            threshold: t,
-            pct,
-            reset_at_ms,
-        }
+        AlertEvent::Threshold { kind: WindowKind::FiveHour, threshold: t, pct, reset_at_ms }
     }
 
     fn reset_event() -> AlertEvent {
-        AlertEvent::Reset {
-            kind: WindowKind::FiveHour,
-        }
+        AlertEvent::Reset { kind: WindowKind::FiveHour }
     }
 
     /// Evaluates one 5h window with default settings, not first run.
@@ -324,37 +287,25 @@ mod tests {
         let mut s = AlertState::default();
         step(&mut s, fh(85.0));
         let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(
-            json,
-            format!(
-                r#"{{"kinds":{{"five_hour":{{"instance_key":{R},"fired":[80],"last_pct":85.0}}}}}}"#
-            )
-        );
+        assert_eq!(json, format!(r#"{{"kinds":{{"five_hour":{{"instance_key":{R},"fired":[80],"last_pct":85.0}}}}}}"#));
         let mut restored: AlertState = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, s);
         let events = restored.evaluate(&[fh(85.0)], &AlertSettings::default(), true);
         assert_eq!(events, vec![]);
-        assert_eq!(
-            restored.evaluate(&[fh(86.0)], &AlertSettings::default(), false),
-            vec![]
-        );
+        assert_eq!(restored.evaluate(&[fh(86.0)], &AlertSettings::default(), false), vec![]);
     }
 
     #[test]
     fn reset_while_closed_is_silent_on_first_run_but_rearms() {
         let mut s = AlertState::default();
         step(&mut s, fh(85.0));
-        let mut restored: AlertState =
-            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let mut restored: AlertState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         let next = R + 5 * HOUR_MS;
         let events = restored.evaluate(&[fh_at(10.0, next)], &AlertSettings::default(), true);
         assert_eq!(events, vec![], "no Reset toast on first run");
         assert!(fh_state(&restored).fired.is_empty());
         assert_eq!(fh_state(&restored).instance_key, Some(next));
-        assert_eq!(
-            step(&mut restored, fh_at(81.0, next)),
-            vec![threshold(80, 81.0, Some(next))]
-        );
+        assert_eq!(step(&mut restored, fh_at(81.0, next)), vec![threshold(80, 81.0, Some(next))]);
     }
 
     #[test]
@@ -371,11 +322,7 @@ mod tests {
             },
         );
         assert_eq!(step(&mut s, estimated), vec![]);
-        assert_eq!(
-            fh_state(&s).instance_key,
-            Some(R + 20 * MINUTE_MS),
-            "alias adopted, rounded"
-        );
+        assert_eq!(fh_state(&s).instance_key, Some(R + 20 * MINUTE_MS), "alias adopted, rounded");
         assert_eq!(fh_state(&s).fired, BTreeSet::from([80]));
         // Exactly 30 min from the (updated) stored key is still an alias.
         assert_eq!(step(&mut s, fh_at(86.0, R + 50 * MINUTE_MS)), vec![]);
@@ -391,20 +338,10 @@ mod tests {
             win(
                 WindowKind::SevenDay,
                 82.0,
-                ResetInfo::Estimated {
-                    at_ms,
-                    plus_minus_ms: DAY_MS,
-                    confidence: Confidence::Low,
-                },
+                ResetInfo::Estimated { at_ms, plus_minus_ms: DAY_MS, confidence: Confidence::Low },
             )
         };
-        let exact = win(
-            WindowKind::SevenDay,
-            82.3,
-            ResetInfo::Exact {
-                at_ms: weekly_reset,
-            },
-        );
+        let exact = win(WindowKind::SevenDay, 82.3, ResetInfo::Exact { at_ms: weekly_reset });
         let mut s = AlertState::default();
         assert_eq!(s.evaluate(&[estimated(weekly_reset - 20 * HOUR_MS)], &settings, false).len(), 1);
         assert_eq!(s.evaluate(std::slice::from_ref(&exact), &settings, false), vec![]);
@@ -424,11 +361,7 @@ mod tests {
             win(
                 WindowKind::SevenDay,
                 pct,
-                ResetInfo::Estimated {
-                    at_ms,
-                    plus_minus_ms: DAY_MS,
-                    confidence: Confidence::Low,
-                },
+                ResetInfo::Estimated { at_ms, plus_minus_ms: DAY_MS, confidence: Confidence::Low },
             )
         };
         let base = T0 + 3 * DAY_MS;
@@ -450,10 +383,7 @@ mod tests {
         let mut s = AlertState::default();
         step(&mut s, fh(85.0));
         let moved = R + 35 * MINUTE_MS;
-        assert_eq!(
-            step(&mut s, fh_at(86.0, moved)),
-            vec![reset_event(), threshold(80, 86.0, Some(moved))]
-        );
+        assert_eq!(step(&mut s, fh_at(86.0, moved)), vec![reset_event(), threshold(80, 86.0, Some(moved))]);
         assert_eq!(fh_state(&s).instance_key, Some(moved));
     }
 
@@ -461,16 +391,9 @@ mod tests {
     fn drop_of_two_points_is_a_new_instance_with_reset_event() {
         let mut s = AlertState::default();
         step(&mut s, fh(85.0));
-        assert_eq!(
-            step(&mut s, fh(83.5)),
-            vec![],
-            "a drop below two points is noise"
-        );
+        assert_eq!(step(&mut s, fh(83.5)), vec![], "a drop below two points is noise");
         assert_eq!(fh_state(&s).fired, BTreeSet::from([80]));
-        assert_eq!(
-            step(&mut s, fh(81.5)),
-            vec![reset_event(), threshold(80, 81.5, Some(R))]
-        );
+        assert_eq!(step(&mut s, fh(81.5)), vec![reset_event(), threshold(80, 81.5, Some(R))]);
         assert_eq!(step(&mut s, fh(20.0)), vec![reset_event()]);
         assert!(fh_state(&s).fired.is_empty());
         assert_eq!(step(&mut s, fh(81.0)), vec![threshold(80, 81.0, Some(R))]);
@@ -506,11 +429,7 @@ mod tests {
         let estimated = win(
             WindowKind::FiveHour,
             82.0,
-            ResetInfo::Estimated {
-                at_ms: R + 50 * MINUTE_MS,
-                plus_minus_ms: HOUR_MS,
-                confidence: Confidence::Low,
-            },
+            ResetInfo::Estimated { at_ms: R + 50 * MINUTE_MS, plus_minus_ms: HOUR_MS, confidence: Confidence::Low },
         );
         assert_eq!(step(&mut s, estimated), vec![threshold(80, 82.0, Some(R + 50 * MINUTE_MS))]);
         assert_eq!(step(&mut s, fh(82.5)), vec![], "exact time arrives: same window");
@@ -524,10 +443,7 @@ mod tests {
     fn reset_event_conditions() {
         // notify_reset off: still a new instance, but silent.
         let mut s = AlertState::default();
-        let quiet = AlertSettings {
-            notify_reset: false,
-            ..AlertSettings::default()
-        };
+        let quiet = AlertSettings { notify_reset: false, ..AlertSettings::default() };
         s.evaluate(&[fh(85.0)], &quiet, false);
         assert_eq!(s.evaluate(&[fh(10.0)], &quiet, false), vec![]);
         assert!(fh_state(&s).fired.is_empty());
@@ -535,10 +451,7 @@ mod tests {
         // first_run: silent.
         let mut s = AlertState::default();
         step(&mut s, fh(85.0));
-        assert_eq!(
-            s.evaluate(&[fh(10.0)], &AlertSettings::default(), true),
-            vec![]
-        );
+        assert_eq!(s.evaluate(&[fh(10.0)], &AlertSettings::default(), true), vec![]);
 
         // Previous instance at 0%: nothing to announce.
         let mut s = AlertState::default();
@@ -583,10 +496,7 @@ mod tests {
 
     #[test]
     fn custom_thresholds_in_any_order() {
-        let settings = AlertSettings {
-            thresholds: vec![90, 50, 75],
-            notify_reset: true,
-        };
+        let settings = AlertSettings { thresholds: vec![90, 50, 75], notify_reset: true };
         let mut s = AlertState::default();
         let mut run = |pct: f32| s.evaluate(&[fh(pct)], &settings, false);
         assert_eq!(run(49.9), vec![]);
@@ -595,10 +505,7 @@ mod tests {
         assert_eq!(run(95.0), vec![threshold(90, 95.0, Some(R))]);
         assert_eq!(run(96.0), vec![]);
 
-        let none = AlertSettings {
-            thresholds: vec![],
-            notify_reset: false,
-        };
+        let none = AlertSettings { thresholds: vec![], notify_reset: false };
         let mut s = AlertState::default();
         assert_eq!(s.evaluate(&[fh(100.0)], &none, false), vec![]);
     }
@@ -623,19 +530,10 @@ mod tests {
             events,
             vec![
                 threshold(80, 81.0, Some(R)),
-                AlertEvent::Threshold {
-                    kind: WindowKind::SevenDay,
-                    threshold: 95,
-                    pct: 96.0,
-                    reset_at_ms: None,
-                },
+                AlertEvent::Threshold { kind: WindowKind::SevenDay, threshold: 95, pct: 96.0, reset_at_ms: None },
             ]
         );
-        let opus = win(
-            WindowKind::Other("seven_day_opus".into()),
-            10.0,
-            ResetInfo::Unknown,
-        );
+        let opus = win(WindowKind::Other("seven_day_opus".into()), 10.0, ResetInfo::Unknown);
         s.evaluate(&[opus], &AlertSettings::default(), false);
         let keys: Vec<&str> = s.kinds.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["five_hour", "seven_day", "seven_day_opus"]);
@@ -658,11 +556,7 @@ mod tests {
         let estimated = win(
             WindowKind::FiveHour,
             10.0,
-            ResetInfo::Estimated {
-                at_ms: R,
-                plus_minus_ms: HOUR_MS,
-                confidence: Confidence::Low,
-            },
+            ResetInfo::Estimated { at_ms: R, plus_minus_ms: HOUR_MS, confidence: Confidence::Low },
         );
         step(&mut s, estimated);
         let restored: AlertState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
@@ -700,27 +594,20 @@ mod tests {
         step(&mut s, fh(85.0));
         assert_eq!(step(&mut s, fh(f32::NEG_INFINITY)), vec![reset_event()]);
         assert_eq!(fh_state(&s).last_pct, 0.0);
-        let restored: AlertState = serde_json::from_str(&serde_json::to_string(&s).unwrap())
-            .expect("persisted state reloads");
+        let restored: AlertState =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("persisted state reloads");
         assert_eq!(restored, s);
     }
 
     #[test]
     fn persisted_state_tolerates_missing_fields() {
         // Older/hand-edited alerts.json: a missing field must not discard the whole state.
-        let s: AlertState =
-            serde_json::from_str(r#"{"kinds":{"five_hour":{"instance_key":123}}}"#).unwrap();
+        let s: AlertState = serde_json::from_str(r#"{"kinds":{"five_hour":{"instance_key":123}}}"#).unwrap();
         assert_eq!(
             fh_state(&s),
-            &KindAlertState {
-                instance_key: Some(123),
-                fired: BTreeSet::new(),
-                last_pct: 0.0,
-                plus_minus_ms: 0,
-            }
+            &KindAlertState { instance_key: Some(123), fired: BTreeSet::new(), last_pct: 0.0, plus_minus_ms: 0 }
         );
-        let s: AlertState =
-            serde_json::from_str(r#"{"kinds":{"five_hour":{"fired":[80]}}}"#).unwrap();
+        let s: AlertState = serde_json::from_str(r#"{"kinds":{"five_hour":{"fired":[80]}}}"#).unwrap();
         assert_eq!(fh_state(&s).fired, BTreeSet::from([80]));
         let empty: AlertState = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, AlertState::default());

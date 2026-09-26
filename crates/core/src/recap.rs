@@ -66,11 +66,7 @@ impl RecapState {
     /// same reset seen twice (e.g. the exact time, then the drop), so it does not repeat.
     pub fn evaluate(&mut self, history: &History, day_starts: &[Ms], now_ms: Ms) -> Option<WeeklyRecap> {
         let rows = history.rows();
-        let seen = Checked {
-            rows: rows.len(),
-            last_t: rows.last().map(|r| r.t),
-            at_ms: now_ms,
-        };
+        let seen = Checked { rows: rows.len(), last_t: rows.last().map(|r| r.t), at_ms: now_ms };
         let unchanged = self.checked.is_some_and(|c| {
             c.rows == seen.rows && c.last_t == seen.last_t && (0..RECHECK_MS).contains(&now_ms.saturating_sub(c.at_ms))
         });
@@ -80,21 +76,14 @@ impl RecapState {
         self.checked = Some(seen);
         let week = last_ended_week(rows, now_ms)?;
         let end = week.end_ms;
-        let new = self
-            .last_recapped_end_ms
-            .is_none_or(|last| end.saturating_sub(last) > WEEKLY_INSTANCE_ALIAS_MS);
+        let new = self.last_recapped_end_ms.is_none_or(|last| end.saturating_sub(last) > WEEKLY_INSTANCE_ALIAS_MS);
         if !new || now_ms.saturating_sub(end) > CATCH_UP_MS {
             return None;
         }
         self.last_recapped_end_ms = Some(end);
 
         let start = week.start_ms;
-        let range = ViewRange {
-            from_ms: start,
-            to_ms: end - 1,
-            now_ms,
-            day_starts: &[],
-        };
+        let range = ViewRange { from_ms: start, to_ms: end - 1, now_ms, day_starts: &[] };
         // Days overlapping [start, end); the first one starts at `start`, so the previous week's
         // rows on that day are not counted.
         let first = day_starts.partition_point(|&d| d <= start).saturating_sub(1);
@@ -104,15 +93,13 @@ impl RecapState {
             *b = (*b).max(start);
         }
         let weekly = history.view(&WindowKind::SevenDay, &ViewRange { day_starts: &bounds, ..range });
-        let busiest_day = weekly
-            .days
-            .iter()
-            .zip(&midnights)
-            .filter(|(d, _)| d.consumed_pct > 0.0)
-            .fold(None::<(Ms, f32)>, |best, (d, &midnight)| match best {
+        let busiest_day = weekly.days.iter().zip(&midnights).filter(|(d, _)| d.consumed_pct > 0.0).fold(
+            None::<(Ms, f32)>,
+            |best, (d, &midnight)| match best {
                 Some((_, pct)) if pct >= d.consumed_pct => best,
                 _ => Some((midnight, d.consumed_pct)),
-            });
+            },
+        );
         let five_hour = history.view(&WindowKind::FiveHour, &range);
         let peak_five_hour_pct = history
             .samples(&WindowKind::FiveHour, start)
@@ -148,21 +135,13 @@ struct EndedWeek {
 /// with too few rows is passed over, so a Desktop drop just before the exact reset time (a
 /// one-row "window" between them) does not hide the week that ended with the drop.
 fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
-    let weekly: Vec<&HistoryRow> = rows
-        .iter()
-        .take_while(|r| r.t <= now_ms)
-        .filter(|r| r.is_kind(&WindowKind::SevenDay))
-        .collect();
+    let weekly: Vec<&HistoryRow> =
+        rows.iter().take_while(|r| r.t <= now_ms).filter(|r| r.is_kind(&WindowKind::SevenDay)).collect();
     let summarize = |window: &[&HistoryRow], prev_end: Option<Ms>, end_ms: Ms| {
         let start_ms = end_ms.saturating_sub(SEVEN_DAYS_MS).max(prev_end.unwrap_or(Ms::MIN));
         let inside = window.iter().filter(|r| r.t >= start_ms && r.t < end_ms);
         let (samples, used_pct) = inside.fold((0, 0.0_f32), |(n, max), r| (n + 1, max.max(r.p)));
-        EndedWeek {
-            start_ms,
-            end_ms,
-            used_pct,
-            samples,
-        }
+        EndedWeek { start_ms, end_ms, used_pct, samples }
     };
 
     let mut ended = None;
@@ -280,10 +259,7 @@ mod tests {
         assert_eq!(s.last_recapped_end_ms, Some(END));
         assert_eq!(s.evaluate(&h, &day_starts(), END + 2 * HOUR_MS), None, "once");
         // The week before was recapped already: this one still is.
-        let mut s = RecapState {
-            last_recapped_end_ms: Some(START),
-            ..RecapState::default()
-        };
+        let mut s = RecapState { last_recapped_end_ms: Some(START), ..RecapState::default() };
         assert_eq!(s.evaluate(&h, &day_starts(), END + HOUR_MS).map(|r| r.window_end_ms), Some(END));
     }
 
@@ -336,10 +312,7 @@ mod tests {
         assert_eq!(recap.busiest_day, Some((day(3), 25.0)));
         assert_eq!((recap.five_hour_resets, recap.peak_five_hour_pct), (0, 0.0));
         // The same reset seen again a little later (an exact time, a second drop) is not a new week.
-        let mut s = RecapState {
-            last_recapped_end_ms: Some(drop_at - 2 * HOUR_MS),
-            ..RecapState::default()
-        };
+        let mut s = RecapState { last_recapped_end_ms: Some(drop_at - 2 * HOUR_MS), ..RecapState::default() };
         assert_eq!(s.evaluate(&h, &day_starts(), drop_at + 5 * MINUTE_MS), None);
         assert_eq!(s.last_recapped_end_ms, Some(drop_at - 2 * HOUR_MS));
     }
@@ -403,9 +376,8 @@ mod tests {
     fn a_superseded_reset_time_is_not_an_end() {
         // Six rows expecting a reset on day 1, then a newer exact time a week later.
         let first = day(1);
-        let mut rows: Vec<Row> = (0..6)
-            .map(|i| (day(0) + (12 + i) * HOUR_MS, "7d", 10.0 + i as f32, Some(first)))
-            .collect();
+        let mut rows: Vec<Row> =
+            (0..6).map(|i| (day(0) + (12 + i) * HOUR_MS, "7d", 10.0 + i as f32, Some(first))).collect();
         rows.push((day(0) + 20 * HOUR_MS, "7d", 16.0, Some(first + SEVEN_DAYS_MS)));
         let (_d, h) = history(&rows);
         assert_eq!(RecapState::default().evaluate(&h, &day_starts(), first + 2 * HOUR_MS), None);
@@ -457,16 +429,20 @@ mod tests {
         let mut rows = week();
         rows.push((END + MINUTE_MS, "7d", 1.0, None));
         let (_d2, h2) = history(&rows);
-        assert_eq!(s.evaluate(&h2, &day_starts(), END + 2 * MINUTE_MS - RECHECK_MS / 2).map(|r| r.window_end_ms), Some(END));
-        assert_eq!(s, RecapState { last_recapped_end_ms: Some(END), ..RecapState::default() }, "the walk is not part of the value");
+        assert_eq!(
+            s.evaluate(&h2, &day_starts(), END + 2 * MINUTE_MS - RECHECK_MS / 2).map(|r| r.window_end_ms),
+            Some(END)
+        );
+        assert_eq!(
+            s,
+            RecapState { last_recapped_end_ms: Some(END), ..RecapState::default() },
+            "the walk is not part of the value"
+        );
     }
 
     #[test]
     fn state_round_trips() {
-        let s = RecapState {
-            last_recapped_end_ms: Some(END),
-            ..RecapState::default()
-        };
+        let s = RecapState { last_recapped_end_ms: Some(END), ..RecapState::default() };
         let back: RecapState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
         assert_eq!(serde_json::from_str::<RecapState>("{}").unwrap(), RecapState::default());

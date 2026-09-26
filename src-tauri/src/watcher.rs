@@ -59,12 +59,7 @@ impl Watcher {
                 None
             }
         };
-        let mut w = Self {
-            inner,
-            paths,
-            watched: HashSet::new(),
-            broken,
-        };
+        let mut w = Self { inner, paths, watched: HashSet::new(), broken };
         w.ensure();
         w
     }
@@ -86,12 +81,7 @@ impl Watcher {
             (self.paths.capture_dir(), RecursiveMode::NonRecursive),
             (self.paths.projects_dir(), RecursiveMode::Recursive),
         ];
-        wanted.extend(
-            self.paths
-                .cowork_dirs()
-                .into_iter()
-                .map(|d| (d, RecursiveMode::Recursive)),
-        );
+        wanted.extend(self.paths.cowork_dirs().into_iter().map(|d| (d, RecursiveMode::Recursive)));
         for (dir, mode) in wanted {
             if self.watched.contains(&dir) || !dir.is_dir() {
                 continue;

@@ -43,39 +43,18 @@ pub fn entries(ui: &UiState, settings: &Settings) -> Vec<Entry> {
             label: "Hide widget",
             accelerator: shortcut(&settings.toggle_hotkey, ui.toggle_hotkey_error.as_ref()),
         },
-        Item {
-            id: "compact",
-            label: crate::tray::compact_label(ui.view),
-            accelerator: None,
-        },
-        Check {
-            id: "pin",
-            label: "Pin on top",
-            checked: ui.pinned,
-            accelerator: None,
-        },
+        Item { id: "compact", label: crate::tray::compact_label(ui.view), accelerator: None },
+        Check { id: "pin", label: "Pin on top", checked: ui.pinned, accelerator: None },
         Check {
             id: "click_through",
             label: "Click-through",
             checked: ui.click_through,
             accelerator: shortcut(&settings.hotkey, ui.hotkey_error.as_ref()),
         },
-        Item {
-            id: "history",
-            label: "History…",
-            accelerator: None,
-        },
-        Item {
-            id: "settings",
-            label: "Settings…",
-            accelerator: None,
-        },
+        Item { id: "history", label: "History…", accelerator: None },
+        Item { id: "settings", label: "Settings…", accelerator: None },
         Separator,
-        Item {
-            id: "quit",
-            label: "Quit",
-            accelerator: None,
-        },
+        Item { id: "quit", label: "Quit", accelerator: None },
     ]
 }
 
@@ -88,12 +67,7 @@ fn build(app: &AppHandle, entries: &[Entry]) -> tauri::Result<Menu<Wry>> {
             Entry::Item { id, label, accelerator } => {
                 menu.append(&MenuItem::with_id(app, *id, *label, true, accelerator.as_deref())?)?;
             }
-            Entry::Check {
-                id,
-                label,
-                checked,
-                accelerator,
-            } => {
+            Entry::Check { id, label, checked, accelerator } => {
                 menu.append(&CheckMenuItem::with_id(app, *id, *label, true, *checked, accelerator.as_deref())?)?;
             }
             Entry::Separator => menu.append(&PredefinedMenuItem::separator(app)?)?,
@@ -217,14 +191,9 @@ mod tests {
 
     #[test]
     fn shortcuts_are_shown_only_when_they_work() {
-        let s = Settings {
-            hotkey: " Ctrl+Alt+K ".into(),
-            ..Settings::default()
-        };
+        let s = Settings { hotkey: " Ctrl+Alt+K ".into(), ..Settings::default() };
         let ok = entries(&ui(ViewMode::Card, true, false), &s);
-        assert!(
-            matches!(find(&ok, "click_through"), Entry::Check { accelerator: Some(a), .. } if a == "Ctrl+Alt+K")
-        );
+        assert!(matches!(find(&ok, "click_through"), Entry::Check { accelerator: Some(a), .. } if a == "Ctrl+Alt+K"));
         assert!(matches!(find(&ok, "hide"), Entry::Item { accelerator: Some(a), .. } if a == "Ctrl+Alt+H"));
         assert!(matches!(find(&ok, "pin"), Entry::Check { accelerator: None, .. }));
 
@@ -235,10 +204,7 @@ mod tests {
         assert!(matches!(find(&broken, "click_through"), Entry::Check { accelerator: None, .. }));
         assert!(matches!(find(&broken, "hide"), Entry::Item { accelerator: None, .. }));
 
-        let none = Settings {
-            toggle_hotkey: String::new(),
-            ..Settings::default()
-        };
+        let none = Settings { toggle_hotkey: String::new(), ..Settings::default() };
         assert!(matches!(
             find(&entries(&ui(ViewMode::Pill, true, false), &none), "hide"),
             Entry::Item { accelerator: None, .. }

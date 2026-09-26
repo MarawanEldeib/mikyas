@@ -145,7 +145,14 @@ fn contains((x, y, w, h): Rect, (px, py): (i32, i32)) -> bool {
 /// the strip; a view shorter than the strip along the edge is centred on the cursor instead
 /// while the cursor is over the widget (hovering the strip, or switching the card to the pill
 /// from its right-click menu), so it opens under the pointer and isn't left straight away.
-pub fn expanded_rect(side: Side, area: Rect, size: (i32, i32), strip: Rect, current: Rect, cursor: Option<(i32, i32)>) -> Rect {
+pub fn expanded_rect(
+    side: Side,
+    area: Rect,
+    size: (i32, i32),
+    strip: Rect,
+    current: Rect,
+    cursor: Option<(i32, i32)>,
+) -> Rect {
     let (start, len) = side.span(strip);
     let view_len = side.along(size);
     let center = cursor
@@ -186,11 +193,8 @@ pub fn place(window: &WebviewWindow, side: Side, settings: &Settings, view: View
     let Some(area) = area_for(visible, &areas).or_else(|| areas.first().copied()) else { return };
     let dpi = window.scale_factor().unwrap_or(1.0);
     // Window queries first: they wait for the main thread, so no lock is held across them.
-    let cursor = if expanded {
-        window.cursor_position().ok().map(|p| (p.x.round() as i32, p.y.round() as i32))
-    } else {
-        None
-    };
+    let cursor =
+        if expanded { window.cursor_position().ok().map(|p| (p.x.round() as i32, p.y.round() as i32)) } else { None };
     let state = window.try_state::<WindowState>();
     let last = state.as_ref().and_then(|s| *lock(&s.last_placement));
     let strip = current_strip(last, side, area, strip_size(side, settings.ui_scale, dpi), visible);
@@ -200,11 +204,7 @@ pub fn place(window: &WebviewWindow, side: Side, settings: &Settings, view: View
         strip
     };
     if let Some(state) = &state {
-        *lock(&state.last_placement) = Some(Placement {
-            side,
-            strip,
-            placed: target,
-        });
+        *lock(&state.last_placement) = Some(Placement { side, strip, placed: target });
     }
     set_visible_rect(window, target, inset);
 }
@@ -347,11 +347,7 @@ mod tests {
         // At the top of the area the card can't be centred on the strip…
         let card = expanded_rect(Side::Left, AREA, (320, 232), strip, strip, None);
         assert_eq!(card, (1920, 0, 320, 232));
-        let last = Some(Placement {
-            side: Side::Left,
-            strip,
-            placed: card,
-        });
+        let last = Some(Placement { side: Side::Left, strip, placed: card });
         // …yet collapsing returns to the same strip, not one centred on the card.
         assert_eq!(current_strip(last, Side::Left, AREA, (36, 156), card), strip);
         assert_eq!(strip_rect(Side::Left, AREA, (36, 156), card), (1920, 38, 36, 156));
@@ -377,11 +373,7 @@ mod tests {
     fn quitting_slid_out_saves_the_strip_the_next_start_recreates() {
         let strip = (1920, 438, 36, 156);
         let card = expanded_rect(Side::Left, AREA, (320, 232), strip, strip, None);
-        let last = Some(Placement {
-            side: Side::Left,
-            strip,
-            placed: card,
-        });
+        let last = Some(Placement { side: Side::Left, strip, placed: card });
         // Saved slid out, the next start creates the strip at the card's origin, and centring
         // it there moves it.
         let restored = (card.0, card.1, 36, 156);

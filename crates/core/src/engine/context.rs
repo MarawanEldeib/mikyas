@@ -61,9 +61,8 @@ pub fn resolve(inputs: &ContextInputs<'_>) -> ContextResult {
 
     let capture_pct = inputs.capture.and_then(|c| {
         let pct = c.context.as_ref()?.used_percentage.filter(|p| p.is_finite())?;
-        let fresh = inputs
-            .tail
-            .is_none_or(|t| c.changed_at_ms >= t.last_assistant_ms.saturating_sub(CAPTURE_FRESH_SLACK_MS));
+        let fresh =
+            inputs.tail.is_none_or(|t| c.changed_at_ms >= t.last_assistant_ms.saturating_sub(CAPTURE_FRESH_SLACK_MS));
         fresh.then_some(pct.clamp(0.0, 100.0))
     });
 
@@ -76,13 +75,7 @@ pub fn resolve(inputs: &ContextInputs<'_>) -> ContextResult {
         (None, None) => (None, false),
     };
 
-    ContextResult {
-        size,
-        basis,
-        pct,
-        tokens,
-        is_estimate,
-    }
+    ContextResult { size, basis, pct, tokens, is_estimate }
 }
 
 /// Rules 1–6. Always returns a non-zero size.
@@ -102,9 +95,7 @@ fn resolve_size(inputs: &ContextInputs<'_>) -> (u64, CtxBasis) {
     if let Some(size) = base_model_id(inputs).and_then(|id| override_for(inputs.overrides, id)) {
         return (size, CtxBasis::Override);
     }
-    let seen_over_200k = inputs
-        .tail
-        .is_some_and(|t| t.max_ctx_tokens_seen.max(t.ctx_tokens) > DEFAULT_CTX);
+    let seen_over_200k = inputs.tail.is_some_and(|t| t.max_ctx_tokens_seen.max(t.ctx_tokens) > DEFAULT_CTX);
     if seen_over_200k || capture_ctx.is_some_and(|c| c.exceeds_200k == Some(true)) {
         return (ONE_M_CTX, CtxBasis::Heuristic);
     }
@@ -114,16 +105,9 @@ fn resolve_size(inputs: &ContextInputs<'_>) -> (u64, CtxBasis) {
 /// The session's model id without `[1m]`: tail first, then capture, then Desktop metadata.
 fn base_model_id<'a>(inputs: &ContextInputs<'a>) -> Option<&'a str> {
     let tail = inputs.tail.and_then(|t| t.model_id.as_deref());
-    let capture = inputs
-        .capture
-        .and_then(|c| c.model.as_ref())
-        .and_then(|m| m.id.as_deref());
+    let capture = inputs.capture.and_then(|c| c.model.as_ref()).and_then(|m| m.id.as_deref());
     let desktop = inputs.desktop_session.and_then(|d| d.model.as_deref());
-    [tail, capture, desktop]
-        .into_iter()
-        .flatten()
-        .map(|id| split_1m(id.trim()).0)
-        .find(|id| !id.is_empty())
+    [tail, capture, desktop].into_iter().flatten().map(|id| split_1m(id.trim()).0).find(|id| !id.is_empty())
 }
 
 /// Override for `base`: exact key first, then any key that equals `base` once `[1m]` is stripped.
@@ -131,12 +115,7 @@ fn override_for(overrides: &BTreeMap<String, u64>, base: &str) -> Option<u64> {
     overrides
         .get(base)
         .copied()
-        .or_else(|| {
-            overrides
-                .iter()
-                .find(|(k, _)| split_1m(k.trim()).0 == base)
-                .map(|(_, &v)| v)
-        })
+        .or_else(|| overrides.iter().find(|(k, _)| split_1m(k.trim()).0 == base).map(|(_, &v)| v))
         .filter(|&v| v > 0)
 }
 
@@ -179,11 +158,7 @@ mod tests {
                 id: Some("claude-opus-5-5[1m]".into()),
                 display_name: Some("Opus 5.5 (1M context)".into()),
             }),
-            context: Some(CtxInfo {
-                used_percentage: pct,
-                context_window_size: size,
-                exceeds_200k: None,
-            }),
+            context: Some(CtxInfo { used_percentage: pct, context_window_size: size, exceeds_200k: None }),
             rate_limits: BTreeMap::new(),
             api_ms: None,
             cc_version: None,
@@ -205,12 +180,7 @@ mod tests {
         desktop: Option<&DesktopSession>,
         overrides: &BTreeMap<String, u64>,
     ) -> ContextResult {
-        resolve(&ContextInputs {
-            tail,
-            capture,
-            desktop_session: desktop,
-            overrides,
-        })
+        resolve(&ContextInputs { tail, capture, desktop_session: desktop, overrides })
     }
 
     fn overrides(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
@@ -238,13 +208,7 @@ mod tests {
         let r = run(None, None, None, &BTreeMap::new());
         assert_eq!(
             r,
-            ContextResult {
-                size: DEFAULT_CTX,
-                basis: CtxBasis::Default,
-                pct: None,
-                tokens: None,
-                is_estimate: false,
-            }
+            ContextResult { size: DEFAULT_CTX, basis: CtxBasis::Default, pct: None, tokens: None, is_estimate: false }
         );
     }
 

@@ -8,9 +8,9 @@
 //! never opens another process (`OpenProcess`), reads another process's memory, injects code or
 //! installs hooks.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -41,14 +41,9 @@ pub struct Bounds {
 impl Bounds {
     /// Every edge of `self` is within [`EDGE_SLACK`] px of the same edge of `other`.
     pub fn matches(&self, other: &Bounds) -> bool {
-        [
-            self.left - other.left,
-            self.top - other.top,
-            self.right - other.right,
-            self.bottom - other.bottom,
-        ]
-        .iter()
-        .all(|d| d.abs() <= EDGE_SLACK)
+        [self.left - other.left, self.top - other.top, self.right - other.right, self.bottom - other.bottom]
+            .iter()
+            .all(|d| d.abs() <= EDGE_SLACK)
     }
 }
 
@@ -200,9 +195,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(tx));
     let app = app.clone();
-    std::thread::Builder::new()
-        .name("cuw-fullscreen".into())
-        .spawn(move || run(&app, &shared, &rx))?;
+    std::thread::Builder::new().name("cuw-fullscreen".into()).spawn(move || run(&app, &shared, &rx))?;
     Ok(())
 }
 
@@ -259,21 +252,10 @@ fn sample(app: &AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    const MONITOR: Bounds = Bounds {
-        left: 0,
-        top: 0,
-        right: 1920,
-        bottom: 1080,
-    };
+    const MONITOR: Bounds = Bounds { left: 0, top: 0, right: 1920, bottom: 1080 };
 
     fn fg(class: &str, rect: Bounds) -> Foreground {
-        Foreground {
-            class: class.into(),
-            rect,
-            monitor: MONITOR,
-            monitor_id: 1,
-            is_ours: false,
-        }
+        Foreground { class: class.into(), rect, monitor: MONITOR, monitor_id: 1, is_ours: false }
     }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Bounds {

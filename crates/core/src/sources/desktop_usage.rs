@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
+use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 use crate::engine::types::{Observation, Sample, Source, WindowKind};
@@ -85,25 +85,16 @@ pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceErr
     let Doc::Object { version, samples } = doc else {
         return Err(parse_error("top level is not an object"));
     };
-    let version = version
-        .as_ref()
-        .and_then(as_version)
-        .ok_or_else(|| parse_error("missing or invalid version"))?;
+    let version = version.as_ref().and_then(as_version).ok_or_else(|| parse_error("missing or invalid version"))?;
     if version != SUPPORTED_VERSION {
         return Err(SourceError::SchemaChanged(version));
     }
     let entries = samples.ok_or_else(|| parse_error("missing samples array"))?;
 
-    let raw: Vec<RawSample<'_>> = entries
-        .into_iter()
-        .filter_map(|e| raw_sample(e, max_t_ms))
-        .collect();
+    let raw: Vec<RawSample<'_>> = entries.into_iter().filter_map(|e| raw_sample(e, max_t_ms)).collect();
     // `max_by_key` returns the last of equal maxima, i.e. the later entry of an append-only file.
-    let owner = raw
-        .iter()
-        .filter(|s| s.org.is_some() || s.usage.is_some())
-        .max_by_key(|s| s.t_ms)
-        .map(|s| s.org.as_deref());
+    let owner =
+        raw.iter().filter(|s| s.org.is_some() || s.usage.is_some()).max_by_key(|s| s.t_ms).map(|s| s.org.as_deref());
 
     let mut series: BTreeMap<WindowKind, Vec<Sample>> = BTreeMap::new();
     let mut last_sample_ms = None;
@@ -111,23 +102,13 @@ pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceErr
         let Some(usage) = &sample.usage else { continue };
         last_sample_ms = last_sample_ms.max(Some(sample.t_ms));
         for (key, pct) in usage {
-            series
-                .entry(WindowKind::from_key(key))
-                .or_default()
-                .push(Sample {
-                    t_ms: sample.t_ms,
-                    pct: *pct,
-                });
+            series.entry(WindowKind::from_key(key)).or_default().push(Sample { t_ms: sample.t_ms, pct: *pct });
         }
     }
     for samples in series.values_mut() {
         sort_dedup(samples);
     }
-    Ok(DesktopUsage {
-        version,
-        series,
-        last_sample_ms,
-    })
+    Ok(DesktopUsage { version, series, last_sample_ms })
 }
 
 /// The newest sample of each series as a Desktop observation (`resets_at_ms: None`).
@@ -157,11 +138,7 @@ pub fn latest_observations(usage: &DesktopUsage) -> Vec<Observation> {
 /// between listing and reading counts as absent. A SchemaChanged file modified after the chosen
 /// file's newest sample (after its mtime if it has none) is the one the running Desktop writes,
 /// the chosen one a stale copy in another root: its error is returned instead.
-pub fn load(
-    reader: &SafeReader,
-    paths: &Paths,
-    max_t_ms: Ms,
-) -> Result<Option<DesktopUsage>, SourceError> {
+pub fn load(reader: &SafeReader, paths: &Paths, max_t_ms: Ms) -> Result<Option<DesktopUsage>, SourceError> {
     let mut best: Option<(DesktopUsage, PathBuf)> = None;
     let mut error: Option<SourceError> = None;
     // Newest mtime among the SchemaChanged files, with that file's version.
@@ -169,10 +146,7 @@ pub fn load(
     for path in paths.desktop_usage_files() {
         match read_file(reader, &path, max_t_ms) {
             Ok(usage) => {
-                if best
-                    .as_ref()
-                    .is_none_or(|(b, _)| usage.last_sample_ms > b.last_sample_ms)
-                {
+                if best.as_ref().is_none_or(|(b, _)| usage.last_sample_ms > b.last_sample_ms) {
                     best = Some((usage, path));
                 }
             }
@@ -227,20 +201,13 @@ fn parse_error(msg: &str) -> SourceError {
 
 /// Category and position only: serde's own message could in principle quote input.
 fn json_error(e: serde_json::Error) -> SourceError {
-    SourceError::Parse(format!(
-        "invalid JSON ({:?}) at line {} column {}",
-        e.classify(),
-        e.line(),
-        e.column()
-    ))
+    SourceError::Parse(format!("invalid JSON ({:?}) at line {} column {}", e.classify(), e.line(), e.column()))
 }
 
 /// Accepts `2` and `2.0`; anything else that is not a non-negative integer is invalid.
 fn as_version(v: &Value) -> Option<u32> {
     let n = v.as_u64().or_else(|| {
-        v.as_f64()
-            .filter(|f| f.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(f))
-            .map(|f| f as u64)
+        v.as_f64().filter(|f| f.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(f)).map(|f| f as u64)
     })?;
     u32::try_from(n).ok()
 }
@@ -271,9 +238,7 @@ fn usable_pct(key: &str, value: f64) -> Option<f32> {
 }
 
 fn is_window_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= MAX_KEY_LEN
-        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    !key.is_empty() && key.len() <= MAX_KEY_LEN && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 // ---- typed document visitors ----
@@ -294,11 +259,7 @@ enum Doc<'a> {
 /// One element of `samples`: an object's `t`, `org` (if a string) and `u` (if an object: its
 /// numeric values by key, `None` for a non-numeric value), or anything else.
 enum Entry<'a> {
-    Object {
-        t: Option<Value>,
-        org: Option<Cow<'a, str>>,
-        u: Option<Vec<(Cow<'a, str>, Option<f64>)>>,
-    },
+    Object { t: Option<Value>, org: Option<Cow<'a, str>>, u: Option<Vec<(Cow<'a, str>, Option<f64>)>> },
     Other,
 }
 
@@ -627,13 +588,7 @@ pub(crate) mod synth {
             self.series(|s| s.sd)
         }
         fn series(&self, f: impl Fn(&TrueSample) -> f32) -> Vec<crate::engine::types::Sample> {
-            self.samples
-                .iter()
-                .map(|s| crate::engine::types::Sample {
-                    t_ms: s.t_ms,
-                    pct: f(s),
-                })
-                .collect()
+            self.samples.iter().map(|s| crate::engine::types::Sample { t_ms: s.t_ms, pct: f(s) }).collect()
         }
     }
 
@@ -686,8 +641,7 @@ pub(crate) mod synth {
 
         let (mut fh, mut fh_end) = (0.0_f32, None::<Ms>);
         let (mut sd, mut sd_end) = (58.0_f32, WEEKLY_RESET_MS);
-        let (mut burst_until, mut next_burst, mut rate) =
-            (0, START_MS + 8 * HOUR_MS + 20 * MINUTE_MS, 0.0_f32);
+        let (mut burst_until, mut next_burst, mut rate) = (0, START_MS + 8 * HOUR_MS + 20 * MINUTE_MS, 0.0_f32);
         let mut samples = Vec::new();
 
         let mut t = START_MS;
@@ -703,18 +657,11 @@ pub(crate) mod synth {
 
             if t == heavy_burst {
                 // Guarantees a 100 % plateau (at the realistic rates).
-                (burst_until, rate, next_burst) = (
-                    t + 150 * MINUTE_MS,
-                    10.0 / rate_divisor,
-                    t + 240 * MINUTE_MS,
-                );
+                (burst_until, rate, next_burst) = (t + 150 * MINUTE_MS, 10.0 / rate_divisor, t + 240 * MINUTE_MS);
             } else if t == phone_burst {
                 // Usage on another device during the night gap: starts a window Desktop never saw.
-                (burst_until, rate, next_burst) = (
-                    t + 30 * MINUTE_MS,
-                    6.0 / rate_divisor,
-                    t + 3 * HOUR_MS + 20 * MINUTE_MS,
-                );
+                (burst_until, rate, next_burst) =
+                    (t + 30 * MINUTE_MS, 6.0 / rate_divisor, t + 3 * HOUR_MS + 20 * MINUTE_MS);
             } else if t >= next_burst && t >= burst_until && awake(t) {
                 burst_until = t + rng.range(20, 110) * MINUTE_MS;
                 rate = rng.range(5, 12) as f32 / rate_divisor;
@@ -755,23 +702,14 @@ pub(crate) mod synth {
                 entry(t, Some(ORG_B), json!({"fh": 90 + i % 3, "sd": 97}))
             })
             .collect();
-        out.extend(samples.iter().map(|s| {
-            entry(
-                s.t_ms,
-                Some(ORG_A),
-                json!({"fh": s.fh as i64, "sd": s.sd as i64}),
-            )
-        }));
+        out.extend(samples.iter().map(|s| entry(s.t_ms, Some(ORG_A), json!({"fh": s.fh as i64, "sd": s.sd as i64}))));
         // File noise Desktop could produce: an exact duplicate, a swapped pair, a sample with no `u`.
         let dup = out[40].clone();
         out.insert(41, dup);
         out.swap(60, 61);
         out.push(json!({"t": end, "org": ORG_A}));
 
-        Synth {
-            json: json!({"version": 2, "samples": out}).to_string(),
-            samples,
-        }
+        Synth { json: json!({"version": 2, "samples": out}).to_string(), samples }
     }
 }
 
@@ -792,10 +730,7 @@ mod tests {
     }
 
     fn series<'a>(u: &'a DesktopUsage, key: &str) -> &'a [Sample] {
-        u.series
-            .get(&WindowKind::from_key(key))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        u.series.get(&WindowKind::from_key(key)).map(Vec::as_slice).unwrap_or_default()
     }
 
     fn assert_no_org(text: &str) {
@@ -816,7 +751,7 @@ mod tests {
             [
                 s(1_790_208_000_000, 29.0),
                 s(1_790_208_900_000, 30.0),
-                s(1_790_209_800_000, 32.0), // duplicate t: the later entry wins
+                s(1_790_209_800_000, 32.0),  // duplicate t: the later entry wins
                 s(1_790_211_600_000, 100.0)  // 140 clamped
             ]
         );
@@ -832,37 +767,19 @@ mod tests {
         // `so`/`sn` map to the per-model weekly windows; "12" (string) and null are skipped.
         assert_eq!(series(&u, "so"), [s(1_790_208_000_000, 12.0)]);
         assert_eq!(series(&u, "sn"), [s(1_790_208_000_000, 7.5)]);
-        assert!(
-            u.series
-                .contains_key(&WindowKind::Other("seven_day_opus".into()))
-        );
-        assert!(
-            u.series
-                .contains_key(&WindowKind::Other("seven_day_sonnet".into()))
-        );
+        assert!(u.series.contains_key(&WindowKind::Other("seven_day_opus".into())));
+        assert!(u.series.contains_key(&WindowKind::Other("seven_day_sonnet".into())));
         // Unknown but plausible key kept; implausible key dropped.
-        assert_eq!(
-            u.series.get(&WindowKind::Other("xh".into())),
-            Some(&vec![s(1_790_209_800_000, 3.0)])
-        );
-        assert_eq!(
-            u.series.len(),
-            5,
-            "{:?}",
-            u.series.keys().collect::<Vec<_>>()
-        );
+        assert_eq!(u.series.get(&WindowKind::Other("xh".into())), Some(&vec![s(1_790_209_800_000, 3.0)]));
+        assert_eq!(u.series.len(), 5, "{:?}", u.series.keys().collect::<Vec<_>>());
         // Other org's and org-less samples were dropped.
-        assert!(
-            u.series
-                .values()
-                .flatten()
-                .all(|s| s.t_ms >= 1_790_208_000_000)
-        );
+        assert!(u.series.values().flatten().all(|s| s.t_ms >= 1_790_208_000_000));
     }
 
     #[test]
     fn floats_are_accepted_and_clamped() {
-        let u = parse(br#"{"version":2,"samples":[{"t":1790208000000,"u":{"fh":12.75,"sd":100.4,"so":-0.5}}]}"#).unwrap();
+        let u =
+            parse(br#"{"version":2,"samples":[{"t":1790208000000,"u":{"fh":12.75,"sd":100.4,"so":-0.5}}]}"#).unwrap();
         assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 12.75)]);
         assert_eq!(series(&u, "sd"), [s(1_790_208_000_000, 100.0)]);
         assert_eq!(series(&u, "so"), [s(1_790_208_000_000, 0.0)]);
@@ -870,19 +787,10 @@ mod tests {
 
     #[test]
     fn version_handling() {
-        assert!(matches!(
-            parse(br#"{"version":3,"samples":[]}"#),
-            Err(SourceError::SchemaChanged(3))
-        ));
+        assert!(matches!(parse(br#"{"version":3,"samples":[]}"#), Err(SourceError::SchemaChanged(3))));
         // A new schema is reported as such even if its structure is unrecognisable.
-        assert!(matches!(
-            parse(br#"{"version":3,"data":{"x":1}}"#),
-            Err(SourceError::SchemaChanged(3))
-        ));
-        assert!(matches!(
-            parse(br#"{"version":1,"samples":[]}"#),
-            Err(SourceError::SchemaChanged(1))
-        ));
+        assert!(matches!(parse(br#"{"version":3,"data":{"x":1}}"#), Err(SourceError::SchemaChanged(3))));
+        assert!(matches!(parse(br#"{"version":1,"samples":[]}"#), Err(SourceError::SchemaChanged(1))));
         assert!(parse(br#"{"version":2.0,"samples":[]}"#).is_ok());
         for bad in [
             &br#"{"samples":[]}"#[..],
@@ -891,11 +799,7 @@ mod tests {
             br#"{"version":2.5,"samples":[]}"#,
             br#"{"version":99999999999,"samples":[]}"#,
         ] {
-            assert!(
-                matches!(parse(bad), Err(SourceError::Parse(_))),
-                "{}",
-                String::from_utf8_lossy(bad)
-            );
+            assert!(matches!(parse(bad), Err(SourceError::Parse(_))), "{}", String::from_utf8_lossy(bad));
         }
     }
 
@@ -910,30 +814,15 @@ mod tests {
             br#"{"version":2,"samples":[{"t":1790208000000,"u":{"fh":1}}"#,
             b"\xff\xfe{",
         ] {
-            assert!(
-                matches!(parse(bad), Err(SourceError::Parse(_))),
-                "{}",
-                String::from_utf8_lossy(bad)
-            );
+            assert!(matches!(parse(bad), Err(SourceError::Parse(_))), "{}", String::from_utf8_lossy(bad));
         }
     }
 
     #[test]
     fn truncated_file_is_a_parse_error() {
         let synth = synth::realistic();
-        for cut in [
-            1,
-            synth.json.len() / 3,
-            synth.json.len() / 2,
-            synth.json.len() - 1,
-        ] {
-            assert!(
-                matches!(
-                    parse(&synth.json.as_bytes()[..cut]),
-                    Err(SourceError::Parse(_))
-                ),
-                "cut at {cut}"
-            );
+        for cut in [1, synth.json.len() / 3, synth.json.len() / 2, synth.json.len() - 1] {
+            assert!(matches!(parse(&synth.json.as_bytes()[..cut]), Err(SourceError::Parse(_))), "cut at {cut}");
         }
     }
 
@@ -941,9 +830,7 @@ mod tests {
     fn utf8_bom_is_tolerated() {
         // Notepad and some Windows tools prepend a BOM when re-saving a UTF-8 file.
         let mut bytes = b"\xEF\xBB\xBF".to_vec();
-        bytes.extend_from_slice(
-            b"{\"version\":2,\r\n\"samples\":[{\"t\":1790208000000,\"u\":{\"fh\":7}}]}\r\n",
-        );
+        bytes.extend_from_slice(b"{\"version\":2,\r\n\"samples\":[{\"t\":1790208000000,\"u\":{\"fh\":7}}]}\r\n");
         let u = parse(&bytes).unwrap();
         assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 7.0)]);
     }
@@ -954,7 +841,10 @@ mod tests {
         assert_eq!(u.series.len(), 0);
         assert_eq!(u.last_sample_ms, None);
         // Every sample lacks a usable `t` or `u`.
-        let u = parse(br#"{"version":2,"samples":[{"u":{"fh":1}},{"t":1790208000000},{"t":1790208000000,"u":{"fh":"x"}},7]}"#).unwrap();
+        let u = parse(
+            br#"{"version":2,"samples":[{"u":{"fh":1}},{"t":1790208000000},{"t":1790208000000,"u":{"fh":"x"}},7]}"#,
+        )
+        .unwrap();
         assert_eq!(u.series.len(), 0);
         assert_eq!(u.last_sample_ms, None);
     }
@@ -994,10 +884,7 @@ mod tests {
             ]}}"#
         );
         let u = parse(doc.as_bytes()).unwrap();
-        assert_eq!(
-            series(&u, "fh"),
-            [s(1_790_208_900_000, 10.0), s(1_790_210_700_000, 20.0)]
-        );
+        assert_eq!(series(&u, "fh"), [s(1_790_208_900_000, 10.0), s(1_790_210_700_000, 20.0)]);
 
         // Newest sample has no org: only org-less samples are kept.
         let doc = format!(
@@ -1008,10 +895,7 @@ mod tests {
             ]}}"#
         );
         let u = parse(doc.as_bytes()).unwrap();
-        assert_eq!(
-            series(&u, "fh"),
-            [s(1_790_208_000_000, 5.0), s(1_790_209_800_000, 7.0)]
-        );
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 5.0), s(1_790_209_800_000, 7.0)]);
 
         // Equal newest `t` from two orgs: the later entry decides.
         let doc = format!(
@@ -1046,9 +930,7 @@ mod tests {
         let u = switched(&format!(r#",{{"t":1790210700000,"org":"{ORG_B}"}}"#));
         assert!(u.series.is_empty(), "{u:?}");
         // Once the new account reports values, only those are kept.
-        let u = switched(&format!(
-            r#",{{"t":1790210700000,"org":"{ORG_B}","u":{{"fh":10}}}}"#
-        ));
+        let u = switched(&format!(r#",{{"t":1790210700000,"org":"{ORG_B}","u":{{"fh":10}}}}"#));
         assert_eq!(series(&u, "fh"), [s(1_790_210_700_000, 10.0)]);
         assert_eq!(u.last_sample_ms, Some(1_790_210_700_000));
         // A newer valueless sample of the same account keeps its older values.
@@ -1085,20 +967,14 @@ mod tests {
             ]}}"#
         );
         let u = parse_until(doc.as_bytes(), 1_790_209_200_000).unwrap();
-        assert_eq!(
-            series(&u, "fh"),
-            [s(1_790_208_000_000, 10.0), s(1_790_208_900_000, 12.0)]
-        );
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 10.0), s(1_790_208_900_000, 12.0)]);
         assert_eq!(u.last_sample_ms, Some(1_790_208_900_000));
         assert_eq!(latest_observations(&u)[0].observed_at_ms, 1_790_208_900_000);
         // The limit is inclusive.
         let u = parse_until(doc.as_bytes(), 1_790_208_900_000).unwrap();
         assert_eq!(u.last_sample_ms, Some(1_790_208_900_000));
         // Without a limit the future sample decides.
-        assert_eq!(
-            series(&parse(doc.as_bytes()).unwrap(), "fh"),
-            [s(1_790_467_200_000, 90.0)]
-        );
+        assert_eq!(series(&parse(doc.as_bytes()).unwrap(), "fh"), [s(1_790_467_200_000, 90.0)]);
     }
 
     #[test]
@@ -1121,14 +997,11 @@ mod tests {
         let cut = EDGE.find(ORG_A).unwrap() + ORG_A.len() + 1;
         let err = parse(&EDGE.as_bytes()[..cut]).unwrap_err();
         assert_no_org(&format!("{err:?} {err}"));
-        let bad =
-            format!(r#"{{"version":2,"samples":[{{"t":1,"org":"{ORG_A}","u":{{"fh":1}}}}],}}"#);
+        let bad = format!(r#"{{"version":2,"samples":[{{"t":1,"org":"{ORG_A}","u":{{"fh":1}}}}],}}"#);
         let err = parse(bad.as_bytes()).unwrap_err();
         assert_no_org(&format!("{err:?} {err}"));
         // A `u` key made from the org is not a plausible window name.
-        let sneaky = format!(
-            r#"{{"version":2,"samples":[{{"t":1790208000000,"u":{{"fh":1,"{ORG_A}":2}}}}]}}"#
-        );
+        let sneaky = format!(r#"{{"version":2,"samples":[{{"t":1790208000000,"u":{{"fh":1,"{ORG_A}":2}}}}]}}"#);
         assert_no_org(&format!("{:?}", parse(sneaky.as_bytes()).unwrap()));
     }
 
@@ -1142,10 +1015,7 @@ mod tests {
         assert_eq!(series(&u, "sd"), sd.as_slice());
         assert_eq!(u.series.len(), 2);
         assert_eq!(u.last_sample_ms, fh.last().map(|s| s.t_ms));
-        assert!(
-            fh.iter().all(|s| s.t_ms >= START_MS),
-            "older account dropped"
-        );
+        assert!(fh.iter().all(|s| s.t_ms >= START_MS), "older account dropped");
     }
 
     /// Guards the generator itself: it must keep exercising the shapes seen in real files.
@@ -1155,35 +1025,17 @@ mod tests {
         let fh = synth.fh();
         let pairs = || fh.windows(2).map(|w| (w[0], w[1]));
         assert!(fh.len() > 200, "a few days of samples: {}", fh.len());
-        assert!(
-            fh.iter()
-                .all(|s| (0.0..=100.0).contains(&s.pct) && s.pct.fract() == 0.0)
-        );
-        assert!(
-            pairs().any(|(a, b)| a.pct == 100.0 && b.pct == 100.0),
-            "100 % plateau"
-        );
-        assert!(
-            pairs().any(|(a, b)| b.pct > 1.0 && b.pct < a.pct - 1.0),
-            "reset drop that never touches 0"
-        );
-        assert!(
-            pairs().any(|(a, b)| b.t_ms - a.t_ms > FIVE_HOURS_MS),
-            "gap longer than the window"
-        );
+        assert!(fh.iter().all(|s| (0.0..=100.0).contains(&s.pct) && s.pct.fract() == 0.0));
+        assert!(pairs().any(|(a, b)| a.pct == 100.0 && b.pct == 100.0), "100 % plateau");
+        assert!(pairs().any(|(a, b)| b.pct > 1.0 && b.pct < a.pct - 1.0), "reset drop that never touches 0");
+        assert!(pairs().any(|(a, b)| b.t_ms - a.t_ms > FIVE_HOURS_MS), "gap longer than the window");
         assert!(
             pairs().any(|(a, b)| (2 * 60 * MINUTE_MS..FIVE_HOURS_MS).contains(&(b.t_ms - a.t_ms))),
             "sleep gap shorter than the window"
         );
-        assert!(
-            fh.iter().any(|s| s.t_ms % (15 * MINUTE_MS) != 0),
-            "off-cycle samples"
-        );
+        assert!(fh.iter().any(|s| s.t_ms % (15 * MINUTE_MS) != 0), "off-cycle samples");
         let sd = synth.sd();
-        assert!(
-            sd.windows(2).any(|w| w[1].pct < w[0].pct - 30.0),
-            "weekly reset drop"
-        );
+        assert!(sd.windows(2).any(|w| w[1].pct < w[0].pct - 30.0), "weekly reset drop");
     }
 
     #[test]
@@ -1202,15 +1054,9 @@ mod tests {
                 source: Source::Desktop,
             }
         );
-        let opus = obs
-            .iter()
-            .find(|o| o.kind == WindowKind::Other("seven_day_opus".into()))
-            .unwrap();
+        let opus = obs.iter().find(|o| o.kind == WindowKind::Other("seven_day_opus".into())).unwrap();
         assert_eq!((opus.pct, opus.observed_at_ms), (12.0, 1_790_208_000_000));
-        assert!(
-            obs.iter()
-                .all(|o| o.source == Source::Desktop && o.resets_at_ms.is_none())
-        );
+        assert!(obs.iter().all(|o| o.source == Source::Desktop && o.resets_at_ms.is_none()));
         assert!(latest_observations(&parse(br#"{"version":2,"samples":[]}"#).unwrap()).is_empty());
     }
 
@@ -1225,18 +1071,12 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let roots = vec![
                 tmp.path().join("Roaming").join("Claude"),
-                tmp.path()
-                    .join("Packages")
-                    .join("Claude_test")
-                    .join("LocalCache")
-                    .join("Roaming")
-                    .join("Claude"),
+                tmp.path().join("Packages").join("Claude_test").join("LocalCache").join("Roaming").join("Claude"),
             ];
             for r in &roots {
                 std::fs::create_dir_all(r).unwrap();
             }
-            let paths =
-                Paths::with_roots(tmp.path().join(".claude"), roots, tmp.path().join("data"));
+            let paths = Paths::with_roots(tmp.path().join(".claude"), roots, tmp.path().join("data"));
             Self { _tmp: tmp, paths }
         }
         fn write(&self, root: usize, content: &str) {
@@ -1342,10 +1182,7 @@ mod tests {
         let u = env.load_until(T + 20 * MINUTE_MS).unwrap().unwrap();
         assert_eq!(u.last_sample_ms, Some(T + 10 * MINUTE_MS));
         assert_eq!(series(&u, "fh").last().map(|s| s.pct), Some(20.0));
-        assert_eq!(
-            env.load().unwrap().unwrap().last_sample_ms,
-            Some(T + 3 * DAY_MS)
-        );
+        assert_eq!(env.load().unwrap().unwrap().last_sample_ms, Some(T + 3 * DAY_MS));
     }
 
     #[test]
@@ -1354,10 +1191,7 @@ mod tests {
         env.write(0, TRUNCATED);
         assert!(matches!(env.load(), Err(SourceError::Parse(_))));
         env.write(1, V3);
-        assert!(
-            matches!(env.load(), Err(SourceError::SchemaChanged(3))),
-            "SchemaChanged beats Parse"
-        );
+        assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))), "SchemaChanged beats Parse");
         env.write(0, V3);
         env.write(1, TRUNCATED);
         assert!(matches!(env.load(), Err(SourceError::SchemaChanged(3))));

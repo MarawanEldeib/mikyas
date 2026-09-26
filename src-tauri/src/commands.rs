@@ -54,10 +54,10 @@ pub fn toggle_click_through(app: AppHandle, shared: Shr<'_>) {
 }
 
 /// Runs file and process work on a blocking worker, never on an async-runtime thread.
-pub async fn blocking<T: Send + 'static>(job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(job)
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(job).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -73,11 +73,7 @@ pub async fn connect_claude_code(shared: Shr<'_>, dry_run: bool) -> Result<Conne
     blocking(move || {
         let _guard = lock(&shared.connect_lock);
         let env = ConnectEnv::detect(shared.paths.clone());
-        if dry_run {
-            connect::preview(&env, now_ms())
-        } else {
-            connect::connect(&env, now_ms())
-        }
+        if dry_run { connect::preview(&env, now_ms()) } else { connect::connect(&env, now_ms()) }
     })
     .await
 }
@@ -96,11 +92,7 @@ pub async fn disconnect_claude_code(shared: Shr<'_>) -> Result<ConnectionStatus,
 pub fn open_data_folder(shared: Shr<'_>) -> Result<(), String> {
     let dir = shared.paths.data_root().to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::process::Command::new("explorer")
-        .arg(dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    std::process::Command::new("explorer").arg(dir).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

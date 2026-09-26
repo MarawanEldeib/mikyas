@@ -14,13 +14,7 @@ use cuw_core::time::Ms;
 /// `Some(exit_code)` when the process should exit without starting the UI.
 pub fn handle_args() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    handle(
-        &args,
-        Paths::detect,
-        cuw_core::time::now_ms(),
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    )
+    handle(&args, Paths::detect, cuw_core::time::now_ms(), &mut std::io::stdout(), &mut std::io::stderr())
 }
 
 fn handle(
@@ -120,10 +114,7 @@ mod tests {
         fs::write(&shim, b"fake shim").unwrap();
         let env = ConnectEnv {
             paths: p.clone(),
-            shell: Shell {
-                kind: ShellKind::Pwsh,
-                exe: PathBuf::from("pwsh.exe"),
-            },
+            shell: Shell { kind: ShellKind::Pwsh, exe: PathBuf::from("pwsh.exe") },
             shim_source: Some(shim),
             selftest: false,
         };

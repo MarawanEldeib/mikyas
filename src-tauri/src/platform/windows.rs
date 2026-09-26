@@ -10,7 +10,9 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use windows_core::Interface;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
-use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromWindow};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromWindow,
+};
 use windows_sys::Win32::UI::Shell::{QUERY_USER_NOTIFICATION_STATE, SHQueryUserNotificationState};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindow, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
@@ -68,11 +70,8 @@ pub fn after_create(window: &tauri::WebviewWindow) {
 
 /// Asks WebView2 to keep its memory use low (`true`) or normal.
 pub fn set_memory_low(window: &tauri::WebviewWindow, low: bool) {
-    let level = if low {
-        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
-    } else {
-        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
-    };
+    let level =
+        if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
     let _ = window.with_webview(move |webview| {
         // SAFETY: COM calls on the WebView2 objects Tauri hands us on its UI thread; an older
         // runtime without ICoreWebView2_19 simply fails the cast.
@@ -131,12 +130,7 @@ pub fn set_outer_rect(window: &tauri::WebviewWindow, (x, y, w, h): (i32, i32, i3
 // hooks): the widget never touches other programs.
 
 fn rect(r: &RECT) -> Bounds {
-    Bounds {
-        left: r.left,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
-    }
+    Bounds { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
 fn monitor_rect(monitor: HMONITOR) -> Option<Bounds> {
@@ -176,13 +170,7 @@ pub fn foreground_window(own: Option<isize>) -> Option<Foreground> {
     // SAFETY: the buffer and its length in UTF-16 units match; the result is the length copied.
     let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
     let class = String::from_utf16_lossy(&class[..len.clamp(0, class.len() as i32) as usize]);
-    Some(Foreground {
-        class,
-        rect: rect(&r),
-        monitor,
-        monitor_id,
-        is_ours: own == Some(hwnd as isize),
-    })
+    Some(Foreground { class, rect: rect(&r), monitor, monitor_id, is_ours: own == Some(hwnd as isize) })
 }
 
 /// The shell's notification state (fullscreen app, D3D exclusive mode, presentation settings).

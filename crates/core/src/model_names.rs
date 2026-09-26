@@ -77,9 +77,7 @@ fn strip_parenthesised_1m(s: &str) -> &str {
     }
     let Some(open) = s.rfind('(') else { return s };
     let inner = s[open + 1..s.len() - 1].trim();
-    let is_1m = inner
-        .get(..2)
-        .is_some_and(|head| head.eq_ignore_ascii_case("1m"))
+    let is_1m = inner.get(..2).is_some_and(|head| head.eq_ignore_ascii_case("1m"))
         && inner[2..].chars().next().is_none_or(|c| !c.is_ascii_alphanumeric());
     if is_1m { &s[..open] } else { s }
 }
@@ -111,11 +109,7 @@ fn heuristic_name(base: &str) -> Option<String> {
         }
     }
     let family = capitalise(family?);
-    if version.is_empty() {
-        Some(family)
-    } else {
-        Some(format!("{family} {}", version.join(".")))
-    }
+    if version.is_empty() { Some(family) } else { Some(format!("{family} {}", version.join("."))) }
 }
 
 fn is_date(token: &str) -> bool {

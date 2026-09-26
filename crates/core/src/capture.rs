@@ -160,10 +160,7 @@ pub fn extract_whitelisted(json: &serde_json::Value, now_ms: Ms) -> Option<Captu
     let session_id = sanitize_session_id(obj.get("session_id")?.as_str()?)?;
 
     let model = obj.get("model").and_then(Value::as_object).and_then(|m| {
-        model_info(
-            bounded_str(m.get("id"), MAX_LABEL_LEN),
-            bounded_str(m.get("display_name"), MAX_LABEL_LEN),
-        )
+        model_info(bounded_str(m.get("id"), MAX_LABEL_LEN), bounded_str(m.get("display_name"), MAX_LABEL_LEN))
     });
 
     let ctx = obj.get("context_window").and_then(Value::as_object);
@@ -173,16 +170,10 @@ pub fn extract_whitelisted(json: &serde_json::Value, now_ms: Ms) -> Option<Captu
         obj.get("exceeds_200k_tokens").and_then(Value::as_bool),
     );
 
-    let rate_limits = obj
-        .get("rate_limits")
-        .and_then(Value::as_object)
-        .map(rate_limits)
-        .unwrap_or_default();
+    let rate_limits = obj.get("rate_limits").and_then(Value::as_object).map(rate_limits).unwrap_or_default();
 
-    let api_ms = obj
-        .get("cost")
-        .and_then(Value::as_object)
-        .and_then(|c| non_negative_u64(c.get("total_api_duration_ms")));
+    let api_ms =
+        obj.get("cost").and_then(Value::as_object).and_then(|c| non_negative_u64(c.get("total_api_duration_ms")));
 
     let mut rec = CaptureRecord {
         v: CAPTURE_VERSION,
@@ -207,9 +198,7 @@ pub fn fingerprint(rec: &CaptureRecord) -> u64 {
     let mut h = Fnv64::new();
     h.write_u64(rec.rate_limits.len() as u64);
     for (key, window) in &rec.rate_limits {
-        h.write_str(key)
-            .write_f32(window.used_percentage)
-            .write_i64(window.resets_at);
+        h.write_str(key).write_f32(window.used_percentage).write_i64(window.resets_at);
     }
     match &rec.context {
         Some(ctx) => {
@@ -238,10 +227,7 @@ pub fn fingerprint(rec: &CaptureRecord) -> u64 {
 /// file counts as "changed").
 pub fn write_capture(dir: &Path, mut rec: CaptureRecord) -> io::Result<WriteOutcome> {
     let Some(id) = sanitize_session_id(&rec.session_id) else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid session id",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session id"));
     };
     let target = dir.join(format!("{id}.json"));
     rec.v = CAPTURE_VERSION;
@@ -249,8 +235,8 @@ pub fn write_capture(dir: &Path, mut rec: CaptureRecord) -> io::Result<WriteOutc
 
     // Compare against a freshly computed fingerprint of the old record rather than its stored
     // field, so a hand-edited or stale `fingerprint` value cannot suppress a write.
-    let unchanged = read_capture_file(&target)
-        .filter(|old| old.session_id == id && fingerprint(old) == rec.fingerprint);
+    let unchanged =
+        read_capture_file(&target).filter(|old| old.session_id == id && fingerprint(old) == rec.fingerprint);
     if let Some(old) = unchanged {
         let age = rec.written_at_ms.saturating_sub(old.written_at_ms);
         // A negative age means the clock went backwards: rewrite rather than trust the old stamp.
@@ -281,11 +267,7 @@ pub fn record_from_bytes(bytes: &[u8], now_ms: Ms) -> Result<CaptureRecord, Capt
 }
 
 /// The shim's whole job after forwarding stdin: size check, parse, extract, write.
-pub fn capture_from_bytes(
-    bytes: &[u8],
-    dir: &Path,
-    now_ms: Ms,
-) -> Result<WriteOutcome, CaptureError> {
+pub fn capture_from_bytes(bytes: &[u8], dir: &Path, now_ms: Ms) -> Result<WriteOutcome, CaptureError> {
     let rec = record_from_bytes(bytes, now_ms)?;
     Ok(write_capture(dir, rec)?)
 }
@@ -310,18 +292,11 @@ pub fn parse_capture(bytes: &[u8]) -> Option<CaptureRecord> {
         })
         .collect();
     let model = rec.model.and_then(|m| {
-        model_info(
-            m.id.filter(|s| within(s, MAX_LABEL_LEN)),
-            m.display_name.filter(|s| within(s, MAX_LABEL_LEN)),
-        )
+        model_info(m.id.filter(|s| within(s, MAX_LABEL_LEN)), m.display_name.filter(|s| within(s, MAX_LABEL_LEN)))
     });
-    let context = rec.context.and_then(|c| {
-        ctx_info(
-            c.used_percentage.map(|p| p.clamp(0.0, 100.0)),
-            c.context_window_size,
-            c.exceeds_200k,
-        )
-    });
+    let context = rec
+        .context
+        .and_then(|c| ctx_info(c.used_percentage.map(|p| p.clamp(0.0, 100.0)), c.context_window_size, c.exceeds_200k));
     Some(CaptureRecord {
         transcript_path: rec.transcript_path.filter(|s| within(s, MAX_PATH_LEN)),
         model,
@@ -340,9 +315,7 @@ pub fn parse_capture(bytes: &[u8]) -> Option<CaptureRecord> {
 pub(crate) fn read_capture_file(path: &Path) -> Option<CaptureRecord> {
     let file = File::open(path).ok()?;
     let mut buf = Vec::new();
-    file.take(MAX_CAPTURE_FILE_BYTES + 1)
-        .read_to_end(&mut buf)
-        .ok()?;
+    file.take(MAX_CAPTURE_FILE_BYTES + 1).read_to_end(&mut buf).ok()?;
     if buf.len() as u64 > MAX_CAPTURE_FILE_BYTES {
         return None;
     }
@@ -350,9 +323,7 @@ pub(crate) fn read_capture_file(path: &Path) -> Option<CaptureRecord> {
 }
 
 fn bounded_str(v: Option<&Value>, max_len: usize) -> Option<String> {
-    v?.as_str()
-        .filter(|s| within(s, max_len))
-        .map(str::to_owned)
+    v?.as_str().filter(|s| within(s, max_len)).map(str::to_owned)
 }
 
 fn within(s: &str, max_len: usize) -> bool {
@@ -370,12 +341,11 @@ fn ctx_info(
 ) -> Option<CtxInfo> {
     // A zero-sized window is nonsense and would only cause divisions by zero downstream.
     let context_window_size = context_window_size.filter(|&size| size > 0);
-    (used_percentage.is_some() || context_window_size.is_some() || exceeds_200k.is_some())
-        .then_some(CtxInfo {
-            used_percentage,
-            context_window_size,
-            exceeds_200k,
-        })
+    (used_percentage.is_some() || context_window_size.is_some() || exceeds_200k.is_some()).then_some(CtxInfo {
+        used_percentage,
+        context_window_size,
+        exceeds_200k,
+    })
 }
 
 /// A finite number clamped to 0..=100. Clamped as f64 first so huge values do not become `inf`.
@@ -398,22 +368,17 @@ fn non_negative_u64(v: Option<&Value>) -> Option<u64> {
 /// [`plausible_resets_at`] → `None`.
 fn epoch_secs(v: &Value) -> Option<i64> {
     // `json_time_to_ms` range-checks milliseconds; checked again here in whole seconds.
-    crate::time::json_time_to_ms(v)
-        .map(|ms| ms.div_euclid(1000))
-        .filter(|&secs| plausible_resets_at(secs))
+    crate::time::json_time_to_ms(v).map(|ms| ms.div_euclid(1000)).filter(|&secs| plausible_resets_at(secs))
 }
 
 /// Between 2001 and 2200 (see [`crate::time::MIN_PLAUSIBLE_MS`]); anything else is corrupt.
 fn plausible_resets_at(secs: i64) -> bool {
-    secs.checked_mul(1000)
-        .is_some_and(|ms| (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).contains(&ms))
+    secs.checked_mul(1000).is_some_and(|ms| (MIN_PLAUSIBLE_MS..=MAX_PLAUSIBLE_MS).contains(&ms))
 }
 
 fn valid_window_key(key: &str) -> bool {
     (1..=MAX_WINDOW_KEY_LEN).contains(&key.len())
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// A key that may name a plan usage window: well-formed and not the gateway spend limit.
@@ -428,13 +393,7 @@ fn rate_limits(obj: &Map<String, Value>) -> BTreeMap<String, RateLimit> {
             let window = window.as_object()?;
             let used_percentage = percent(window.get("used_percentage"))?;
             let resets_at = epoch_secs(window.get("resets_at")?)?;
-            Some((
-                key.clone(),
-                RateLimit {
-                    used_percentage,
-                    resets_at,
-                },
-            ))
+            Some((key.clone(), RateLimit { used_percentage, resets_at }))
         })
         .take(MAX_WINDOWS)
         .collect()
@@ -455,10 +414,7 @@ fn hash_opt_u64(h: &mut Fnv64, v: Option<u64>) {
 }
 
 fn write_atomic(dir: &Path, id: &str, target: &Path, bytes: &[u8]) -> io::Result<()> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     let tmp = dir.join(format!(".{id}.{}.{nanos}.tmp", std::process::id()));
     // `create_new` guarantees we only ever clean up a temp file that this call created.
     let file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
@@ -515,10 +471,8 @@ mod tests {
     }
 
     fn file_names(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
+        let mut names: Vec<String> =
+            fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         names
     }
@@ -526,15 +480,10 @@ mod tests {
     #[test]
     fn sanitize_accepts_uuids_and_rejects_everything_else() {
         assert_eq!(sanitize_session_id(SID).as_deref(), Some(SID));
-        assert_eq!(
-            sanitize_session_id("abc-DEF-123").as_deref(),
-            Some("abc-DEF-123")
-        );
+        assert_eq!(sanitize_session_id("abc-DEF-123").as_deref(), Some("abc-DEF-123"));
         let max = "a".repeat(64);
         assert_eq!(sanitize_session_id(&max), Some(max.clone()));
-        for bad in [
-            "", "../x", "a/b", r"a\b", "a.b", "..", "a b", "a:b", "ä", "a\0b", "a_b",
-        ] {
+        for bad in ["", "../x", "a/b", r"a\b", "a.b", "..", "a b", "a:b", "ä", "a\0b", "a_b"] {
             assert_eq!(sanitize_session_id(bad), None, "{bad:?} must be rejected");
         }
         assert_eq!(sanitize_session_id(&"a".repeat(65)), None);
@@ -543,24 +492,11 @@ mod tests {
     #[test]
     fn sanitize_rejects_windows_device_names() {
         // `<id>.json` would name the device itself (`NUL.json` is NUL), not a file.
-        for device in [
-            "CON", "con", "Prn", "aux", "NUL", "nul", "COM0", "com1", "COM9", "LPT0", "lpt5",
-            "LpT9",
-        ] {
-            assert_eq!(
-                sanitize_session_id(device),
-                None,
-                "{device:?} must be rejected"
-            );
+        for device in ["CON", "con", "Prn", "aux", "NUL", "nul", "COM0", "com1", "COM9", "LPT0", "lpt5", "LpT9"] {
+            assert_eq!(sanitize_session_id(device), None, "{device:?} must be rejected");
         }
-        for ordinary in [
-            "CON1", "CONS", "NULL", "AUXX", "COM", "COM10", "LPT", "LPT-1", "COMA", "XCON", "PRN0",
-        ] {
-            assert_eq!(
-                sanitize_session_id(ordinary).as_deref(),
-                Some(ordinary),
-                "{ordinary:?} is not a device name"
-            );
+        for ordinary in ["CON1", "CONS", "NULL", "AUXX", "COM", "COM10", "LPT", "LPT-1", "COMA", "XCON", "PRN0"] {
+            assert_eq!(sanitize_session_id(ordinary).as_deref(), Some(ordinary), "{ordinary:?} is not a device name");
         }
     }
 
@@ -574,9 +510,7 @@ mod tests {
         assert_eq!(rec.fingerprint, fingerprint(&rec));
         assert_eq!(
             rec.transcript_path.as_deref(),
-            Some(
-                r"C:\Users\tester\.claude\projects\C--work-demo\00000000-0000-4000-8000-000000000001.jsonl"
-            )
+            Some(r"C:\Users\tester\.claude\projects\C--work-demo\00000000-0000-4000-8000-000000000001.jsonl")
         );
         assert_eq!(
             rec.model,
@@ -595,13 +529,7 @@ mod tests {
         );
         let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
         assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
-        assert_eq!(
-            rec.rate_limits["five_hour"],
-            RateLimit {
-                used_percentage: 22.4,
-                resets_at: 1_790_208_000,
-            }
-        );
+        assert_eq!(rec.rate_limits["five_hour"], RateLimit { used_percentage: 22.4, resets_at: 1_790_208_000 });
         assert_eq!(rec.rate_limits["seven_day"].used_percentage, 61.0);
         assert_eq!(rec.api_ms, Some(123_456));
         assert_eq!(rec.cc_version.as_deref(), Some("2.3.4"));
@@ -630,10 +558,7 @@ mod tests {
             "876543219",
             "7654321987",
         ] {
-            assert!(
-                !out.contains(banned),
-                "capture output leaked {banned:?}: {out}"
-            );
+            assert!(!out.contains(banned), "capture output leaked {banned:?}: {out}");
         }
         assert!(out.contains("123456"), "api_ms is the only cost field kept");
     }
@@ -717,10 +642,7 @@ mod tests {
         let rec = extract_whitelisted(&json, NOW).unwrap();
         let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
         assert_eq!(keys, ["first_second_of_2001", "start_of_2200"]);
-        assert_eq!(
-            rec.rate_limits["first_second_of_2001"].resets_at,
-            978_307_200
-        );
+        assert_eq!(rec.rate_limits["first_second_of_2001"].resets_at, 978_307_200);
         assert_eq!(rec.rate_limits["start_of_2200"].resets_at, 7_258_118_400);
     }
 
@@ -753,10 +675,7 @@ mod tests {
     #[test]
     fn invalid_session_or_shape_yields_none() {
         assert_eq!(extract_whitelisted(&json!({}), NOW), None);
-        assert_eq!(
-            extract_whitelisted(&json!({ "session_id": "../evil" }), NOW),
-            None
-        );
+        assert_eq!(extract_whitelisted(&json!({ "session_id": "../evil" }), NOW), None);
         assert_eq!(extract_whitelisted(&json!({ "session_id": 5 }), NOW), None);
         assert_eq!(extract_whitelisted(&json!([SID]), NOW), None);
         assert_eq!(extract_whitelisted(&json!(SID), NOW), None);
@@ -800,10 +719,7 @@ mod tests {
     fn first_write_creates_dir_and_leaves_no_tmp() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("nested").join("capture");
-        assert_eq!(
-            write_capture(&dir, rec_at(NOW)).unwrap(),
-            WriteOutcome::Written
-        );
+        assert_eq!(write_capture(&dir, rec_at(NOW)).unwrap(), WriteOutcome::Written);
         assert_eq!(file_names(&dir), [format!("{SID}.json")]);
         let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored, rec_at(NOW));
@@ -818,27 +734,14 @@ mod tests {
         let first = fs::read(&path).unwrap();
 
         let soon = NOW + REWRITE_AFTER_MS - 1;
-        assert_eq!(
-            write_capture(dir, rec_at(soon)).unwrap(),
-            WriteOutcome::Skipped
-        );
-        assert_eq!(
-            fs::read(&path).unwrap(),
-            first,
-            "skipped write must not touch the file"
-        );
+        assert_eq!(write_capture(dir, rec_at(soon)).unwrap(), WriteOutcome::Skipped);
+        assert_eq!(fs::read(&path).unwrap(), first, "skipped write must not touch the file");
 
         let later = NOW + REWRITE_AFTER_MS;
-        assert_eq!(
-            write_capture(dir, rec_at(later)).unwrap(),
-            WriteOutcome::Written
-        );
+        assert_eq!(write_capture(dir, rec_at(later)).unwrap(), WriteOutcome::Written);
         let stored = parse_capture(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored.written_at_ms, later);
-        assert_eq!(
-            stored.changed_at_ms, NOW,
-            "values did not change, so neither does changed_at"
-        );
+        assert_eq!(stored.changed_at_ms, NOW, "values did not change, so neither does changed_at");
         assert_eq!(file_names(dir), [format!("{SID}.json")]);
     }
 
@@ -848,10 +751,7 @@ mod tests {
         let dir = tmp.path();
         write_capture(dir, rec_at(NOW)).unwrap();
         let mut next = rec_at(NOW + SECOND_MS);
-        next.rate_limits
-            .get_mut("five_hour")
-            .unwrap()
-            .used_percentage = 23.0;
+        next.rate_limits.get_mut("five_hour").unwrap().used_percentage = 23.0;
         assert_eq!(write_capture(dir, next).unwrap(), WriteOutcome::Written);
         let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored.changed_at_ms, NOW + SECOND_MS);
@@ -865,10 +765,7 @@ mod tests {
         let dir = tmp.path();
         write_capture(dir, rec_at(NOW)).unwrap();
         let earlier = NOW - HOUR_MS;
-        assert_eq!(
-            write_capture(dir, rec_at(earlier)).unwrap(),
-            WriteOutcome::Written
-        );
+        assert_eq!(write_capture(dir, rec_at(earlier)).unwrap(), WriteOutcome::Written);
         let stored = parse_capture(&fs::read(dir.join(format!("{SID}.json"))).unwrap()).unwrap();
         assert_eq!(stored.written_at_ms, earlier);
         assert_eq!(stored.changed_at_ms, earlier);
@@ -881,10 +778,7 @@ mod tests {
         let path = dir.join(format!("{SID}.json"));
         for existing in [&b"{ not json"[..], b"", br#"{"v":99}"#] {
             fs::write(&path, existing).unwrap();
-            assert_eq!(
-                write_capture(dir, rec_at(NOW)).unwrap(),
-                WriteOutcome::Written
-            );
+            assert_eq!(write_capture(dir, rec_at(NOW)).unwrap(), WriteOutcome::Written);
             assert!(parse_capture(&fs::read(&path).unwrap()).is_some());
             assert_eq!(file_names(dir), [format!("{SID}.json")]);
         }
@@ -900,28 +794,18 @@ mod tests {
         let path = dir.join(format!("{SID}.json"));
         fs::write(&path, b"held by another process").unwrap();
         // No sharing at all: neither the pre-read nor the rename can touch the file.
-        let lock = OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(&path)
-            .unwrap();
+        let lock = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
 
         let start = std::time::Instant::now();
         let err = write_capture(dir, rec_at(NOW)).unwrap_err();
         let elapsed = start.elapsed();
         assert!(is_sharing_violation(&err), "{err:?}");
-        assert!(
-            elapsed >= RENAME_RETRY_DELAY * RENAME_RETRIES,
-            "expected {RENAME_RETRIES} retries, took {elapsed:?}"
-        );
+        assert!(elapsed >= RENAME_RETRY_DELAY * RENAME_RETRIES, "expected {RENAME_RETRIES} retries, took {elapsed:?}");
         assert_eq!(file_names(dir), [format!("{SID}.json")], "no .tmp left");
 
         drop(lock);
         assert_eq!(fs::read(&path).unwrap(), b"held by another process");
-        assert_eq!(
-            write_capture(dir, rec_at(NOW)).unwrap(),
-            WriteOutcome::Written
-        );
+        assert_eq!(write_capture(dir, rec_at(NOW)).unwrap(), WriteOutcome::Written);
     }
 
     #[test]
@@ -939,38 +823,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let big = vec![b' '; MAX_STDIN_BYTES + 1];
-        assert!(matches!(
-            capture_from_bytes(&big, dir, NOW),
-            Err(CaptureError::TooLarge)
-        ));
-        for not_json in [
-            &b""[..],
-            b"not json",
-            b"[1,2]",
-            b"\"str\"",
-            b"{\"a\":1} trailing",
-        ] {
-            assert!(matches!(
-                capture_from_bytes(not_json, dir, NOW),
-                Err(CaptureError::NotJson)
-            ));
+        assert!(matches!(capture_from_bytes(&big, dir, NOW), Err(CaptureError::TooLarge)));
+        for not_json in [&b""[..], b"not json", b"[1,2]", b"\"str\"", b"{\"a\":1} trailing"] {
+            assert!(matches!(capture_from_bytes(not_json, dir, NOW), Err(CaptureError::NotJson)));
         }
-        assert!(matches!(
-            capture_from_bytes(b"{}", dir, NOW),
-            Err(CaptureError::NoSession)
-        ));
+        assert!(matches!(capture_from_bytes(b"{}", dir, NOW), Err(CaptureError::NoSession)));
         assert!(file_names(dir).is_empty());
 
         let mut with_bom = b"\xEF\xBB\xBF".to_vec();
         with_bom.extend_from_slice(FULL.as_bytes());
-        assert_eq!(
-            capture_from_bytes(&with_bom, dir, NOW).unwrap(),
-            WriteOutcome::Written
-        );
-        assert_eq!(
-            capture_from_bytes(FULL.as_bytes(), dir, NOW + 1).unwrap(),
-            WriteOutcome::Skipped
-        );
+        assert_eq!(capture_from_bytes(&with_bom, dir, NOW).unwrap(), WriteOutcome::Written);
+        assert_eq!(capture_from_bytes(FULL.as_bytes(), dir, NOW + 1).unwrap(), WriteOutcome::Skipped);
     }
 
     #[test]
@@ -981,10 +844,7 @@ mod tests {
 
         let mut other_version = rec.clone();
         other_version.v = 2;
-        assert_eq!(
-            parse_capture(&serde_json::to_vec(&other_version).unwrap()),
-            None
-        );
+        assert_eq!(parse_capture(&serde_json::to_vec(&other_version).unwrap()), None);
 
         let mut bad_id = rec.clone();
         bad_id.session_id = "a/b".into();
@@ -1008,16 +868,8 @@ mod tests {
         for key in [SPEND_LIMIT_KEY, "bad key!", "", long_key.as_str()] {
             limits.insert(key.to_owned(), window.clone());
         }
-        for (key, resets_at) in [
-            ("zero", 0),
-            ("negative", -1),
-            ("tiny", 5),
-            ("far", i64::MAX),
-        ] {
-            limits.insert(
-                key.to_owned(),
-                json!({ "used_percentage": 5.0, "resets_at": resets_at }),
-            );
+        for (key, resets_at) in [("zero", 0), ("negative", -1), ("tiny", 5), ("far", i64::MAX)] {
+            limits.insert(key.to_owned(), json!({ "used_percentage": 5.0, "resets_at": resets_at }));
         }
         edited["transcript_path"] = json!("p".repeat(MAX_PATH_LEN + 1));
         edited["cc_version"] = json!("v".repeat(MAX_LABEL_LEN + 1));
@@ -1035,26 +887,15 @@ mod tests {
         let mut label_only = serde_json::to_value(rec_at(NOW)).unwrap();
         label_only["model"]["display_name"] = json!("d".repeat(MAX_LABEL_LEN + 1));
         let read = parse_capture(&serde_json::to_vec(&label_only).unwrap()).unwrap();
-        assert_eq!(
-            read.model,
-            Some(ModelInfo {
-                id: Some("claude-opus-5-5[1m]".into()),
-                display_name: None,
-            })
-        );
+        assert_eq!(read.model, Some(ModelInfo { id: Some("claude-opus-5-5[1m]".into()), display_name: None }));
     }
 
     #[test]
     fn parse_capture_keeps_at_most_max_windows() {
         let mut rec = rec_at(NOW);
         for i in 0..MAX_WINDOWS {
-            rec.rate_limits.insert(
-                format!("extra_{i:02}"),
-                RateLimit {
-                    used_percentage: 1.0,
-                    resets_at: 1_790_000_000,
-                },
-            );
+            rec.rate_limits
+                .insert(format!("extra_{i:02}"), RateLimit { used_percentage: 1.0, resets_at: 1_790_000_000 });
         }
         let read = parse_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(read.rate_limits.len(), MAX_WINDOWS);
@@ -1070,10 +911,7 @@ mod tests {
         padded.push(b'}');
         fs::write(&path, &padded).unwrap();
         assert_eq!(read_capture_file(&path), None);
-        assert_eq!(
-            write_capture(tmp.path(), rec_at(NOW)).unwrap(),
-            WriteOutcome::Written
-        );
+        assert_eq!(write_capture(tmp.path(), rec_at(NOW)).unwrap(), WriteOutcome::Written);
     }
 
     fn arb_json() -> impl Strategy<Value = Value> {
@@ -1081,8 +919,7 @@ mod tests {
             Just(Value::Null),
             any::<bool>().prop_map(Value::from),
             any::<i64>().prop_map(Value::from),
-            any::<f64>()
-                .prop_map(|f| serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number)),
+            any::<f64>().prop_map(|f| serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number)),
             "[a-z0-9_./-]{0,10}".prop_map(Value::from),
             Just(Value::from(SID)),
         ];
@@ -1109,8 +946,7 @@ mod tests {
         })
     }
 
-    const RESETS_AT_RANGE: std::ops::RangeInclusive<i64> =
-        MIN_PLAUSIBLE_MS / 1000..=MAX_PLAUSIBLE_MS / 1000;
+    const RESETS_AT_RANGE: std::ops::RangeInclusive<i64> = MIN_PLAUSIBLE_MS / 1000..=MAX_PLAUSIBLE_MS / 1000;
 
     /// A percentage as Claude Code might send it, or a corrupted one.
     fn arb_pct() -> impl Strategy<Value = Value> {
@@ -1157,8 +993,8 @@ mod tests {
                 .prop_map(|(pct, resets_at)| json!({ "used_percentage": pct, "resets_at": resets_at })),
             1 => Just(json!(7)),
         ];
-        let windows = prop::collection::vec((key, window), 0..48)
-            .prop_map(|kv| Value::Object(kv.into_iter().collect()));
+        let windows =
+            prop::collection::vec((key, window), 0..48).prop_map(|kv| Value::Object(kv.into_iter().collect()));
         let session_id = prop_oneof![9 => Just(SID), 1 => Just("../evil")];
         (session_id, windows, arb_pct()).prop_map(|(sid, windows, ctx_pct)| {
             json!({
@@ -1184,10 +1020,7 @@ mod tests {
                 capped += usize::from(rec.rate_limits.len() == MAX_WINDOWS);
             }
         }
-        assert!(
-            with_windows > 128,
-            "only {with_windows}/256 records kept a window"
-        );
+        assert!(with_windows > 128, "only {with_windows}/256 records kept a window");
         assert!(capped > 0, "no record reached the {MAX_WINDOWS}-window cap");
     }
 

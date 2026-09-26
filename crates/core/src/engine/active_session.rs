@@ -46,16 +46,10 @@ pub fn pick(tails: &[TranscriptTail], desktop_sessions: &[DesktopSession], now_m
         .unwrap_or(newest);
 
     let active_floor = now_ms.saturating_sub(CONCURRENT_WINDOW_MS);
-    let active: HashSet<SessionId<'_>> = tails
-        .iter()
-        .filter(|t| t.last_assistant_ms >= active_floor)
-        .map(SessionId::of)
-        .collect();
+    let active: HashSet<SessionId<'_>> =
+        tails.iter().filter(|t| t.last_assistant_ms >= active_floor).map(SessionId::of).collect();
     let active = active.len();
-    Some(ActivePick {
-        index,
-        concurrent: u8::try_from(active).unwrap_or(u8::MAX),
-    })
+    Some(ActivePick { index, concurrent: u8::try_from(active).unwrap_or(u8::MAX) })
 }
 
 /// What makes two tails the same session (see the module docs).
@@ -67,11 +61,7 @@ enum SessionId<'a> {
 
 impl<'a> SessionId<'a> {
     fn of(tail: &'a TranscriptTail) -> Self {
-        if tail.session_id.is_empty() {
-            SessionId::Path(&tail.path)
-        } else {
-            SessionId::Id(&tail.session_id)
-        }
+        if tail.session_id.is_empty() { SessionId::Path(&tail.path) } else { SessionId::Id(&tail.session_id) }
     }
 }
 
@@ -171,10 +161,7 @@ mod tests {
     #[test]
     fn recent_focus_breaks_tie() {
         let tails = [tail("a", NOW - SECOND_MS), tail("b", NOW - 90 * SECOND_MS)];
-        let desktop = [
-            desk(Some("a"), Some(NOW - 10 * MINUTE_MS)),
-            desk(Some("b"), Some(NOW - 30 * SECOND_MS)),
-        ];
+        let desktop = [desk(Some("a"), Some(NOW - 10 * MINUTE_MS)), desk(Some("b"), Some(NOW - 30 * SECOND_MS))];
         assert_eq!(pick(&tails, &desktop, NOW).map(|p| p.index), Some(1));
     }
 

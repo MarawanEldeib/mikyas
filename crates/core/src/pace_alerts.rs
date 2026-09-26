@@ -110,12 +110,7 @@ fn forecast(view: &WindowView, now_ms: Ms) -> Option<PaceAlertEvent> {
         && w.phase == Phase::Active
         && !w.limit_reached
         && t100_ms.saturating_sub(now_ms) >= MIN_LEAD_MS;
-    ok.then(|| PaceAlertEvent::Forecast {
-        kind: w.kind.clone(),
-        pct: w.pct.min(100.0),
-        t100_ms,
-        reset_at_ms,
-    })
+    ok.then(|| PaceAlertEvent::Forecast { kind: w.kind.clone(), pct: w.pct.min(100.0), t100_ms, reset_at_ms })
 }
 
 /// A heads-up for a capped window whose (future) reset is within the kind's lead.
@@ -129,10 +124,7 @@ fn heads_up(w: &WindowState, now_ms: Ms) -> Option<PaceAlertEvent> {
         return None;
     }
     let reset_at_ms = w.reset.at_ms().filter(|&r| r > now_ms && r - now_ms <= lead)?;
-    (capped && w.phase == Phase::Active).then(|| PaceAlertEvent::HeadsUp {
-        kind: w.kind.clone(),
-        reset_at_ms,
-    })
+    (capped && w.phase == Phase::Active).then(|| PaceAlertEvent::HeadsUp { kind: w.kind.clone(), reset_at_ms })
 }
 
 /// Marks instance `key` as fired. Returns true if it (or an alias of it) already was; an alias
@@ -152,7 +144,6 @@ fn claim_alias(fired_for: &mut Option<Ms>, key: Ms, alias: Ms) -> bool {
     same
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,10 +153,7 @@ mod tests {
 
     const T0: Ms = 1_790_000_100_000; // a multiple of 5 min
     const R: Ms = T0 + 3 * HOUR_MS;
-    const BOTH: PaceSettings = PaceSettings {
-        forecast: true,
-        heads_up: true,
-    };
+    const BOTH: PaceSettings = PaceSettings { forecast: true, heads_up: true };
 
     fn view(kind: WindowKind, pct: f32, reset: ResetInfo, t100_ms: Option<Ms>) -> WindowView {
         let reset_at = reset.at_ms();
@@ -201,12 +189,7 @@ mod tests {
     }
 
     fn forecast(pct: f32, t100_ms: Ms) -> PaceAlertEvent {
-        PaceAlertEvent::Forecast {
-            kind: WindowKind::FiveHour,
-            pct,
-            t100_ms,
-            reset_at_ms: R,
-        }
+        PaceAlertEvent::Forecast { kind: WindowKind::FiveHour, pct, t100_ms, reset_at_ms: R }
     }
 
     #[test]
@@ -287,11 +270,7 @@ mod tests {
             view(
                 WindowKind::SevenDay,
                 70.0,
-                ResetInfo::Estimated {
-                    at_ms,
-                    plus_minus_ms: DAY_MS,
-                    confidence: Confidence::Low,
-                },
+                ResetInfo::Estimated { at_ms, plus_minus_ms: DAY_MS, confidence: Confidence::Low },
                 Some(at_ms - DAY_MS),
             )
         };
@@ -325,10 +304,7 @@ mod tests {
         assert_eq!(s.evaluate(std::slice::from_ref(&w), BOTH, R - 10 * MINUTE_MS - 1), vec![]);
         assert_eq!(
             s.evaluate(std::slice::from_ref(&w), BOTH, R - 10 * MINUTE_MS),
-            vec![PaceAlertEvent::HeadsUp {
-                kind: WindowKind::FiveHour,
-                reset_at_ms: R
-            }]
+            vec![PaceAlertEvent::HeadsUp { kind: WindowKind::FiveHour, reset_at_ms: R }]
         );
         assert_eq!(s.evaluate(std::slice::from_ref(&w), BOTH, R - MINUTE_MS), vec![]);
         assert_eq!(s.kinds["five_hour"].heads_up_fired_for, Some(R));
@@ -367,16 +343,7 @@ mod tests {
     fn heads_up_needs_a_reset_time_precise_enough_for_its_lead() {
         let run = |v: WindowView, now: Ms| PaceAlertState::default().evaluate(&[v], BOTH, now);
         let est = |kind: WindowKind, plus_minus_ms: Ms, confidence: Confidence| {
-            view(
-                kind,
-                100.0,
-                ResetInfo::Estimated {
-                    at_ms: R,
-                    plus_minus_ms,
-                    confidence,
-                },
-                None,
-            )
+            view(kind, 100.0, ResetInfo::Estimated { at_ms: R, plus_minus_ms, confidence }, None)
         };
         // "Reopens in 8 min" from a ±2 h guess would be a promise the data cannot keep.
         assert_eq!(run(est(WindowKind::FiveHour, 2 * HOUR_MS, Confidence::Low), R - 8 * MINUTE_MS), vec![]);
@@ -392,11 +359,8 @@ mod tests {
         // Desktop-only first (a ±45 min estimate), then Claude Code reports the exact time 40 min
         // later than estimated: still the window the forecast already fired for.
         let mut s = PaceAlertState::default();
-        let estimated = ResetInfo::Estimated {
-            at_ms: R,
-            plus_minus_ms: 45 * MINUTE_MS,
-            confidence: Confidence::Medium,
-        };
+        let estimated =
+            ResetInfo::Estimated { at_ms: R, plus_minus_ms: 45 * MINUTE_MS, confidence: Confidence::Medium };
         let t100 = T0 + HOUR_MS;
         assert_eq!(s.evaluate(&[view(WindowKind::FiveHour, 60.0, estimated, Some(t100))], BOTH, T0).len(), 1);
         let exact = view(WindowKind::FiveHour, 61.0, ResetInfo::Exact { at_ms: R + 40 * MINUTE_MS }, Some(t100));
@@ -411,18 +375,12 @@ mod tests {
     fn settings_gate_each_part_and_its_state() {
         let t100 = T0 + HOUR_MS;
         let mut s = PaceAlertState::default();
-        let heads_up_only = PaceSettings {
-            forecast: false,
-            heads_up: true,
-        };
+        let heads_up_only = PaceSettings { forecast: false, heads_up: true };
         assert_eq!(s.evaluate(&[fh(60.0, t100)], heads_up_only, T0), vec![]);
         assert_eq!(s.kinds["five_hour"].forecast_fired_for, None, "off: no state consumed");
         assert_eq!(s.evaluate(&[fh(60.0, t100)], BOTH, T0), vec![forecast(60.0, t100)]);
 
-        let forecast_only = PaceSettings {
-            forecast: true,
-            heads_up: false,
-        };
+        let forecast_only = PaceSettings { forecast: true, heads_up: false };
         let w = capped(WindowKind::FiveHour, R);
         assert_eq!(s.evaluate(std::slice::from_ref(&w), forecast_only, R - MINUTE_MS), vec![]);
         assert_eq!(s.kinds["five_hour"].heads_up_fired_for, None);
@@ -437,10 +395,7 @@ mod tests {
             s.evaluate(&[fh(60.0, T0 + HOUR_MS), weekly], BOTH, T0),
             vec![
                 forecast(60.0, T0 + HOUR_MS),
-                PaceAlertEvent::HeadsUp {
-                    kind: WindowKind::SevenDay,
-                    reset_at_ms: T0 + 30 * MINUTE_MS
-                },
+                PaceAlertEvent::HeadsUp { kind: WindowKind::SevenDay, reset_at_ms: T0 + 30 * MINUTE_MS },
             ]
         );
     }
@@ -458,13 +413,7 @@ mod tests {
         // Missing fields take their defaults.
         let partial: PaceAlertState =
             serde_json::from_str(r#"{"kinds":{"five_hour":{"heads_up_fired_for":5}}}"#).unwrap();
-        assert_eq!(
-            partial.kinds["five_hour"],
-            KindPaceState {
-                forecast_fired_for: None,
-                heads_up_fired_for: Some(5)
-            }
-        );
+        assert_eq!(partial.kinds["five_hour"], KindPaceState { forecast_fired_for: None, heads_up_fired_for: Some(5) });
         assert_eq!(serde_json::from_str::<PaceAlertState>("{}").unwrap(), PaceAlertState::default());
     }
 }

@@ -60,12 +60,7 @@ impl Paths {
 
     /// Explicit locations, for tests.
     pub fn with_roots(claude_home: PathBuf, desktop_roots: Vec<PathBuf>, data_root: PathBuf) -> Self {
-        Self {
-            claude_home,
-            desktop_roots,
-            data_root,
-            detected_desktop: false,
-        }
+        Self { claude_home, desktop_roots, data_root, detected_desktop: false }
     }
 
     // ---- Claude Code ----
@@ -98,11 +93,7 @@ impl Paths {
     }
 
     fn existing_under_roots(&self, name: &str) -> Vec<PathBuf> {
-        self.desktop_roots
-            .iter()
-            .map(|r| r.join(name))
-            .filter(|p| p.exists())
-            .collect()
+        self.desktop_roots.iter().map(|r| r.join(name)).filter(|p| p.exists()).collect()
     }
 
     // ---- widget data ----
@@ -151,10 +142,7 @@ fn detect_data_root() -> PathBuf {
 /// The [`DATA_DIR_ENV`] value if it is a usable override ([`valid_override`]), else
 /// `<local data dir>/ClaudeUsageWidget`.
 fn data_root_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> PathBuf) -> PathBuf {
-    env_value
-        .map(PathBuf::from)
-        .filter(|p| valid_override(p))
-        .unwrap_or_else(|| local_dir().join(APP_DIR_NAME))
+    env_value.map(PathBuf::from).filter(|p| valid_override(p)).unwrap_or_else(|| local_dir().join(APP_DIR_NAME))
 }
 
 /// An override must be an absolute local path without `..`: the data root decides where Connect
@@ -221,10 +209,7 @@ mod tests {
         let local = || PathBuf::from("/local");
         let default = PathBuf::from("/local/ClaudeUsageWidget");
         let override_dir = absolute("override");
-        assert_eq!(
-            data_root_from(Some(override_dir.clone().into()), || unreachable!("override wins")),
-            override_dir
-        );
+        assert_eq!(data_root_from(Some(override_dir.clone().into()), || unreachable!("override wins")), override_dir);
         assert_eq!(data_root_from(Some(OsString::new()), local), default);
         assert_eq!(data_root_from(None, local), default);
     }
@@ -233,13 +218,7 @@ mod tests {
     fn data_root_override_must_be_an_absolute_local_path() {
         let local = || PathBuf::from("/local");
         let default = PathBuf::from("/local/ClaudeUsageWidget");
-        for bad in [
-            "relative",
-            r".\here",
-            r"\\server\share\cuw",
-            r"\\?\UNC\server\share\cuw",
-            r"\\.\pipe\cuw",
-        ] {
+        for bad in ["relative", r".\here", r"\\server\share\cuw", r"\\?\UNC\server\share\cuw", r"\\.\pipe\cuw"] {
             assert_eq!(data_root_from(Some(bad.into()), local), default, "{bad}");
         }
         let climbing = absolute("x").join("..").join("y");

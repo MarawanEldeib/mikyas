@@ -43,10 +43,7 @@ pub struct PersistedState {
 
 impl PersistedState {
     pub fn exact_resets(&self) -> BTreeMap<WindowKind, Ms> {
-        self.last_exact_resets
-            .iter()
-            .map(|(k, v)| (WindowKind::from_key(k), *v))
-            .collect()
+        self.last_exact_resets.iter().map(|(k, v)| (WindowKind::from_key(k), *v)).collect()
     }
 
     pub fn set_exact_resets(&mut self, map: &BTreeMap<WindowKind, Ms>) {
@@ -233,18 +230,12 @@ mod tests {
         s.recap.last_recapped_end_ms = Some(13);
         s.pace_alerts.kinds.insert(
             "five_hour".into(),
-            cuw_core::pace_alerts::KindPaceState {
-                forecast_fired_for: Some(17),
-                heads_up_fired_for: None,
-            },
+            cuw_core::pace_alerts::KindPaceState { forecast_fired_for: Some(17), heads_up_fired_for: None },
         );
         s.learned_models.insert("claude-opus-5-5".into(), "Opus 5.5".into());
         s.ctx_alerts.sessions.insert(
             "af63dc4c8601ec8c".into(),
-            cuw_core::ctx_alerts::SessionCtxState {
-                fired: [80, 90].into(),
-                last_seen_ms: 11,
-            },
+            cuw_core::ctx_alerts::SessionCtxState { fired: [80, 90].into(), last_seen_ms: 11 },
         );
         save_json(&p, &s).unwrap();
         let back: PersistedState = load_json(&p);

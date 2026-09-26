@@ -48,8 +48,8 @@ use crate::engine::context::{self, ContextInputs};
 use crate::engine::merge;
 use crate::engine::reset_estimate;
 use crate::engine::types::{
-    DesktopHealth, Entrypoint, Observation, Sample, SessionView, Snapshot, Source, SourceHealth,
-    Warning, WindowKind, WindowView,
+    DesktopHealth, Entrypoint, Observation, Sample, SessionView, Snapshot, Source, SourceHealth, Warning, WindowKind,
+    WindowView,
 };
 use crate::fingerprint::Fnv64;
 use crate::history::History;
@@ -117,16 +117,9 @@ pub struct EngineInputs<'a> {
 /// Builds the snapshot (see the module docs).
 pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
     let cli = statusline::observations(inputs.captures);
-    let desktop_latest: Vec<Observation> = inputs
-        .desktop
-        .map(desktop_usage::latest_observations)
-        .unwrap_or_default();
+    let desktop_latest: Vec<Observation> = inputs.desktop.map(desktop_usage::latest_observations).unwrap_or_default();
 
-    let kinds: BTreeSet<WindowKind> = cli
-        .iter()
-        .chain(desktop_latest.iter())
-        .map(|o| o.kind.clone())
-        .collect();
+    let kinds: BTreeSet<WindowKind> = cli.iter().chain(desktop_latest.iter()).map(|o| o.kind.clone()).collect();
     let exact = inputs.last_exact_resets;
 
     let newest_activity = inputs.tails.iter().map(|t| t.last_assistant_ms).max();
@@ -156,14 +149,9 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         let burn_samples = all_samples(inputs, kind, now_ms);
         let burn = burn::compute(kind, &burn_samples, &state, now_ms);
         let spark = spark(inputs.history, kind, now_ms);
-        let worked_since = newest_activity
-            .is_some_and(|newest| newest.saturating_sub(state.observed_at_ms) >= WORKED_SINCE_MS);
-        windows.push(WindowView {
-            state,
-            burn,
-            spark,
-            worked_since,
-        });
+        let worked_since =
+            newest_activity.is_some_and(|newest| newest.saturating_sub(state.observed_at_ms) >= WORKED_SINCE_MS);
+        windows.push(WindowView { state, burn, spark, worked_since });
     }
 
     let (session, sessions) = session_views(inputs, now_ms);
@@ -174,24 +162,14 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
     };
 
     let mut warnings = Vec::new();
-    if inputs
-        .account_mismatch_since_ms
-        .is_some_and(|since| now_ms.saturating_sub(since) > ACCOUNT_MISMATCH_AFTER_MS)
-    {
+    if inputs.account_mismatch_since_ms.is_some_and(|since| now_ms.saturating_sub(since) > ACCOUNT_MISMATCH_AFTER_MS) {
         warnings.push(Warning::AccountMismatch);
     }
     if no_plan_limits(inputs.captures, now_ms) {
         warnings.push(Warning::NoPlanLimits);
     }
 
-    Snapshot {
-        generated_ms: now_ms,
-        windows,
-        session,
-        sessions,
-        health,
-        warnings,
-    }
+    Snapshot { generated_ms: now_ms, windows, session, sessions, health, warnings }
 }
 
 /// True when, for some window, the newest Desktop observation is newer than the newest live CLI
@@ -202,9 +180,7 @@ pub fn account_mismatch_now(captures: &[CaptureRecord], desktop: Option<&Desktop
     let Some(desktop) = desktop else { return false };
     let cli = statusline::observations(captures);
     desktop_usage::latest_observations(desktop).iter().any(|d| {
-        let live = cli
-            .iter()
-            .filter(|c| c.kind == d.kind && c.resets_at_ms.is_some_and(|r| r > now_ms));
+        let live = cli.iter().filter(|c| c.kind == d.kind && c.resets_at_ms.is_some_and(|r| r > now_ms));
         let Some(c) = live.max_by_key(|c| c.observed_at_ms) else { return false };
         d.observed_at_ms > c.observed_at_ms
             && d.observed_at_ms - c.observed_at_ms <= ACCOUNT_MISMATCH_PAIR_MS
@@ -254,11 +230,7 @@ pub fn learn_model_names(map: &mut BTreeMap<String, String>, captures: &[Capture
 
 /// Sparkline range `(from, to)` for a kind: `to` is `now` rounded up to the bucket step.
 pub fn spark_range(kind: &WindowKind, now_ms: Ms) -> (Ms, Ms) {
-    let span = if *kind == WindowKind::FiveHour {
-        SPARK_SPAN_FIVE_HOUR_MS
-    } else {
-        SPARK_SPAN_WEEKLY_MS
-    };
+    let span = if *kind == WindowKind::FiveHour { SPARK_SPAN_FIVE_HOUR_MS } else { SPARK_SPAN_WEEKLY_MS };
     let step = span / SPARK_BUCKETS as Ms;
     let to = (now_ms.div_euclid(step) + 1).saturating_mul(step);
     (to - span, to)
@@ -283,29 +255,16 @@ fn desktop_samples(inputs: &EngineInputs<'_>, kind: &WindowKind, now_ms: Ms) -> 
 /// All samples of `kind`: the history (any source) ∪ the Desktop file's series.
 fn all_samples(inputs: &EngineInputs<'_>, kind: &WindowKind, now_ms: Ms) -> Vec<Sample> {
     let since = now_ms.saturating_sub(SAMPLE_LOOKBACK_MS);
-    combine(
-        inputs.history.samples(kind, since).into_iter(),
-        desktop_series(inputs, kind),
-        since,
-        now_ms,
-    )
+    combine(inputs.history.samples(kind, since).into_iter(), desktop_series(inputs, kind), since, now_ms)
 }
 
 fn desktop_series<'a>(inputs: &EngineInputs<'a>, kind: &WindowKind) -> &'a [Sample] {
-    inputs
-        .desktop
-        .and_then(|d| d.series.get(kind))
-        .map_or(&[], Vec::as_slice)
+    inputs.desktop.and_then(|d| d.series.get(kind)).map_or(&[], Vec::as_slice)
 }
 
 /// Merges two sample sources, keeps `since <= t <= now + FUTURE_SLACK_MS`, sorts and removes
 /// duplicate timestamps (the Desktop file's value wins, it is the original).
-fn combine(
-    first: impl Iterator<Item = Sample>,
-    second: &[Sample],
-    since: Ms,
-    now_ms: Ms,
-) -> Vec<Sample> {
+fn combine(first: impl Iterator<Item = Sample>, second: &[Sample], since: Ms, now_ms: Ms) -> Vec<Sample> {
     let limit = now_ms.saturating_add(FUTURE_SLACK_MS);
     let mut out: Vec<Sample> = first
         .chain(second.iter().copied())
@@ -330,11 +289,7 @@ pub fn session_key(session_id: &str) -> String {
 
 /// A tail's key; a tail without a session id is keyed by its file path instead.
 fn tail_key(tail: &TranscriptTail) -> String {
-    if tail.session_id.is_empty() {
-        session_key(&tail.path.to_string_lossy())
-    } else {
-        session_key(&tail.session_id)
-    }
+    if tail.session_id.is_empty() { session_key(&tail.path.to_string_lossy()) } else { session_key(&tail.session_id) }
 }
 
 /// The header session and the recent-sessions list (see the module docs).
@@ -349,11 +304,7 @@ fn session_views(inputs: &EngineInputs<'_>, now_ms: Ms) -> (Option<SessionView>,
     let active = tail_view(inputs, &inputs.tails[pick.index], learned, pick.concurrent);
 
     let floor = now_ms.saturating_sub(SESSIONS_WINDOW_MS);
-    let mut recent: Vec<&TranscriptTail> = inputs
-        .tails
-        .iter()
-        .filter(|t| t.last_assistant_ms >= floor)
-        .collect();
+    let mut recent: Vec<&TranscriptTail> = inputs.tails.iter().filter(|t| t.last_assistant_ms >= floor).collect();
     // Stable, so equal timestamps keep slice order (as `active_session::pick` does).
     recent.sort_by_key(|t| std::cmp::Reverse(t.last_assistant_ms));
 
@@ -392,15 +343,9 @@ fn tail_view(
     concurrent: u8,
 ) -> SessionView {
     let name_of = |id: &str| Some(display_name(id, learned)).filter(|n| !n.is_empty());
-    let capture = inputs
-        .captures
-        .iter()
-        .filter(|c| c.session_id == tail.session_id)
-        .max_by_key(|c| c.changed_at_ms);
-    let desktop_session = inputs
-        .desktop_sessions
-        .iter()
-        .find(|d| d.cli_session_id.as_deref() == Some(tail.session_id.as_str()));
+    let capture = inputs.captures.iter().filter(|c| c.session_id == tail.session_id).max_by_key(|c| c.changed_at_ms);
+    let desktop_session =
+        inputs.desktop_sessions.iter().find(|d| d.cli_session_id.as_deref() == Some(tail.session_id.as_str()));
     let ctx = context::resolve(&ContextInputs {
         tail: Some(tail),
         capture,
@@ -461,10 +406,7 @@ fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, St
 
 fn no_plan_limits(captures: &[CaptureRecord], now_ms: Ms) -> bool {
     let floor = now_ms.saturating_sub(NO_PLAN_LIMITS_RECENT_MS);
-    let mut recent = captures
-        .iter()
-        .filter(|c| c.written_at_ms.max(c.changed_at_ms) >= floor)
-        .peekable();
+    let mut recent = captures.iter().filter(|c| c.written_at_ms.max(c.changed_at_ms) >= floor).peekable();
     recent.peek().is_some() && recent.all(|c| c.rate_limits.is_empty())
 }
 
@@ -546,15 +488,7 @@ mod tests {
             }),
             rate_limits: limits
                 .iter()
-                .map(|&(k, p, reset_ms)| {
-                    (
-                        k.to_string(),
-                        RateLimit {
-                            used_percentage: p,
-                            resets_at: reset_ms / 1000,
-                        },
-                    )
-                })
+                .map(|&(k, p, reset_ms)| (k.to_string(), RateLimit { used_percentage: p, resets_at: reset_ms / 1000 }))
                 .collect(),
             api_ms: None,
             cc_version: None,
@@ -586,11 +520,7 @@ mod tests {
             series.insert(WindowKind::SevenDay, to(sd));
         }
         let last = series.values().filter_map(|s| s.last()).map(|s| s.t_ms).max();
-        DesktopUsage {
-            version: 2,
-            series,
-            last_sample_ms: last,
-        }
+        DesktopUsage { version: 2, series, last_sample_ms: last }
     }
 
     #[test]
@@ -659,11 +589,7 @@ mod tests {
         // A corrupt sample far in the future must not become the "newest" of the estimate.
         let d_ok = desktop(&[(NOW - 30 * MINUTE_MS, 10.0), (NOW - 15 * MINUTE_MS, 12.0)], &[]);
         let mut d_bad = d_ok.clone();
-        d_bad
-            .series
-            .get_mut(&WindowKind::FiveHour)
-            .unwrap()
-            .push(Sample { t_ms: NOW + 3 * DAY_MS, pct: 0.0 });
+        d_bad.series.get_mut(&WindowKind::FiveHour).unwrap().push(Sample { t_ms: NOW + 3 * DAY_MS, pct: 0.0 });
         let ok = &f.inputs(&[], Some(&d_ok), &[]);
         let mut expected = build_snapshot(ok, NOW).windows[0].state.reset.clone();
         // Merge takes the newest Desktop value (the bad one) — but the estimate stays the same.
@@ -729,9 +655,7 @@ mod tests {
     fn burn_uses_history() {
         let mut f = Fixture::new();
         // Desktop series climbing 1 point every 3 minutes over the last hour.
-        let fh: Vec<(Ms, f32)> = (0..=20)
-            .map(|i| (NOW - HOUR_MS + i * 3 * MINUTE_MS, 20.0 + i as f32))
-            .collect();
+        let fh: Vec<(Ms, f32)> = (0..=20).map(|i| (NOW - HOUR_MS + i * 3 * MINUTE_MS, 20.0 + i as f32)).collect();
         let d = desktop(&fh, &[]);
         f.history.backfill_desktop(&d, 0).unwrap();
         f.exact.insert(WindowKind::FiveHour, NOW + 4 * HOUR_MS);
@@ -843,9 +767,7 @@ mod tests {
     fn sessions_list_recent_tails_newest_first_capped() {
         let f = Fixture::new();
         // Ten sessions within the window (s0 newest) plus one just outside it.
-        let mut tails: Vec<TranscriptTail> = (0..10)
-            .map(|i| tail(&format!("s{i}"), NOW - i * HOUR_MS))
-            .collect();
+        let mut tails: Vec<TranscriptTail> = (0..10).map(|i| tail(&format!("s{i}"), NOW - i * HOUR_MS)).collect();
         tails.push(tail("old", NOW - SESSIONS_WINDOW_MS - 1));
         tails.rotate_left(3); // slice order must not matter
         let s = build_snapshot(&f.inputs(&[], None, &tails), NOW);
@@ -915,9 +837,7 @@ mod tests {
         let f = Fixture::new();
         // Nine sessions within the two-minute focus tie; the focused one is the oldest, so the
         // newest-first cut would drop it.
-        let tails: Vec<TranscriptTail> = (0..9)
-            .map(|i| tail(&format!("s{i}"), NOW - i * 10 * SECOND_MS))
-            .collect();
+        let tails: Vec<TranscriptTail> = (0..9).map(|i| tail(&format!("s{i}"), NOW - i * 10 * SECOND_MS)).collect();
         let desk = [DesktopSession {
             cli_session_id: Some("s8".into()),
             model: None,

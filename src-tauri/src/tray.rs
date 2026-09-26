@@ -50,11 +50,7 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     let parts: Vec<String> = tray_values(snapshot)
         .map(|v| format!("{} {}%{}", v.kind.short(), v.pct, if v.stale { "?" } else { "" }))
         .collect();
-    if parts.is_empty() {
-        "Claude Usage — no data yet".into()
-    } else {
-        parts.join(" · ")
-    }
+    if parts.is_empty() { "Claude Usage — no data yet".into() } else { parts.join(" · ") }
 }
 
 fn icon(level: Level) -> Option<Image<'static>> {
@@ -108,14 +104,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
     }
     menu.append_items(&[&sep()?, &quit])?;
 
-    app.manage(TrayItems {
-        show_hide,
-        pin,
-        click_through,
-        compact,
-        autostart,
-        drawn: Mutex::new(None),
-    });
+    app.manage(TrayItems { show_hide, pin, click_through, compact, autostart, drawn: Mutex::new(None) });
 
     let snapshot = crate::state::lock(&shared.snapshot).clone();
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -124,12 +113,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(on_menu)
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 let app = tray.app_handle();
                 let shared = app.state::<Arc<Shared>>().inner().clone();
                 visibility::apply(app, &shared, Event::UserToggle);
@@ -210,8 +194,7 @@ fn tray_image(app: &AppHandle, snapshot: &Snapshot, mode: TrayNumber) -> Option<
 }
 
 fn mode(app: &AppHandle) -> TrayNumber {
-    app.try_state::<Arc<Shared>>()
-        .map_or(TrayNumber::Off, |shared| shared.settings().tray_number)
+    app.try_state::<Arc<Shared>>().map_or(TrayNumber::Off, |shared| shared.settings().tray_number)
 }
 
 /// Refreshes the tooltip and icon from a new snapshot.
@@ -225,9 +208,7 @@ pub fn update(app: &AppHandle, snapshot: &Snapshot) {
 /// since it was drawn (called from the settings hook and the display poll).
 pub fn refresh_style(app: &AppHandle) {
     let now = (mode(app), Style::current(app));
-    let unchanged = app
-        .try_state::<TrayItems>()
-        .is_some_and(|items| *crate::state::lock(&items.drawn) == Some(now));
+    let unchanged = app.try_state::<TrayItems>().is_some_and(|items| *crate::state::lock(&items.drawn) == Some(now));
     if unchanged {
         return;
     }

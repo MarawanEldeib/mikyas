@@ -69,16 +69,8 @@ pub fn run() {
             visibility::apply(app, &shared, visibility::Event::UserShow);
         }))
         .plugin(tauri_plugin_notification::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(hotkey::handler)
-                .build(),
-        )
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::POSITION)
-                .build(),
-        )
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(hotkey::handler).build())
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::POSITION).build())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(shared.clone())
         .invoke_handler(tauri::generate_handler![

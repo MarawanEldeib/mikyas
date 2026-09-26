@@ -84,7 +84,9 @@ pub fn duplicate_errors(
     }
     match edited {
         Some(Action::ClickThrough) => (Some(format!("{} is already the show/hide shortcut", click_accel.trim())), None),
-        Some(Action::ShowHide) | None => (None, Some(format!("{} is already the click-through shortcut", toggle_accel.trim()))),
+        Some(Action::ShowHide) | None => {
+            (None, Some(format!("{} is already the click-through shortcut", toggle_accel.trim())))
+        }
     }
 }
 
@@ -122,14 +124,16 @@ fn register_both(app: &AppHandle, shared: &Shared, edited: Option<Action>) {
         (&click_accel, &toggle_accel),
     );
     let click_error = match click {
-        Ok(Some(s)) => click_duplicate
-            .or_else(|| try_register(&click_accel, s).map(|s| registered.click_through = Some(s)).err()),
+        Ok(Some(s)) => {
+            click_duplicate.or_else(|| try_register(&click_accel, s).map(|s| registered.click_through = Some(s)).err())
+        }
         Ok(None) => None,
         Err(e) => Some(e),
     };
     let toggle_error = match toggle {
-        Ok(Some(s)) => toggle_duplicate
-            .or_else(|| try_register(&toggle_accel, s).map(|s| registered.show_hide = Some(s)).err()),
+        Ok(Some(s)) => {
+            toggle_duplicate.or_else(|| try_register(&toggle_accel, s).map(|s| registered.show_hide = Some(s)).err())
+        }
         Ok(None) => None,
         Err(e) => Some(e),
     };
@@ -167,10 +171,7 @@ mod tests {
 
     #[test]
     fn the_handler_tells_the_shortcuts_apart() {
-        let reg = Registered {
-            click_through: Some(sc("Ctrl+Alt+U")),
-            show_hide: Some(sc("Ctrl+Alt+H")),
-        };
+        let reg = Registered { click_through: Some(sc("Ctrl+Alt+U")), show_hide: Some(sc("Ctrl+Alt+H")) };
         assert_eq!(reg.action_for(&sc("Ctrl+Alt+U")), Some(Action::ClickThrough));
         assert_eq!(reg.action_for(&sc("Control+Alt+H")), Some(Action::ShowHide));
         assert_eq!(reg.action_for(&sc("Ctrl+Alt+J")), None);

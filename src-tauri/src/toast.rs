@@ -64,22 +64,13 @@ fn clock_text(at_ms: Ms, now: Ms) -> String {
     let Some(t) = Local.timestamp_millis_opt(at_ms).single() else {
         return String::new();
     };
-    if at_ms - now < 20 * HOUR_MS {
-        t.format("%H:%M").to_string()
-    } else {
-        t.format("%a %H:%M").to_string()
-    }
+    if at_ms - now < 20 * HOUR_MS { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
 }
 
 /// Title and body of a notification for an alert event.
 pub fn alert_text(event: &AlertEvent, now: Ms) -> (String, String) {
     match event {
-        AlertEvent::Threshold {
-            kind,
-            threshold,
-            reset_at_ms,
-            ..
-        } => {
+        AlertEvent::Threshold { kind, threshold, reset_at_ms, .. } => {
             let title = format!("Claude {} limit at {threshold}%", window_name(kind));
             let body = match reset_at_ms.filter(|r| *r > now) {
                 Some(r) => format!("Resets {} (in {})", clock_text(r, now), duration_text(r - now)),
@@ -87,10 +78,9 @@ pub fn alert_text(event: &AlertEvent, now: Ms) -> (String, String) {
             };
             (title, body)
         }
-        AlertEvent::Reset { kind } => (
-            format!("Claude {} limit reset", window_name(kind)),
-            "Usage is back to 0%.".into(),
-        ),
+        AlertEvent::Reset { kind } => {
+            (format!("Claude {} limit reset", window_name(kind)), "Usage is back to 0%.".into())
+        }
     }
 }
 
@@ -123,12 +113,7 @@ fn minutes_up(ms: Ms) -> Ms {
 /// "Claude 5-hour limit reopens in 10 min" / "It resets at 16:52.".
 pub fn pace_text(event: &PaceAlertEvent, now: Ms) -> (String, String) {
     match event {
-        PaceAlertEvent::Forecast {
-            kind,
-            t100_ms,
-            reset_at_ms,
-            ..
-        } => (
+        PaceAlertEvent::Forecast { kind, t100_ms, reset_at_ms, .. } => (
             format!("At this pace: {} limit at {}", window_name(kind), clock_text(*t100_ms, now)),
             format!(
                 "That's {} before it resets ({}).",
@@ -137,11 +122,7 @@ pub fn pace_text(event: &PaceAlertEvent, now: Ms) -> (String, String) {
             ),
         ),
         PaceAlertEvent::HeadsUp { kind, reset_at_ms } => (
-            format!(
-                "Claude {} limit reopens in {} min",
-                window_name(kind),
-                minutes_up(reset_at_ms - now)
-            ),
+            format!("Claude {} limit reopens in {} min", window_name(kind), minutes_up(reset_at_ms - now)),
             format!("It resets at {}.", clock_text(*reset_at_ms, now)),
         ),
     }
@@ -241,9 +222,7 @@ pub fn simulate(app: &AppHandle, id: &str) {
             pct: if id == "sim_80" { 80.4 } else { 95.2 },
             reset_at_ms: Some(now + HOUR_MS + 12 * MINUTE_MS),
         },
-        _ => AlertEvent::Reset {
-            kind: WindowKind::SevenDay,
-        },
+        _ => AlertEvent::Reset { kind: WindowKind::SevenDay },
     };
     show_alert(app, &Alert::Limit(event));
 }
@@ -333,10 +312,7 @@ mod tests {
         assert!(t.starts_with("At this pace: weekly limit at "), "{t}");
         assert!(b.starts_with("That's 1d 0h before it resets ("), "{b}");
 
-        let heads_up = |kind, left| PaceAlertEvent::HeadsUp {
-            kind,
-            reset_at_ms: now + left,
-        };
+        let heads_up = |kind, left| PaceAlertEvent::HeadsUp { kind, reset_at_ms: now + left };
         let (t, b) = pace_text(&heads_up(WindowKind::FiveHour, 10 * MINUTE_MS), now);
         assert_eq!(t, "Claude 5-hour limit reopens in 10 min");
         assert!(b.starts_with("It resets at ") && b.ends_with('.'), "{b}");
@@ -352,11 +328,7 @@ mod tests {
     #[test]
     fn recap_texts() {
         // 2026-09-22 is a Tuesday in every time zone.
-        let tuesday = Local
-            .with_ymd_and_hms(2026, 9, 22, 0, 0, 0)
-            .single()
-            .unwrap()
-            .timestamp_millis();
+        let tuesday = Local.with_ymd_and_hms(2026, 9, 22, 0, 0, 0).single().unwrap().timestamp_millis();
         let recap = WeeklyRecap {
             window_end_ms: tuesday + 4 * DAY_MS,
             used_pct: 82.4,
@@ -367,12 +339,7 @@ mod tests {
         let (t, b) = recap_text(&recap);
         assert_eq!(t, "Last week: 82% of your weekly limit");
         assert_eq!(b, "Busiest day Tue (35%) · 14 five-hour resets · 5-hour peak 100%");
-        let quiet = WeeklyRecap {
-            busiest_day: None,
-            five_hour_resets: 1,
-            peak_five_hour_pct: 41.6,
-            ..recap.clone()
-        };
+        let quiet = WeeklyRecap { busiest_day: None, five_hour_resets: 1, peak_five_hour_pct: 41.6, ..recap.clone() };
         assert_eq!(recap_text(&quiet).1, "1 five-hour reset · 5-hour peak 42%");
         assert_eq!(toast_text(&Alert::Recap(recap), 0).0, "Last week: 82% of your weekly limit");
     }

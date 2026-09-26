@@ -46,7 +46,13 @@ impl Fnv64 {
 
     /// Hashes the float's bit pattern after normalising -0.0 and NaN.
     pub fn write_f32(&mut self, v: f32) -> &mut Self {
-        let v = if v.is_nan() { f32::NAN } else if v == 0.0 { 0.0 } else { v };
+        let v = if v.is_nan() {
+            f32::NAN
+        } else if v == 0.0 {
+            0.0
+        } else {
+            v
+        };
         self.write(&v.to_bits().to_le_bytes())
     }
 

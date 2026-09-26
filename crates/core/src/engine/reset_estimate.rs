@@ -66,12 +66,7 @@ pub const WEEKLY_EXTRA_MS: Ms = DAY_MS;
 /// `samples` is this window's series, ideally sorted ascending (unsorted input and non-finite
 /// values are tolerated). `last_exact_reset_ms` is the newest `resets_at` Claude Code reported for
 /// this window, if any.
-pub fn estimate_reset(
-    kind: &WindowKind,
-    samples: &[Sample],
-    last_exact_reset_ms: Option<Ms>,
-    now_ms: Ms,
-) -> ResetInfo {
+pub fn estimate_reset(kind: &WindowKind, samples: &[Sample], last_exact_reset_ms: Option<Ms>, now_ms: Ms) -> ResetInfo {
     if let Some(at_ms) = last_exact_reset_ms.filter(|r| *r > now_ms) {
         return ResetInfo::Exact { at_ms };
     }
@@ -93,9 +88,7 @@ pub fn estimate_reset(
         return fallback(weekly, past_reset, duration, now_ms);
     }
 
-    let boundary = samples
-        .windows(2)
-        .rposition(|w| starts_window(&w[0], &w[1], duration, past_reset));
+    let boundary = samples.windows(2).rposition(|w| starts_window(&w[0], &w[1], duration, past_reset));
     let (lo, hi) = match boundary {
         Some(j) => {
             let (prev, cur) = (samples[j], samples[j + 1]);
@@ -107,21 +100,14 @@ pub fn estimate_reset(
         }
         None if first.pct > 0.0 => {
             let hi = first.t_ms;
-            (
-                bound_by_reset(hi.saturating_sub(duration), past_reset, hi),
-                hi,
-            )
+            (bound_by_reset(hi.saturating_sub(duration), past_reset, hi), hi)
         }
         None => return ResetInfo::Unknown,
     };
     // The last sample shows usage, so its window was still running then and began after
     // `last - duration`. A located start at or before that means a boundary went unseen.
     let floor = last.t_ms.saturating_sub(duration);
-    let (lo, hi) = if floor >= hi {
-        (floor, last.t_ms)
-    } else {
-        (lo.max(floor), hi)
-    };
+    let (lo, hi) = if floor >= hi { (floor, last.t_ms) } else { (lo.max(floor), hi) };
     let zero_bound = boundary.is_some_and(|j| samples[j].pct <= 0.0 && samples[j].t_ms == lo);
     estimate(lo, hi, duration, weekly, zero_bound)
 }
@@ -158,11 +144,7 @@ fn estimate(lo: Ms, hi: Ms, duration: Ms, weekly: bool, zero_bound: bool) -> Res
     } else {
         (half, Confidence::Low)
     };
-    ResetInfo::Estimated {
-        at_ms,
-        plus_minus_ms,
-        confidence,
-    }
+    ResetInfo::Estimated { at_ms, plus_minus_ms, confidence }
 }
 
 /// Nothing in the samples locates the current window: weekly windows roll forward from the last
@@ -175,11 +157,7 @@ fn fallback(weekly: bool, past_reset: Option<Ms>, duration: Ms, now_ms: Ms) -> R
                 let periods = now_ms.saturating_sub(at_ms) / duration + 1;
                 at_ms = at_ms.saturating_add(periods.saturating_mul(duration));
             }
-            ResetInfo::Estimated {
-                at_ms,
-                plus_minus_ms: WEEKLY_EXTRA_MS,
-                confidence: Confidence::Low,
-            }
+            ResetInfo::Estimated { at_ms, plus_minus_ms: WEEKLY_EXTRA_MS, confidence: Confidence::Low }
         }
         _ => ResetInfo::Unknown,
     }
@@ -190,11 +168,7 @@ fn normalized(samples: &[Sample]) -> Cow<'_, [Sample]> {
     if samples.iter().all(|s| s.pct.is_finite()) && samples.is_sorted_by_key(|s| s.t_ms) {
         return Cow::Borrowed(samples);
     }
-    let mut owned: Vec<Sample> = samples
-        .iter()
-        .filter(|s| s.pct.is_finite())
-        .copied()
-        .collect();
+    let mut owned: Vec<Sample> = samples.iter().filter(|s| s.pct.is_finite()).copied().collect();
     owned.sort_by_key(|s| s.t_ms);
     Cow::Owned(owned)
 }
@@ -216,18 +190,11 @@ mod tests {
     }
 
     fn series(points: &[(Ms, f32)]) -> Vec<Sample> {
-        points
-            .iter()
-            .map(|&(t_ms, pct)| Sample { t_ms, pct })
-            .collect()
+        points.iter().map(|&(t_ms, pct)| Sample { t_ms, pct }).collect()
     }
 
     fn est(at_ms: Ms, plus_minus_ms: Ms, confidence: Confidence) -> ResetInfo {
-        ResetInfo::Estimated {
-            at_ms,
-            plus_minus_ms,
-            confidence,
-        }
+        ResetInfo::Estimated { at_ms, plus_minus_ms, confidence }
     }
 
     fn five(samples: &[(Ms, f32)], now: Ms) -> ResetInfo {
@@ -241,83 +208,37 @@ mod tests {
     #[test]
     fn exact_future_reset_wins() {
         let s = series(&[(T, 10.0), (T + m(15), 0.0)]);
-        for kind in [
-            WindowKind::FiveHour,
-            WindowKind::SevenDay,
-            WindowKind::Other("x".into()),
-        ] {
+        for kind in [WindowKind::FiveHour, WindowKind::SevenDay, WindowKind::Other("x".into())] {
             assert_eq!(
                 estimate_reset(&kind, &s, Some(T + HOUR_MS), T + m(20)),
                 ResetInfo::Exact { at_ms: T + HOUR_MS }
             );
-            assert_eq!(
-                estimate_reset(&kind, &[], Some(T + 1), T),
-                ResetInfo::Exact { at_ms: T + 1 }
-            );
+            assert_eq!(estimate_reset(&kind, &[], Some(T + 1), T), ResetInfo::Exact { at_ms: T + 1 });
         }
     }
 
     #[test]
     fn only_kinds_with_a_duration_are_estimated() {
         let s = series(&[(T, 10.0), (T + m(15), 20.0)]);
-        assert_eq!(
-            estimate_reset(&WindowKind::Other("xh".into()), &s, None, T + m(20)),
-            ResetInfo::Unknown
-        );
-        let opus = estimate_reset(
-            &WindowKind::Other("seven_day_opus".into()),
-            &s,
-            None,
-            T + m(20),
-        );
-        assert_eq!(
-            opus,
-            estimate_reset(&WindowKind::SevenDay, &s, None, T + m(20))
-        );
-        assert!(matches!(
-            opus,
-            ResetInfo::Estimated {
-                confidence: Confidence::Low,
-                ..
-            }
-        ));
+        assert_eq!(estimate_reset(&WindowKind::Other("xh".into()), &s, None, T + m(20)), ResetInfo::Unknown);
+        let opus = estimate_reset(&WindowKind::Other("seven_day_opus".into()), &s, None, T + m(20));
+        assert_eq!(opus, estimate_reset(&WindowKind::SevenDay, &s, None, T + m(20)));
+        assert!(matches!(opus, ResetInfo::Estimated { confidence: Confidence::Low, .. }));
     }
 
     #[test]
     fn rise_from_zero_starts_a_window() {
         // Desktop's integer 0 hides usage below one point, so the window may already have been
         // running at T + 15 min: at most Medium, however narrow the interval.
-        let got = five(
-            &[
-                (T, 0.0),
-                (T + m(15), 0.0),
-                (T + m(30), 5.0),
-                (T + m(45), 8.0),
-            ],
-            T + m(50),
-        );
-        assert_eq!(
-            got,
-            est(
-                T + m(15) + m(7) + 30_000 + FIVE_HOURS_MS,
-                m(7) + 30_000,
-                Confidence::Medium
-            )
-        );
+        let got = five(&[(T, 0.0), (T + m(15), 0.0), (T + m(30), 5.0), (T + m(45), 8.0)], T + m(50));
+        assert_eq!(got, est(T + m(15) + m(7) + 30_000 + FIVE_HOURS_MS, m(7) + 30_000, Confidence::Medium));
         // Wider intervals still fall to Low.
         let got = five(&[(T, 0.0), (T + 2 * HOUR_MS, 5.0)], T + 2 * HOUR_MS);
-        assert_eq!(
-            got,
-            est(T + HOUR_MS + FIVE_HOURS_MS, HOUR_MS, Confidence::Low)
-        );
+        assert_eq!(got, est(T + HOUR_MS + FIVE_HOURS_MS, HOUR_MS, Confidence::Low));
         // A known reset between the 0 and the rise bounds the start instead: the 0 belonged to
         // the window that ended there.
-        let got = estimate_reset(
-            &WindowKind::FiveHour,
-            &series(&[(T, 0.0), (T + m(15), 5.0)]),
-            Some(T + m(5)),
-            T + m(20),
-        );
+        let got =
+            estimate_reset(&WindowKind::FiveHour, &series(&[(T, 0.0), (T + m(15), 5.0)]), Some(T + m(5)), T + m(20));
         assert_eq!(got, est(T + m(10) + FIVE_HOURS_MS, m(5), Confidence::High));
     }
 
@@ -329,20 +250,8 @@ mod tests {
         let fh = synth.fh();
         let (mut checked, mut missed) = (0, 0);
         for (k, truth) in synth.samples.iter().enumerate() {
-            let got = estimate_reset(
-                &WindowKind::FiveHour,
-                &fh[..=k],
-                None,
-                truth.t_ms + MINUTE_MS,
-            );
-            let (
-                Some(true_at),
-                ResetInfo::Estimated {
-                    at_ms,
-                    plus_minus_ms,
-                    confidence,
-                },
-            ) = (truth.fh_reset_ms, &got)
+            let got = estimate_reset(&WindowKind::FiveHour, &fh[..=k], None, truth.t_ms + MINUTE_MS);
+            let (Some(true_at), ResetInfo::Estimated { at_ms, plus_minus_ms, confidence }) = (truth.fh_reset_ms, &got)
             else {
                 continue;
             };
@@ -361,47 +270,19 @@ mod tests {
     #[test]
     fn decrease_is_a_boundary_even_without_zero() {
         // 73 → 13 in one 15-min gap: reset plus fresh usage.
-        let got = five(
-            &[
-                (T, 60.0),
-                (T + m(15), 73.0),
-                (T + m(30), 13.0),
-                (T + m(45), 20.0),
-            ],
-            T + m(50),
-        );
-        assert_eq!(
-            got,
-            est(
-                T + m(22) + 30_000 + FIVE_HOURS_MS,
-                m(7) + 30_000,
-                Confidence::High
-            )
-        );
+        let got = five(&[(T, 60.0), (T + m(15), 73.0), (T + m(30), 13.0), (T + m(45), 20.0)], T + m(50));
+        assert_eq!(got, est(T + m(22) + 30_000 + FIVE_HOURS_MS, m(7) + 30_000, Confidence::High));
         // 58 → 48 behaves the same.
         let got = five(&[(T, 58.0), (T + m(15), 48.0)], T + m(20));
-        assert_eq!(
-            got,
-            est(
-                T + m(7) + 30_000 + FIVE_HOURS_MS,
-                m(7) + 30_000,
-                Confidence::High
-            )
-        );
+        assert_eq!(got, est(T + m(7) + 30_000 + FIVE_HOURS_MS, m(7) + 30_000, Confidence::High));
     }
 
     #[test]
     fn plus_minus_grows_with_the_gap_around_the_boundary() {
         let got = five(&[(T, 73.0), (T + HOUR_MS, 13.0)], T + HOUR_MS);
-        assert_eq!(
-            got,
-            est(T + m(30) + FIVE_HOURS_MS, m(30), Confidence::Medium)
-        );
+        assert_eq!(got, est(T + m(30) + FIVE_HOURS_MS, m(30), Confidence::Medium));
         let got = five(&[(T, 73.0), (T + 2 * HOUR_MS, 13.0)], T + 2 * HOUR_MS);
-        assert_eq!(
-            got,
-            est(T + HOUR_MS + FIVE_HOURS_MS, HOUR_MS, Confidence::Low)
-        );
+        assert_eq!(got, est(T + HOUR_MS + FIVE_HOURS_MS, HOUR_MS, Confidence::Low));
         // Threshold edges: ±10 min is High, ±45 min Medium, just over is Low.
         let conf = |gap: Ms| match five(&[(T, 50.0), (T + gap, 10.0)], T + gap) {
             ResetInfo::Estimated { confidence, .. } => confidence,
@@ -416,68 +297,31 @@ mod tests {
     /// Start in `(T - 4 h 15 min, T]`: at or before the first sample, after `newest - 5 h`.
     fn from_first_sample_45_min_series() -> ResetInfo {
         let (lo, hi) = (T + m(45) - FIVE_HOURS_MS, T);
-        est(
-            (lo + hi) / 2 + FIVE_HOURS_MS,
-            (hi - lo) / 2,
-            Confidence::Low,
-        )
+        est((lo + hi) / 2 + FIVE_HOURS_MS, (hi - lo) / 2, Confidence::Low)
     }
 
     #[test]
     fn one_point_dip_is_noise() {
         // 41 → 40 is not a reset, so the window reaches back to the first sample.
-        let got = five(
-            &[
-                (T, 40.0),
-                (T + m(15), 41.0),
-                (T + m(30), 40.0),
-                (T + m(45), 42.0),
-            ],
-            T + m(50),
-        );
+        let got = five(&[(T, 40.0), (T + m(15), 41.0), (T + m(30), 40.0), (T + m(45), 42.0)], T + m(50));
         assert_eq!(got, from_first_sample_45_min_series());
     }
 
     #[test]
     fn gap_longer_than_window_is_a_boundary() {
         // Rising across an 8 h gap: the window holding the new sample began within 5 h of it.
-        let got = five(
-            &[
-                (T, 40.0),
-                (T + 8 * HOUR_MS, 45.0),
-                (T + 8 * HOUR_MS + m(15), 50.0),
-            ],
-            T + 8 * HOUR_MS + m(20),
-        );
+        let got = five(&[(T, 40.0), (T + 8 * HOUR_MS, 45.0), (T + 8 * HOUR_MS + m(15), 50.0)], T + 8 * HOUR_MS + m(20));
         // Bounded by both the gap (> T + 3 h) and the newest sample (> T + 8 h 15 min - 5 h).
         let (lo, hi) = (T + 3 * HOUR_MS + m(15), T + 8 * HOUR_MS);
-        assert_eq!(
-            got,
-            est(
-                (lo + hi) / 2 + FIVE_HOURS_MS,
-                (hi - lo) / 2,
-                Confidence::Low
-            )
-        );
+        assert_eq!(got, est((lo + hi) / 2 + FIVE_HOURS_MS, (hi - lo) / 2, Confidence::Low));
     }
 
     #[test]
     fn monotone_series_reaches_back_one_window() {
-        let got = five(
-            &[
-                (T, 10.0),
-                (T + m(15), 20.0),
-                (T + m(30), 30.0),
-                (T + m(45), 40.0),
-            ],
-            T + m(50),
-        );
+        let got = five(&[(T, 10.0), (T + m(15), 20.0), (T + m(30), 30.0), (T + m(45), 40.0)], T + m(50));
         assert_eq!(got, from_first_sample_45_min_series());
         // A single sample reaches back a whole window.
-        assert_eq!(
-            five(&[(T, 10.0)], T + m(5)),
-            est(T + FIVE_HOURS_MS / 2, FIVE_HOURS_MS / 2, Confidence::Low)
-        );
+        assert_eq!(five(&[(T, 10.0)], T + m(5)), est(T + FIVE_HOURS_MS / 2, FIVE_HOURS_MS / 2, Confidence::Low));
     }
 
     #[test]
@@ -492,12 +336,7 @@ mod tests {
         pts.push((last, 45.0));
         let true_reset = T + 19 * HOUR_MS + m(30);
         let got = five(&pts, last + MINUTE_MS);
-        let ResetInfo::Estimated {
-            at_ms,
-            plus_minus_ms,
-            confidence,
-        } = got
-        else {
+        let ResetInfo::Estimated { at_ms, plus_minus_ms, confidence } = got else {
             panic!("{got:?}");
         };
         assert!(at_ms > last, "reset before the last active sample: {got:?}");
@@ -506,9 +345,7 @@ mod tests {
 
         // Monotone for 4 h: the window began in (last - 5 h, first sample], not up to 5 h before
         // the first sample.
-        let pts: Vec<(Ms, f32)> = (0..=16)
-            .map(|k| (T + k * m(15), 5.0 + 2.0 * k as f32))
-            .collect();
+        let pts: Vec<(Ms, f32)> = (0..=16).map(|k| (T + k * m(15), 5.0 + 2.0 * k as f32)).collect();
         let last = T + 4 * HOUR_MS;
         let got = five(&pts, last + MINUTE_MS);
         assert_eq!(got, est(T + 4 * HOUR_MS + m(30), m(30), Confidence::Medium));
@@ -517,19 +354,10 @@ mod tests {
 
     #[test]
     fn last_sample_zero_is_unknown() {
-        assert_eq!(
-            five(&[(T, 30.0), (T + m(15), 0.0)], T + m(20)),
-            ResetInfo::Unknown
-        );
+        assert_eq!(five(&[(T, 30.0), (T + m(15), 0.0)], T + m(20)), ResetInfo::Unknown);
         assert_eq!(five(&[(T, 0.0)], T + m(20)), ResetInfo::Unknown);
-        assert_eq!(
-            five(&[(T, 0.0), (T + m(15), 0.0)], T + m(20)),
-            ResetInfo::Unknown
-        );
-        assert_eq!(
-            week(&[(T, 30.0), (T + m(15), 0.0)], Some(T - HOUR_MS), T + m(20)),
-            ResetInfo::Unknown
-        );
+        assert_eq!(five(&[(T, 0.0), (T + m(15), 0.0)], T + m(20)), ResetInfo::Unknown);
+        assert_eq!(week(&[(T, 30.0), (T + m(15), 0.0)], Some(T - HOUR_MS), T + m(20)), ResetInfo::Unknown);
     }
 
     #[test]
@@ -541,43 +369,17 @@ mod tests {
             ResetInfo::Unknown,
             "a 5 h window starts with the next message, not on a schedule"
         );
-        assert_eq!(
-            week(&[], Some(T - HOUR_MS), T),
-            est(T - HOUR_MS + SEVEN_DAYS_MS, DAY_MS, Confidence::Low)
-        );
+        assert_eq!(week(&[], Some(T - HOUR_MS), T), est(T - HOUR_MS + SEVEN_DAYS_MS, DAY_MS, Confidence::Low));
     }
 
     #[test]
     fn weekly_is_always_low_with_an_extra_day() {
-        let got = week(
-            &[
-                (T, 80.0),
-                (T + m(15), 84.0),
-                (T + m(30), 41.0),
-                (T + m(45), 42.0),
-            ],
-            None,
-            T + m(50),
-        );
-        assert_eq!(
-            got,
-            est(
-                T + m(22) + 30_000 + SEVEN_DAYS_MS,
-                m(7) + 30_000 + DAY_MS,
-                Confidence::Low
-            )
-        );
+        let got = week(&[(T, 80.0), (T + m(15), 84.0), (T + m(30), 41.0), (T + m(45), 42.0)], None, T + m(50));
+        assert_eq!(got, est(T + m(22) + 30_000 + SEVEN_DAYS_MS, m(7) + 30_000 + DAY_MS, Confidence::Low));
         // Weekly monotone: reaches back a week from the newest sample.
         let got = week(&[(T, 10.0), (T + HOUR_MS, 12.0)], None, T + HOUR_MS);
         let (lo, hi) = (T + HOUR_MS - SEVEN_DAYS_MS, T);
-        assert_eq!(
-            got,
-            est(
-                (lo + hi) / 2 + SEVEN_DAYS_MS,
-                (hi - lo) / 2 + DAY_MS,
-                Confidence::Low
-            )
-        );
+        assert_eq!(got, est((lo + hi) / 2 + SEVEN_DAYS_MS, (hi - lo) / 2 + DAY_MS, Confidence::Low));
     }
 
     #[test]
@@ -585,56 +387,28 @@ mod tests {
         let now = T;
         // Monotone since a reset ten days ago: 10 d - 7 d → next is 4 days ahead.
         let r = now - 10 * DAY_MS;
-        let s = [
-            (r + HOUR_MS, 5.0),
-            (r + 4 * DAY_MS, 20.0),
-            (now - HOUR_MS, 50.0),
-        ];
-        assert_eq!(
-            week(&s, Some(r), now),
-            est(now + 4 * DAY_MS, DAY_MS, Confidence::Low)
-        );
+        let s = [(r + HOUR_MS, 5.0), (r + 4 * DAY_MS, 20.0), (now - HOUR_MS, 50.0)];
+        assert_eq!(week(&s, Some(r), now), est(now + 4 * DAY_MS, DAY_MS, Confidence::Low));
         // Exactly one and two weeks ago: the result is strictly after now.
         assert_eq!(
             week(&[(now - HOUR_MS, 5.0)], Some(now - SEVEN_DAYS_MS), now),
             est(now + SEVEN_DAYS_MS, DAY_MS, Confidence::Low)
         );
-        assert_eq!(
-            week(&[], Some(now - 2 * SEVEN_DAYS_MS), now),
-            est(now + SEVEN_DAYS_MS, DAY_MS, Confidence::Low)
-        );
+        assert_eq!(week(&[], Some(now - 2 * SEVEN_DAYS_MS), now), est(now + SEVEN_DAYS_MS, DAY_MS, Confidence::Low));
         // All samples predate the reset (they describe the finished window).
         let s = [(now - 3 * DAY_MS, 70.0), (now - 2 * HOUR_MS, 90.0)];
-        assert_eq!(
-            week(&s, Some(now - HOUR_MS), now),
-            est(now - HOUR_MS + SEVEN_DAYS_MS, DAY_MS, Confidence::Low)
-        );
+        assert_eq!(week(&s, Some(now - HOUR_MS), now), est(now - HOUR_MS + SEVEN_DAYS_MS, DAY_MS, Confidence::Low));
         // A drop after the reset is newer information and wins over the schedule.
-        let s = [
-            (now - 3 * DAY_MS, 10.0),
-            (now - DAY_MS - m(15), 60.0),
-            (now - DAY_MS, 5.0),
-        ];
+        let s = [(now - 3 * DAY_MS, 10.0), (now - DAY_MS - m(15), 60.0), (now - DAY_MS, 5.0)];
         let got = week(&s, Some(now - 4 * DAY_MS), now);
-        assert_eq!(
-            got,
-            est(
-                now - DAY_MS - m(7) - 30_000 + SEVEN_DAYS_MS,
-                m(7) + 30_000 + DAY_MS,
-                Confidence::Low
-            )
-        );
+        assert_eq!(got, est(now - DAY_MS - m(7) - 30_000 + SEVEN_DAYS_MS, m(7) + 30_000 + DAY_MS, Confidence::Low));
     }
 
     #[test]
     fn past_exact_reset_bounds_the_start() {
         // Monotone samples right after a known reset: the window began in (reset, first sample].
-        let got = estimate_reset(
-            &WindowKind::FiveHour,
-            &series(&[(T, 5.0), (T + m(15), 10.0)]),
-            Some(T - m(10)),
-            T + m(20),
-        );
+        let got =
+            estimate_reset(&WindowKind::FiveHour, &series(&[(T, 5.0), (T + m(15), 10.0)]), Some(T - m(10)), T + m(20));
         assert_eq!(got, est(T - m(5) + FIVE_HOURS_MS, m(5), Confidence::High));
         // The reset between two samples is itself the boundary.
         let got = estimate_reset(
@@ -663,11 +437,7 @@ mod tests {
         for now in [T + 8 * HOUR_MS, T + 2 * DAY_MS, T + 2 * DAY_MS + 30_000] {
             assert_eq!(five(&s, now), five_expected, "{now}");
         }
-        let week_expected = est(
-            T + m(7) + 30_000 + SEVEN_DAYS_MS,
-            m(7) + 30_000 + DAY_MS,
-            Confidence::Low,
-        );
+        let week_expected = est(T + m(7) + 30_000 + SEVEN_DAYS_MS, m(7) + 30_000 + DAY_MS, Confidence::Low);
         for now in [T + 30 * DAY_MS, T + 30 * DAY_MS + 30_000] {
             assert_eq!(week(&s, None, now), week_expected, "{now}");
         }
@@ -675,20 +445,9 @@ mod tests {
 
     #[test]
     fn unsorted_and_non_finite_input_is_tolerated() {
-        let sorted = [
-            (T, 60.0),
-            (T + m(15), 73.0),
-            (T + m(30), 13.0),
-            (T + m(45), 20.0),
-        ];
+        let sorted = [(T, 60.0), (T + m(15), 73.0), (T + m(30), 13.0), (T + m(45), 20.0)];
         let expected = five(&sorted, T + m(50));
-        let shuffled = [
-            sorted[2],
-            sorted[0],
-            sorted[3],
-            sorted[1],
-            (T + m(40), f32::NAN),
-        ];
+        let shuffled = [sorted[2], sorted[0], sorted[3], sorted[1], (T + m(40), f32::NAN)];
         assert_eq!(five(&shuffled, T + m(50)), expected);
         let mut with_infinity = sorted.to_vec();
         with_infinity.insert(1, (T + m(5), f32::INFINITY));
@@ -707,15 +466,7 @@ mod tests {
             let got = estimate_reset(&WindowKind::FiveHour, &fh[..=k], None, now);
             match (truth.fh > 0.0, truth.fh_reset_ms, &got) {
                 (false, _, ResetInfo::Unknown) => {}
-                (
-                    true,
-                    Some(true_at),
-                    ResetInfo::Estimated {
-                        at_ms,
-                        plus_minus_ms,
-                        confidence,
-                    },
-                ) => {
+                (true, Some(true_at), ResetInfo::Estimated { at_ms, plus_minus_ms, confidence }) => {
                     assert!(
                         (at_ms - true_at).abs() <= *plus_minus_ms,
                         "5h sample {k}: estimated {at_ms}±{plus_minus_ms}, true {true_at}"
@@ -730,14 +481,7 @@ mod tests {
             let got = estimate_reset(&WindowKind::SevenDay, &sd[..=k], None, now);
             match (truth.sd > 0.0, &got) {
                 (false, ResetInfo::Unknown) => {}
-                (
-                    true,
-                    ResetInfo::Estimated {
-                        at_ms,
-                        plus_minus_ms,
-                        confidence: Confidence::Low,
-                    },
-                ) => {
+                (true, ResetInfo::Estimated { at_ms, plus_minus_ms, confidence: Confidence::Low }) => {
                     assert!(
                         (at_ms - truth.sd_reset_ms).abs() <= *plus_minus_ms,
                         "7d sample {k}: estimated {at_ms}±{plus_minus_ms}, true {}",
@@ -748,10 +492,7 @@ mod tests {
             }
         }
         assert!(checked_fh > 200, "{checked_fh}");
-        assert!(
-            narrow > 100,
-            "most windows are located to ±7.5 min: {narrow}/{checked_fh}"
-        );
+        assert!(narrow > 100, "most windows are located to ±7.5 min: {narrow}/{checked_fh}");
         // Most of them rise from 0 and are capped at Medium; those located by a drop stay High.
         assert!(high > 20, "{high}/{checked_fh}");
     }
@@ -789,12 +530,7 @@ mod tests {
 
     #[test]
     fn extreme_times_do_not_overflow() {
-        let s = series(&[
-            (Ms::MIN, 50.0),
-            (Ms::MIN + 1, 10.0),
-            (Ms::MAX - 1, 20.0),
-            (Ms::MAX, 5.0),
-        ]);
+        let s = series(&[(Ms::MIN, 50.0), (Ms::MIN + 1, 10.0), (Ms::MAX - 1, 20.0), (Ms::MAX, 5.0)]);
         for kind in [WindowKind::FiveHour, WindowKind::SevenDay] {
             for exact in [None, Some(Ms::MIN), Some(0)] {
                 for now in [Ms::MIN, 0, Ms::MAX] {
