@@ -14,13 +14,16 @@
 //! ```
 //! Context tokens = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` of the
 //! LAST qualifying assistant line (not a sum). Qualifying: `type == "assistant"`, `isSidechain` not
-//! true, `message.model` present and not `"<synthetic>"`, `message.usage` present.
+//! true, `message.model` present and not `"<synthetic>"`, `message.usage` present. The largest
+//! count seen only covers lines with the last line's `message.model`.
 //!
-//! 1M detection: the transcript head (first [`HEAD_BYTES`]) may contain an `attachment` line whose
-//! identity model id ends with `[1m]`, e.g. `{"type":"attachment","attachment":{"type":"model",
-//! "identity":{"modelId":"claude-opus-5-5[1m]"}}}` — search tolerantly for any string value
-//! matching `claude-…[1m]` inside lines with `"type":"attachment"`. `message.model` never has the
-//! suffix.
+//! 1M detection: the transcript head (first [`HEAD_BYTES`], or [`HEAD_MAX_BYTES`] when those hold
+//! no identity) may contain an `attachment` line whose identity model id ends with `[1m]`, e.g.
+//! `{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}`
+//! — search tolerantly for any string value matching `claude-…[1m]` inside lines with
+//! `"type":"attachment"`; the last such line in the head counts. `message.model` never has the
+//! suffix, and the head is written once, so the marker only counts while the last line's model is
+//! the identity's model (after `/model` switches to another one it no longer applies).
 
 use std::ffi::OsStr;
 use std::fs::{DirEntry, File};
@@ -32,9 +35,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
 use crate::engine::types::Entrypoint;
+use crate::model_names::split_1m;
 use crate::saferead::{ReadError, SafeReader};
 use crate::sources::SourceError;
-use crate::time::{Ms, json_time_to_ms};
+use crate::time::{DAY_MS, Ms, json_time_to_ms};
 
 /// Bytes read from the end of the file on the first attempt.
 pub const TAIL_BYTES: u64 = 256 * 1024;
@@ -42,8 +46,13 @@ pub const TAIL_BYTES: u64 = 256 * 1024;
 pub const TAIL_RETRY_BYTES: u64 = 1024 * 1024;
 /// Bytes read from the start of the file to find the identity attachment.
 pub const HEAD_BYTES: u64 = 64 * 1024;
+/// Head size of the second attempt when [`HEAD_BYTES`] hold no identity (a huge first prompt).
+pub const HEAD_MAX_BYTES: u64 = 512 * 1024;
 /// Directory depth limit when walking roots.
 pub const MAX_WALK_DEPTH: usize = 8;
+/// A listed file whose directory-entry mtime is at most this much older than the cutoff is
+/// re-checked against its own metadata (see [`current_stamp`]).
+pub const LISTING_SLACK_MS: Ms = DAY_MS;
 
 /// Model placeholder Claude Code writes for locally generated (non-API) messages.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
@@ -59,10 +68,11 @@ pub struct TranscriptTail {
     pub model_id: Option<String>,
     /// Context tokens of the last qualifying line.
     pub ctx_tokens: u64,
-    /// Largest context-token count among qualifying lines in the scanned tail.
+    /// Largest context-token count among qualifying lines of `model_id` in the scanned tail.
     pub max_ctx_tokens_seen: u64,
-    /// `Some(true)` if the head's identity attachment says `[1m]`, `Some(false)` if an identity
-    /// was found without it, `None` if no identity line was found.
+    /// `Some(true)` if the head's identity attachment says `[1m]` for `model_id`'s model,
+    /// `Some(false)` if an identity was found without it or for another model, `None` if no
+    /// identity line was found.
     pub identity_1m: Option<bool>,
     /// `timestamp` of the last qualifying line.
     pub last_assistant_ms: Ms,
@@ -77,14 +87,19 @@ pub struct RecentFile {
     pub len: u64,
 }
 
+/// A head scan, cached per transcript by the caller: `None` until the head has been scanned, then
+/// the identity model id found there (e.g. `Some(Some("claude-opus-5-5[1m]"))`, or `Some(None)`).
+pub type HeadIdentity = Option<Option<String>>;
+
 /// Scans the end of one transcript. Reads the last [`TAIL_BYTES`] (retrying with
 /// [`TAIL_RETRY_BYTES`] if no qualifying line was found and the file is larger); drops the first
 /// partial line by searching for `\n` in BYTES before UTF-8 decoding (the seek may split a
 /// multi-byte char); tolerates a partial last line (Claude Code may be mid-write) and CRLF.
 /// Walks lines from the end; a cheap substring check for `"assistant"` precedes JSON parsing.
 ///
-/// `cached_identity`: pass `Some(v)` to reuse a previous head scan for this path (skip reading
-/// the head); `None` to scan the head now.
+/// `identity`: the previous head scan for this path, reused as-is (the head is not read again).
+/// When it is `None` and a qualifying line exists, the head is scanned now and the result stored
+/// there for the next call. Either way `identity_1m` is decided against the current model.
 ///
 /// Returns `Ok(None)` if no qualifying line exists. `session_id` falls back to the file stem and
 /// `entrypoint` to `Unknown` when missing. A qualifying line without a usable `timestamp` falls
@@ -92,7 +107,7 @@ pub struct RecentFile {
 pub fn scan_tail(
     reader: &SafeReader,
     path: &Path,
-    cached_identity: Option<Option<bool>>,
+    identity: &mut HeadIdentity,
 ) -> Result<Option<TranscriptTail>, SourceError> {
     let mut file = reader.open(path).map_err(open_error)?;
     let meta = file.metadata().map_err(io_error)?;
@@ -108,12 +123,13 @@ pub fn scan_tail(
         return Ok(None);
     };
 
-    let identity_1m = match cached_identity {
-        Some(cached) => cached,
-        // The chunk already holds the start of the file.
-        None if chunk_start == 0 => scan_head(&chunk[..chunk.len().min(HEAD_BYTES as usize)]),
-        None => scan_head(&read_range(&mut file, 0, len.min(HEAD_BYTES))?),
-    };
+    if identity.is_none() {
+        *identity = Some(head_identity(&mut file, len, &chunk, chunk_start)?);
+    }
+    let identity_1m = identity
+        .as_ref()
+        .and_then(|found| found.as_deref())
+        .map(|id| identity_is_1m_for(id, &last.model));
 
     let session_id = last
         .session_id
@@ -150,12 +166,15 @@ pub fn scan_tail(
 /// module docs, so e.g. a Cowork session's `.claude/history.jsonl` is ignored. Ties on
 /// modification time are ordered by path; a file seen twice through overlapping roots is
 /// returned once; files the reader would refuse to open are left out; symlinks are not followed.
+/// Modification time and length come from the file's own metadata when the listing puts it
+/// within [`LISTING_SLACK_MS`] of the cutoff or later (see [`current_stamp`]).
 pub fn find_recent(reader: &SafeReader, roots: &[PathBuf], newer_than_ms: Ms, limit: usize) -> Vec<RecentFile> {
     if limit == 0 {
         return Vec::new();
     }
     let mut found = Vec::new();
     let skip_subagents = |name: &OsStr| name.eq_ignore_ascii_case("subagents");
+    let listing_floor = newer_than_ms.saturating_sub(LISTING_SLACK_MS);
     for root in roots {
         walk_files(reader, root, MAX_WALK_DEPTH, &skip_subagents, &mut |entry| {
             let path = entry.path();
@@ -163,19 +182,29 @@ pub fn find_recent(reader: &SafeReader, roots: &[PathBuf], newer_than_ms: Ms, li
                 return;
             }
             let Ok(meta) = entry.metadata() else { return };
-            let Some(modified_ms) = meta.modified().ok().and_then(system_time_ms) else {
+            let Some(listed_ms) = meta.modified().ok().and_then(system_time_ms) else {
                 return;
             };
-            if modified_ms > newer_than_ms && reader.allows(&path) {
-                found.push(RecentFile {
-                    path,
-                    modified_ms,
-                    len: meta.len(),
-                });
+            if listed_ms <= listing_floor || !reader.allows(&path) {
+                return;
+            }
+            let (modified_ms, len) = current_stamp(&path).unwrap_or((listed_ms, meta.len()));
+            if modified_ms > newer_than_ms {
+                found.push(RecentFile { path, modified_ms, len });
             }
         });
     }
     newest_first(found, limit)
+}
+
+/// The file's own modification time and length. On Windows a directory listing reports them from
+/// the directory index, which NTFS updates lazily: while a writer holds the file open without
+/// flushing, the listing can keep the stamp from before its writes (seen on Windows 11 until the
+/// handle closed). Reading the file's metadata by path gets the current values; links are not
+/// followed.
+fn current_stamp(path: &Path) -> Option<(Ms, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file)?;
+    Some((meta.modified().ok().and_then(system_time_ms)?, meta.len()))
 }
 
 /// True if `path` (found below `root`) lies inside a directory named `projects` that is `root`
@@ -348,7 +377,7 @@ fn scan_chunk(buf: &[u8], starts_mid_file: bool) -> Option<TailScan> {
     } else {
         buf
     };
-    let mut last = None;
+    let mut last: Option<AssistantLine> = None;
     let mut max_ctx_tokens = 0;
     for raw in body.rsplit(|&b| b == b'\n') {
         let line = raw.trim_ascii(); // also removes the `\r` of CRLF files
@@ -358,7 +387,10 @@ fn scan_chunk(buf: &[u8], starts_mid_file: bool) -> Option<TailScan> {
         // A partial (mid-write) or otherwise malformed line simply fails to parse.
         let Ok(parsed) = serde_json::from_slice::<RawLine>(line) else { continue };
         let Some(assistant) = qualify(parsed) else { continue };
-        max_ctx_tokens = max_ctx_tokens.max(assistant.ctx_tokens);
+        // Lines of a model used before a `/model` switch say nothing about the current window.
+        if last.as_ref().is_none_or(|l| l.model == assistant.model) {
+            max_ctx_tokens = max_ctx_tokens.max(assistant.ctx_tokens);
+        }
         if last.is_none() {
             last = Some(assistant);
         }
@@ -410,40 +442,81 @@ fn io_error(e: io::Error) -> SourceError {
 
 // ---- head (identity) scanning ----
 
-/// Looks for the identity attachment in the first bytes of a transcript. The last line may be
-/// cut off at the head boundary; the scan tolerates that.
-fn scan_head(head: &[u8]) -> Option<bool> {
-    let mut identity_seen = false;
+/// The identity model id in the first [`HEAD_BYTES`], or in the first [`HEAD_MAX_BYTES`] if those
+/// hold none and the file is longer. `chunk` is the tail chunk read at `chunk_start`; when that is
+/// the start of the file it already holds the head.
+fn head_identity(file: &mut File, len: u64, chunk: &[u8], chunk_start: u64) -> Result<Option<String>, SourceError> {
+    let mut scanned = 0;
+    for size in [HEAD_BYTES, HEAD_MAX_BYTES].map(|n| n.min(len)) {
+        if size == scanned {
+            break;
+        }
+        scanned = size;
+        let found = if chunk_start == 0 {
+            scan_head(&chunk[..chunk.len().min(size as usize)])
+        } else {
+            scan_head(&read_range(file, 0, size)?)
+        };
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+
+/// Looks for the identity attachment in the first bytes of a transcript: the model id of the last
+/// attachment line that has one (a later identity line describes a newer choice), its `[1m]` value
+/// preferred over a plain identity in the same line. The last line may be cut off at the head
+/// boundary; the scan tolerates that.
+fn scan_head(head: &[u8]) -> Option<String> {
+    let mut found = None;
     for line in head.split(|&b| b == b'\n') {
         if !contains(line, b"attachment") {
             continue;
         }
         let scan = scan_attachment_line(line);
         if scan.is_attachment {
-            if scan.has_1m {
-                return Some(true);
-            }
-            identity_seen |= scan.has_identity;
+            found = scan.one_m.or(scan.identity).or(found);
         }
     }
-    identity_seen.then_some(false)
+    found.map(|id| String::from_utf8_lossy(id).into_owned())
+}
+
+/// True if the identity model id has `[1m]` and names the same model as `model` (a
+/// `message.model`, never suffixed): equal once a trailing `-YYYYMMDD` is ignored, or an alias
+/// such as `opus` that is one of the parts of `model`.
+fn identity_is_1m_for(identity: &str, model: &str) -> bool {
+    let (base, one_m) = split_1m(identity.trim());
+    let (base, model) = (without_date(base), without_date(model.trim()));
+    let is_alias = !base.is_empty() && base.bytes().all(|b| b.is_ascii_alphabetic());
+    one_m
+        && (base.eq_ignore_ascii_case(model)
+            || (is_alias && model.split('-').skip(1).any(|part| part.eq_ignore_ascii_case(base))))
+}
+
+/// `id` without a trailing `-YYYYMMDD` snapshot date.
+fn without_date(id: &str) -> &str {
+    match id.rsplit_once('-') {
+        Some((rest, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => id,
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct AttachmentScan {
+struct AttachmentScan<'a> {
     /// The top-level `type` is `attachment`, or — for a line cut off before its `type` key — it
     /// has a top-level `attachment` key.
     is_attachment: bool,
-    /// A `modelId` string value was seen.
-    has_identity: bool,
-    /// A `claude-…[1m]` string value (or a `modelId` ending in `[1m]`) was seen.
-    has_1m: bool,
+    /// The first model-id-like `modelId` string value.
+    identity: Option<&'a [u8]>,
+    /// The first `claude-…[1m]` string value (or model-id-like `modelId` ending in `[1m]`).
+    one_m: Option<&'a [u8]>,
 }
 
 /// A tiny JSON tokenizer over one (possibly truncated) line: it tracks nesting depth and string
 /// literals, so text that merely mentions a model id inside a longer string never matches, and
 /// key order or whitespace do not matter.
-fn scan_attachment_line(line: &[u8]) -> AttachmentScan {
+fn scan_attachment_line(line: &[u8]) -> AttachmentScan<'_> {
     let mut out = AttachmentScan::default();
     let mut top_type: Option<&[u8]> = None;
     let mut attachment_key = false;
@@ -465,12 +538,12 @@ fn scan_attachment_line(line: &[u8]) -> AttachmentScan {
                 if depth == 1 && key == Some(b"type".as_slice()) && top_type.is_none() {
                     top_type = Some(text);
                 }
-                if key.is_some_and(|k| IDENTITY_KEYS.contains(&k)) {
-                    out.has_identity = true;
-                    out.has_1m |= ends_with_1m(text);
+                let is_identity = key.is_some_and(|k| IDENTITY_KEYS.contains(&k)) && is_model_id_like(text);
+                if is_identity {
+                    out.identity.get_or_insert(text);
                 }
-                if text.starts_with(b"claude-") && ends_with_1m(text) && is_model_id_like(text) {
-                    out.has_1m = true;
+                if ends_with_1m(text) && (is_identity || (text.starts_with(b"claude-") && is_model_id_like(text))) {
+                    out.one_m.get_or_insert(text);
                 }
                 i = next;
             }
@@ -565,7 +638,7 @@ mod tests {
         }
 
         fn scan(&self, path: &Path) -> Option<TranscriptTail> {
-            scan_tail(&self.reader, path, None).unwrap()
+            scan_tail(&self.reader, path, &mut None).unwrap()
         }
     }
 
@@ -670,7 +743,7 @@ mod tests {
     #[test]
     fn last_line_wins_and_max_is_tracked() {
         let e = env();
-        let first = assistant("claude-opus-5-5", 10, 0, 250_000);
+        let first = assistant("claude-sonnet-5", 10, 0, 250_000);
         let second = with(assistant("claude-sonnet-5", 1, 2, 3), "/timestamp", json!("2026-09-24T12:01:00Z"));
         let path = e.write("p/s.jsonl", &lines(&[first, user("next"), second, user("thanks")]));
         let tail = e.scan(&path).unwrap();
@@ -750,11 +823,11 @@ mod tests {
     fn missing_or_denied_files_are_errors() {
         let e = env();
         let missing = e.paths.projects_dir().join("p").join("missing.jsonl");
-        assert!(matches!(scan_tail(&e.reader, &missing, None), Err(SourceError::NotFound)));
+        assert!(matches!(scan_tail(&e.reader, &missing, &mut None), Err(SourceError::NotFound)));
         let outside = e.tmp.path().join("elsewhere").join("s.jsonl");
         write_file(&outside, &lines(&[assistant("claude-opus-5-5", 1, 1, 1)]));
         assert!(matches!(
-            scan_tail(&e.reader, &outside, None),
+            scan_tail(&e.reader, &outside, &mut None),
             Err(SourceError::Read(ReadError::Denied(_)))
         ));
     }
@@ -1004,7 +1077,7 @@ mod tests {
             // Any claude-…[1m] string value inside an attachment line counts.
             (
                 "other_key",
-                lines(&[json!({"type": "attachment", "attachment": {"model": "claude-sonnet-5[1m]"}}), a.clone()]),
+                lines(&[json!({"type": "attachment", "attachment": {"model": "claude-opus-5-5[1m]"}}), a.clone()]),
                 Some(true),
             ),
             // Mentions outside attachment lines or inside longer strings do not.
@@ -1038,30 +1111,178 @@ mod tests {
     }
 
     #[test]
+    fn identity_after_a_huge_first_prompt() {
+        let e = env();
+        // Up to 512 KiB of head are searched when the first 64 KiB hold no identity line, both when
+        // the tail chunk already covers the head and when the head is read separately.
+        let prompt = |kib: usize| user(&"p".repeat(kib * 1024));
+        let ident = identity_line("claude-opus-5-5[1m]");
+        let a = assistant("claude-opus-5-5", 1, 1, 1);
+        let filler = user(&"f".repeat(TAIL_RETRY_BYTES as usize / 2));
+        let cases = [
+            ("in_tail_chunk", lines(&[prompt(100), ident.clone(), a.clone()]), Some(true)),
+            ("read_separately", lines(&[prompt(400), ident.clone(), filler.clone(), a.clone()]), Some(true)),
+            ("beyond_512k", lines(&[prompt(520), ident.clone(), filler, a.clone()]), None),
+        ];
+        for (name, bytes, expected) in cases {
+            let path = e.write(&format!("p/{name}.jsonl"), &bytes);
+            assert_eq!(e.scan(&path).unwrap().identity_1m, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn head_identity_is_the_last_one() {
+        let ids = |ids: &[&str]| lines(&ids.iter().map(|id| identity_line(id)).collect::<Vec<_>>());
+        // A later identity line (a `/model` switch early in the session) replaces an earlier one.
+        let head = ids(&["claude-sonnet-5[1m]", "claude-opus-5-5[1m]", "claude-opus-5-5"]);
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-opus-5-5"));
+        let head = ids(&["claude-opus-5-5", "claude-sonnet-5[1m]"]);
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-sonnet-5[1m]"));
+        // Within one line a 1M value still wins over a plain identity.
+        let mixed = json!({"type": "attachment", "a": {"modelId": "claude-opus-5-5", "b": "claude-sonnet-5[1m]"}});
+        let head = lines(&[identity_line("claude-opus-5-5"), mixed, user("hi")]);
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-sonnet-5[1m]"));
+        assert_eq!(scan_head(&lines(&[user("hi")])), None);
+
+        // End to end: the switch from the 1M to the 200K variant of the same model is visible
+        // while both identity lines are in the head.
+        let e = env();
+        let path = e.write(
+            "p/variant.jsonl",
+            &lines(&[
+                identity_line("claude-opus-5-5[1m]"),
+                assistant("claude-opus-5-5", 1, 1, 1),
+                identity_line("claude-opus-5-5"),
+                assistant("claude-opus-5-5", 2, 2, 2),
+            ]),
+        );
+        assert_eq!(e.scan(&path).unwrap().identity_1m, Some(false));
+    }
+
+    #[test]
+    fn identity_applies_only_to_its_model() {
+        let e = env();
+        // `/model` switched away from the 1M model named by the identity attachment.
+        let cases = [
+            ("claude-opus-5-5[1m]", "claude-opus-5-5", Some(true)),
+            ("claude-opus-5-5[1m]", "claude-sonnet-5", Some(false)),
+            ("claude-opus-5-5", "claude-opus-5-5", Some(false)),
+            // A dated API model id is the same model; an alias matches its family.
+            ("claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929", Some(true)),
+            ("opus[1m]", "claude-opus-5-5", Some(true)),
+            ("opus[1m]", "claude-sonnet-5", Some(false)),
+        ];
+        for (i, (identity, model, expected)) in cases.into_iter().enumerate() {
+            let before = assistant("claude-opus-5-5", 1, 1, 1);
+            let path = e.write(
+                &format!("p/switch{i}.jsonl"),
+                &lines(&[identity_line(identity), before, assistant(model, 2, 2, 2)]),
+            );
+            assert_eq!(e.scan(&path).unwrap().identity_1m, expected, "{identity} vs {model}");
+        }
+    }
+
+    #[test]
+    fn max_ctx_counts_only_the_last_lines_model() {
+        let e = env();
+        let path = e.write(
+            "p/a.jsonl",
+            &lines(&[assistant("claude-opus-5-5", 0, 0, 300_000), assistant("claude-sonnet-5", 0, 0, 20_000)]),
+        );
+        let tail = e.scan(&path).unwrap();
+        assert_eq!((tail.ctx_tokens, tail.max_ctx_tokens_seen), (20_000, 20_000));
+        let path = e.write(
+            "p/b.jsonl",
+            &lines(&[
+                assistant("claude-sonnet-5", 0, 0, 250_000),
+                assistant("claude-opus-5-5", 0, 0, 400_000),
+                assistant("claude-sonnet-5", 0, 0, 20_000),
+            ]),
+        );
+        assert_eq!(e.scan(&path).unwrap().max_ctx_tokens_seen, 250_000);
+    }
+
+    #[test]
+    fn model_switch_away_from_1m_resolves_to_the_lower_rules() {
+        use crate::engine::context::{self, ContextInputs, DEFAULT_CTX, ONE_M_CTX};
+        use crate::engine::types::CtxBasis;
+        let e = env();
+        let resolve = |tail: &TranscriptTail| {
+            let r = context::resolve(&ContextInputs {
+                tail: Some(tail),
+                capture: None,
+                desktop_session: None,
+                overrides: &Default::default(),
+            });
+            (r.size, r.basis)
+        };
+        let mut body = lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 0, 0, 300_000)]);
+        let path = e.write("p/s.jsonl", &body);
+        assert_eq!(resolve(&e.scan(&path).unwrap()), (ONE_M_CTX, CtxBasis::Identity));
+        body.extend(lines(&[assistant("claude-sonnet-5", 0, 0, 20_000)]));
+        let path = e.write("p/s.jsonl", &body);
+        assert_eq!(resolve(&e.scan(&path).unwrap()), (DEFAULT_CTX, CtxBasis::Default));
+    }
+
+    #[test]
+    fn find_recent_reads_the_current_stamp_of_a_file_held_open() {
+        // NTFS answers directory listings from the directory index, which lags behind a file that a
+        // writer holds open without flushing: on Windows 11 the listing kept the pre-write size and
+        // mtime until the handle closed. Where listings are current this passes trivially.
+        let e = env();
+        let now = crate::time::now_ms();
+        let path = e.write("p/open.jsonl", b"{}\n");
+        set_mtime(&path, now - 2 * 3_600_000);
+        let mut writer = File::options().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut writer, b"{\"type\":\"user\"}\n").unwrap();
+        let found = find_recent(&e.reader, &[e.paths.projects_dir()], now - 3_600_000, 10);
+        drop(writer);
+        assert_eq!(names(&found), ["open.jsonl"]);
+        assert_eq!(found[0].len, 19);
+        assert!(found[0].modified_ms > now - 3_600_000);
+    }
+
+    #[test]
     fn cached_identity_skips_head_scan() {
         let e = env();
         let path = e.write(
             "p/s.jsonl",
             &lines(&[identity_line("claude-opus-5-5[1m]"), assistant("claude-opus-5-5", 1, 1, 1)]),
         );
-        let scan = |cached| scan_tail(&e.reader, &path, cached).unwrap().unwrap().identity_1m;
-        assert_eq!(scan(None), Some(true));
-        assert_eq!(scan(Some(Some(false))), Some(false), "cached value is used as-is");
-        assert_eq!(scan(Some(None)), None);
-        assert_eq!(scan(Some(Some(true))), Some(true));
+        let scan = |cached: HeadIdentity| {
+            let mut identity = cached;
+            let one_m = scan_tail(&e.reader, &path, &mut identity).unwrap().unwrap().identity_1m;
+            (one_m, identity)
+        };
+        let found = Some(Some("claude-opus-5-5[1m]".to_string()));
+        assert_eq!(scan(None), (Some(true), found.clone()), "the head scan is handed back");
+        let plain = Some(Some("claude-opus-5-5".to_string()));
+        assert_eq!(scan(plain.clone()), (Some(false), plain), "cached value is used as-is");
+        assert_eq!(scan(Some(None)), (None, Some(None)));
+        assert_eq!(scan(found.clone()), (Some(true), found));
+        // The cached identity is still compared with the current model.
+        let other = Some(Some("claude-sonnet-5[1m]".to_string()));
+        assert_eq!(scan(other.clone()), (Some(false), other));
     }
 
     #[test]
     fn attachment_tokenizer() {
-        let scan = |s: &str| scan_attachment_line(s.as_bytes());
+        fn scan(s: &str) -> AttachmentScan<'_> {
+            scan_attachment_line(s.as_bytes())
+        }
+        let id = b"claude-opus-5-5[1m]".as_slice();
         assert_eq!(
             scan(r#"{"type":"attachment","attachment":{"identity":{"modelId":"claude-opus-5-5[1m]"}}}"#),
             AttachmentScan {
                 is_attachment: true,
-                has_identity: true,
-                has_1m: true
+                identity: Some(id),
+                one_m: Some(id),
             }
         );
+        // A 1M value under another key; a plain identity next to it.
+        let s = scan(r#"{"type":"attachment","a":{"modelId":"claude-opus-5-5","b":"claude-sonnet-5[1m]"}}"#);
+        assert_eq!(s.identity, Some(b"claude-opus-5-5".as_slice()));
+        assert_eq!(s.one_m, Some(b"claude-sonnet-5[1m]".as_slice()));
         // Nested "type":"attachment" is not a top-level type, and an explicit other type wins
         // over an `attachment` key.
         assert!(!scan(r#"{"type":"user","x":{"type":"attachment"}}"#).is_attachment);
@@ -1069,12 +1290,17 @@ mod tests {
         assert!(scan(r#"{"attachment":{"modelId":"claude-opus-5-5[1m]"},"type":"attachment"}"#).is_attachment);
         // Truncated inside a string: what was seen so far still counts.
         let s = scan(r#"{"attachment":{"identity":{"modelId":"claude-opus-5-5[1m]","text":"unterminated"#);
-        assert!(s.is_attachment && s.has_1m);
+        assert!(s.is_attachment && s.one_m == Some(id));
         // Escaped quotes do not end a string early.
         let s = scan(r#"{"type":"attachment","a":"say \"claude-opus-5-5[1m]\" twice"}"#);
-        assert!(s.is_attachment && !s.has_1m);
-        // Aliases in modelId count too.
-        assert!(scan(r#"{"type":"attachment","identity":{"modelId":"opus[1M]"}}"#).has_1m);
+        assert!(s.is_attachment && s.one_m.is_none());
+        // Aliases in modelId count too; free text in modelId does not.
+        let s = scan(r#"{"type":"attachment","identity":{"modelId":"opus[1M]"}}"#);
+        assert_eq!(s.one_m, Some(b"opus[1M]".as_slice()));
+        assert_eq!(scan(r#"{"type":"attachment","modelId":"not a model [1m]"}"#), AttachmentScan {
+            is_attachment: true,
+            ..AttachmentScan::default()
+        });
         // Garbage never panics.
         for junk in ["\"", "\"\\", "{{{{", "}}}]]]", ":::", "\"a\":", "{\"a\":\"b\\"] {
             let _ = scan(junk);

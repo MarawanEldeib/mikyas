@@ -28,7 +28,7 @@ use cuw_core::saferead::SafeReader;
 use cuw_core::sources::desktop_sessions::{self, DesktopSession};
 use cuw_core::sources::desktop_usage::{self, DesktopUsage};
 use cuw_core::sources::statusline;
-use cuw_core::sources::transcript::{self, TranscriptTail};
+use cuw_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
 use cuw_core::sources::SourceError;
 use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, SECOND_MS, now_ms};
 use tauri::{AppHandle, Emitter};
@@ -96,7 +96,7 @@ struct CachedTail {
     modified_ms: Ms,
     len: u64,
     tail: Option<TranscriptTail>,
-    identity: Option<Option<bool>>,
+    identity: HeadIdentity,
 }
 
 /// All pipeline state; pure except for reading sources and writing its own data files.
@@ -324,20 +324,20 @@ impl Engine {
         if let Some(c) = cached.as_ref().filter(|c| c.modified_ms == modified_ms && c.len == len) {
             return c.clone();
         }
-        let identity = cached.and_then(|c| c.identity);
-        match transcript::scan_tail(&self.reader, path, identity) {
-            Ok(tail) => CachedTail {
-                modified_ms,
-                len,
-                identity: tail.as_ref().map(|t| t.identity_1m).or(identity),
-                tail,
-            },
-            Err(_) => CachedTail {
-                modified_ms,
-                len,
-                tail: None,
-                identity,
-            },
+        let mut identity = cached.as_ref().and_then(|c| c.identity.clone());
+        let tail = match transcript::scan_tail(&self.reader, path, &mut identity) {
+            Ok(Some(tail)) => Some(tail),
+            // A line longer than the tail scan reads (a huge paste or tool result) can follow the
+            // last assistant line. While the file only grows, the last tail seen still describes
+            // the session; it keeps its timestamp, so the session ages out of the list as usual.
+            Ok(None) => cached.filter(|c| len > c.len).and_then(|c| c.tail),
+            Err(_) => None,
+        };
+        CachedTail {
+            modified_ms,
+            len,
+            tail,
+            identity,
         }
     }
 
@@ -766,6 +766,67 @@ mod tests {
         assert!(out.changed);
         assert_eq!(out.snapshot.sessions.len(), 2);
         assert_eq!(out.snapshot.session.as_ref(), out.snapshot.sessions.first());
+    }
+
+    fn append(path: &Path, text: &str) {
+        let mut file = std::fs::File::options().append(true).open(path).unwrap();
+        std::io::Write::write_all(&mut file, text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn huge_line_after_the_last_assistant_line_keeps_the_session() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let path = write_transcript(&paths, "s1", &chrono_like(now - 60_000));
+        let settings = Settings::default();
+        let mut engine = Engine::new(paths.clone());
+        let before = engine.tick(now, &settings, &Dirty::all()).snapshot.session.expect("session");
+        let dirty = Dirty {
+            transcripts: vec![path.clone()],
+            ..Dirty::default()
+        };
+
+        // A pasted prompt longer than the tail scan reads now follows the assistant line.
+        let pad = "x".repeat(transcript::TAIL_RETRY_BYTES as usize + 1024);
+        append(&path, &format!(r#"{{"type":"user","message":{{"content":"{pad}"}}}}"#));
+        let out = engine.tick(now + 1, &settings, &dirty);
+        assert_eq!(out.snapshot.session.as_ref(), Some(&before), "the file only grew");
+        append(&path, "\n");
+        let out = engine.tick(now + 2, &settings, &Dirty::all());
+        assert_eq!(out.snapshot.session.as_ref(), Some(&before), "the full rescan keeps it too");
+
+        // A rewritten (shorter) file without an assistant line drops it.
+        std::fs::write(&path, "{\"type\":\"user\"}\n").unwrap();
+        assert!(engine.tick(now + 3, &settings, &dirty).snapshot.session.is_none());
+    }
+
+    #[test]
+    fn cached_identity_follows_a_model_switch() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        let dir = paths.projects_dir().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s1.jsonl");
+        let line = |model: &str, ts: Ms| {
+            format!(
+                r#"{{"type":"assistant","sessionId":"s1","timestamp":"{}","message":{{"model":"{model}","usage":{{"input_tokens":50000}}}}}}"#,
+                chrono_like(ts)
+            ) + "\n"
+        };
+        let identity = r#"{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}"#;
+        std::fs::write(&path, format!("{identity}\n{}", line("claude-opus-5-5", now - 2_000))).unwrap();
+        let settings = Settings::default();
+        let mut engine = Engine::new(paths.clone());
+        let out = engine.tick(now, &settings, &Dirty::all());
+        assert_eq!(out.snapshot.session.map(|s| s.ctx_size), Some(1_000_000));
+
+        append(&path, &line("claude-sonnet-5", now - 1_000));
+        let dirty = Dirty {
+            transcripts: vec![path.clone()],
+            ..Dirty::default()
+        };
+        let out = engine.tick(now + 1, &settings, &dirty);
+        assert_eq!(out.snapshot.session.map(|s| s.ctx_size), Some(200_000), "identity was for opus");
     }
 
     #[test]

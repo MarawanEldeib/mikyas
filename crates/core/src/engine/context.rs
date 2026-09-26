@@ -17,7 +17,9 @@
 //! model id for rule 4 is taken from the tail, else the capture, else the Desktop session, and
 //! override keys written with a `[1m]` suffix still match; a capture with
 //! `exceeds_200k_tokens: true` also triggers rule 5. When the capture's % is used, `tokens` is
-//! still the tail's count (if any).
+//! still the tail's count (if any). The tail's `identity_1m` and `max_ctx_tokens_seen` only speak
+//! for its current model, so after `/model` switches away from a 1M model rules 2 and 5 no longer
+//! fire on the old model's behalf.
 
 use std::collections::BTreeMap;
 
