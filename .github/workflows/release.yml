@@ -153,6 +153,7 @@ jobs:
           subject-path: |
             dist/*.exe
             dist/SHA256SUMS
+          create-storage-record: false # no registry push; needs no artifact-metadata permission
 
       - name: Create the draft release
         env:
