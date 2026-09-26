@@ -184,10 +184,10 @@
     border-radius: 2px;
     transition: width var(--dur) var(--ease);
   }
-  /* A quiet two-line note (the sentence does not fit the 296px header on one line). */
+  /* A quiet two-line note (the sentence does not fit the 296px header on one line), kept to the
+     22px of the session row so the card height (window.rs) still fits both windows. */
   .none {
     gap: 6px;
-    height: 24px;
     color: var(--fg-2);
   }
   .none p {
@@ -195,7 +195,7 @@
     flex-direction: column;
     margin: 0;
     font-size: 11px;
-    line-height: 12px;
+    line-height: 11px;
     white-space: nowrap;
   }
   .none-title {

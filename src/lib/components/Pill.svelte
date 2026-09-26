@@ -82,7 +82,7 @@
   {#if !app.ui.click_through}
     <!-- Keyboard path to the card (double-click is mouse-only). It ignores the pointer so the
          whole pill stays draggable, and draws its focus ring around the pill. -->
-    <button type="button" class="expand" aria-label="Show details" onclick={() => app.setView("card")}></button>
+    <button type="button" class="expand" aria-label="Show details" data-focus-home onclick={() => app.setView("card")}></button>
   {/if}
   {#if warn.length}
     <span class="dot" aria-label="{warn.length} warning{warn.length > 1 ? 's' : ''}" role="img"></span>

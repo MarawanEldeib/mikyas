@@ -24,6 +24,9 @@
   const muted = $derived(w.stale || w.phase === "reset_awaiting_data");
   const color = $derived(muted ? "var(--fg-3)" : fillColor(p));
   const tip = $derived(estimateTooltip(w.reset));
+  // A reached limit's burn line says when it is usable again ("… at 21:36"); the reset line
+  // then keeps only the countdown, so the clock shows once.
+  const clock = $derived(!(burn && w.limit_reached));
 </script>
 
 <section class="win" class:no-burn={!burn} aria-label="{label} limit">
@@ -40,7 +43,7 @@
         {/if}
       </div>
       <div class="reset" title={tip}>
-        {resetLine(w, now)}{#if tip}<span class="pm" aria-hidden="true">±</span>{/if}
+        {resetLine(w, now, {}, clock)}{#if tip}<span class="pm" aria-hidden="true">±</span>{/if}
       </div>
     </div>
     {#if sparkline}

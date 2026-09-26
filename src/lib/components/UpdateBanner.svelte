@@ -6,6 +6,7 @@
 </script>
 
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
@@ -21,9 +22,16 @@
     api.openUrl(url).catch((e: unknown) => console.warn("open_url failed", e));
   }
 
-  function dismiss(version: string) {
+  async function dismiss(e: MouseEvent, version: string) {
+    const keyboard = (e.currentTarget as HTMLElement).matches(":focus-visible");
     dismissed = version;
     saveDismissed(version);
+    if (!keyboard) return;
+    // The button is gone with the banner; keep keyboard focus in the widget (the card's first
+    // toolbar button, the pill's "Show details") rather than dropping it on <body>.
+    await tick();
+    const home = document.querySelector<HTMLElement>("[data-focus-home]");
+    (home?.matches("button") ? home : home?.querySelector<HTMLElement>("button"))?.focus();
   }
 </script>
 
@@ -31,12 +39,13 @@
 {#if visible && update}
   <div class="update" class:pill role="status">
     <Icon name="update" size={pill ? 11 : 13} />
+    <!-- The card's status area leaves no room for "Update" beside the version; the icon says it. -->
     <span class="text" title="Claude Usage Widget {update.version} is available">
-      Update <strong>v{update.version}</strong> available
+      {#if pill}Update{/if} <strong>v{update.version}</strong> available
     </span>
     <span class="dot" aria-hidden="true">·</span>
     <button type="button" class="view" onclick={() => view(update.url)}>View</button>
-    <button type="button" class="close" aria-label="Dismiss the update notice" title="Dismiss" onclick={() => dismiss(update.version)}>
+    <button type="button" class="close" aria-label="Dismiss the update notice" title="Dismiss" onclick={(e) => dismiss(e, update.version)}>
       <Icon name="close" size={pill ? 9 : 10} />
     </button>
   </div>
@@ -46,9 +55,10 @@
   .update {
     position: absolute;
     z-index: 2;
-    /* The card's status area: between the side padding and the three footer buttons. */
+    /* The card's status area: between the side padding and the four footer buttons (4 × 24px,
+       2px apart, 8px in from the edge, then the footer's 8px gap). */
     left: 12px;
-    right: 92px;
+    right: 118px;
     bottom: 8px;
     height: 24px;
     display: flex;
@@ -92,6 +102,7 @@
     text-decoration: underline;
   }
   .close {
+    position: relative;
     display: grid;
     place-items: center;
     flex: none;
@@ -104,6 +115,12 @@
     background: transparent;
     color: var(--fg-2);
     transition: background-color 120ms ease-out;
+  }
+  /* A larger hit area than the drawn circle: 24px square here, 20px on the pill. */
+  .close::before {
+    content: "";
+    position: absolute;
+    inset: -3px;
   }
   .close:hover {
     background: var(--fill-hover);
@@ -127,5 +144,9 @@
     width: 12px;
     height: 12px;
     margin-left: 1px;
+  }
+  /* Only 3px of the widget lie below the circle, so the hit area grows upwards. */
+  .pill .close::before {
+    inset: -5px -4px -3px;
   }
 </style>

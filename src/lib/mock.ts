@@ -423,7 +423,8 @@ export function createMockBackend(params: URLSearchParams): Backend {
     click_through: params.get("ghost") === "1",
     hotkey_error: spec.hotkeyError ?? null,
     toggle_hotkey_error: null,
-    dock_expanded: false,
+    // Docked, the app slides out for Settings, Sessions and History (window.rs set_view).
+    dock_expanded: settings.dock !== "off" && view !== "pill" && view !== "card",
     hidden_reason: pick(params.get("hidden"), HIDDEN, "none"),
     update: updateMode === "1" ? MOCK_UPDATE : null,
   };

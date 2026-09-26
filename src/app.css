@@ -158,6 +158,15 @@
   --fill-control-hover: color-mix(in srgb, var(--accent) 16%, var(--fill-control));
 }
 
+/* A named accent's focus ring has the colour of the controls filled with it (a checked toggle,
+   a selected segment, a primary button): a 2px surface halo between control and ring keeps it
+   visible, as around the swatches. */
+:root[data-accent]:not([data-accent="auto"]) :is([role="switch"][aria-checked="true"], .btn.primary, .setup):focus-visible,
+:root[data-accent]:not([data-accent="auto"]) .seg input:checked:focus-visible + span {
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px rgb(var(--surface-rgb));
+}
+
 *,
 *::before,
 *::after {

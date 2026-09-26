@@ -66,7 +66,8 @@
       {/if}
     </div>
     {#if !ghost}
-      <div class="actions">
+      <!-- data-focus-home: where keyboard focus goes when the update banner is dismissed. -->
+      <div class="actions" data-focus-home>
         <IconButton icon="pin" label={app.ui.pinned ? "Unpin (stop keeping on top)" : "Pin on top"} pressed={app.ui.pinned} onclick={() => app.togglePinned()} />
         <IconButton icon="collapse" label="Collapse to pill" onclick={() => app.setView("pill")} />
         <IconButton icon="history" label="History" onclick={() => app.setView("history")} />

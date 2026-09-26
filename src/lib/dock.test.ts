@@ -107,6 +107,21 @@ describe("createDockController", () => {
     expect(calls).toEqual([true, false, true]);
   });
 
+  it("forgets the slide-out request once it has landed", () => {
+    // After a normal slide-out, leaving Settings (which never slides in) arms no timer.
+    const state: DockState = { docked: true, expanded: false, clickThrough: false, view: "card" };
+    const calls: boolean[] = [];
+    const ctl = createDockController({ state: () => state, setExpanded: (v) => calls.push(v) });
+    ctl.expand();
+    state.expanded = true;
+    ctl.hold();
+    state.view = "settings";
+    ctl.leave();
+    expect(ctl.pending).toBe(false);
+    vi.advanceTimersByTime(COLLAPSE_DELAY_MS);
+    expect(calls).toEqual([true]);
+  });
+
   it("rechecks when the timer fires", () => {
     const { state, calls, ctl } = setup({ expanded: true });
     ctl.leave();
