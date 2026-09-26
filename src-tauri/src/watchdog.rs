@@ -140,6 +140,10 @@ fn observe_now(shared: &Shared) -> Observed {
     observe(wrapped(&shared.paths), &connect::status(&shared.paths))
 }
 
+/// Serialises the load → change → save of `watchdog.json` (the watchdog thread and a Dismiss
+/// would otherwise drop each other's write). Never held while taking the connect lock.
+static FILE_LOCK: Mutex<()> = Mutex::new(());
+
 fn file_path(paths: &Paths) -> PathBuf {
     paths.data_root().join(FILE_NAME)
 }
@@ -155,12 +159,16 @@ fn check(app: &AppHandle, shared: &Shared) {
     let enabled = shared.settings().connection_watchdog;
     let observed = if enabled { observe_now(shared) } else { Observed::Unknown };
     let path = file_path(&shared.paths);
-    let mut file: WatchdogFile = load_json(&path);
-    let outcome = decide(&observed, enabled, &file);
-    if outcome.warned != file.warned {
-        file.warned = outcome.warned;
-        save(&path, &file);
-    }
+    let outcome = {
+        let _file_guard = lock(&FILE_LOCK);
+        let mut file: WatchdogFile = load_json(&path);
+        let outcome = decide(&observed, enabled, &file);
+        if outcome.warned != file.warned {
+            file.warned.clone_from(&outcome.warned);
+            save(&path, &file);
+        }
+        outcome
+    };
     if let Some(lost) = outcome.lost {
         let changed = {
             let mut ui = shared.ui();
@@ -253,6 +261,7 @@ fn run(app: &AppHandle, shared: &Shared, tx: &Sender<()>, rx: &Receiver<()>) {
 fn dismiss(shared: &Shared) {
     if let Observed::Changed(id) = observe_now(shared) {
         let path = file_path(&shared.paths);
+        let _file_guard = lock(&FILE_LOCK);
         let mut file: WatchdogFile = load_json(&path);
         file.dismiss(&id);
         save(&path, &file);

@@ -72,9 +72,12 @@ pub struct PositionsFile {
 }
 
 impl PositionsFile {
-    /// Stores the rect for a setup, keeping the [`KEEP_SETUPS`] most recently used.
+    /// Stores the rect for a setup, keeping the [`KEEP_SETUPS`] most recently used. Use stamps
+    /// only go forward, so a clock set back never makes the setup just saved the oldest.
     pub fn remember(&mut self, signature: &str, rect: Rect, now: Ms) {
-        self.setups.insert(signature.to_owned(), Saved { rect, used_ms: now });
+        let latest = self.setups.values().map(|s| s.used_ms.saturating_add(1)).max();
+        let used_ms = latest.map_or(now, |l| now.max(l));
+        self.setups.insert(signature.to_owned(), Saved { rect, used_ms });
         while self.setups.len() > KEEP_SETUPS {
             let oldest = self
                 .setups
@@ -293,6 +296,22 @@ mod tests {
         assert_eq!(f.setups.len(), KEEP_SETUPS);
         assert!(!f.setups.contains_key("a"), "oldest dropped");
         assert!(f.setups.contains_key("s0"));
+    }
+
+    #[test]
+    fn a_clock_set_back_never_drops_the_setup_just_saved() {
+        let mut f = PositionsFile::default();
+        for i in 0..KEEP_SETUPS {
+            f.remember(&format!("s{i}"), (0, 0, 1, 1), 1_000 + i as Ms);
+        }
+        // The clock went back a day: the new setup is still the most recently used.
+        f.remember("new", (1, 2, 3, 4), 1_000 - 86_400_000);
+        assert_eq!(f.setups.len(), KEEP_SETUPS);
+        assert!(f.setups.contains_key("new"), "the setup just saved survives");
+        assert!(!f.setups.contains_key("s0"), "the oldest is dropped instead");
+        f.remember("s1", (0, 0, 1, 1), 5);
+        f.remember("newer", (0, 0, 1, 1), 6);
+        assert!(f.setups.contains_key("s1") && !f.setups.contains_key("s2"), "order still follows use");
     }
 
     #[test]
