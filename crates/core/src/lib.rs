@@ -7,6 +7,7 @@ pub mod alerts;
 pub mod capture;
 pub mod claude_settings;
 pub mod cmdline;
+pub mod ctx_alerts;
 pub mod engine;
 pub mod fingerprint;
 pub mod history;

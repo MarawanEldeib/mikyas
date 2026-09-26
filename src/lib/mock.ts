@@ -4,6 +4,7 @@
 
 import { DAY, HOUR, MIN, SEC } from "./format";
 import type { Backend, EventName, Unlisten } from "./ipc";
+import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
 import type {
   Burn,
   CommandName,
@@ -137,6 +138,8 @@ interface WinSpec {
 interface ScenarioSpec {
   windows: WinSpec[];
   session: (t0: number) => SessionView | null;
+  /** Other recent sessions for the Sessions view (the header session is added to the list). */
+  others?: (t0: number) => SessionView[];
   desktop: (t0: number) => DesktopHealth;
   cliAgo: number | null;
   transcriptsAgo: number | null;
@@ -178,8 +181,23 @@ const NORMAL: ScenarioSpec = {
   connection: connected,
 };
 
+const sonnet = (over: Partial<SessionView>) => (t0: number): SessionView =>
+  opus({
+    model_id: "claude-sonnet-5",
+    display_name: "Sonnet 5",
+    ctx_size: 200_000,
+    ...over,
+  })(t0);
+
 const SPECS: Record<Scenario, ScenarioSpec> = {
-  normal: NORMAL,
+  normal: {
+    ...NORMAL,
+    others: (t0) => [
+      sonnet({ key: "mock-session-2", ctx_pct: 61, ctx_tokens: 122_000, ctx_basis: "desktop_model", ctx_is_estimate: true, entrypoint: "desktop", project: "demo-app", last_active_ms: t0 - 38 * MIN })(t0),
+      opus({ key: "mock-session-3", ctx_pct: 12.4, ctx_tokens: 124_000, ctx_basis: "identity", ctx_is_estimate: true, entrypoint: "cowork", project: null, last_active_ms: t0 - 2 * HOUR - 10 * MIN })(t0),
+      sonnet({ key: "mock-session-4", ctx_pct: 87, ctx_tokens: 870_000, ctx_size: 1_000_000, project: "api-gateway", last_active_ms: t0 - 6 * HOUR - 40 * MIN })(t0),
+    ],
+  },
   high: {
     ...NORMAL,
     windows: [
@@ -187,6 +205,10 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
       { kind: "seven_day", pct: 72, resetIn: 2 * DAY + 4 * HOUR, source: "cli", observedAgo: 1 * MIN, slope: 0.7 },
     ],
     session: opus({ ctx_pct: 78.4, ctx_tokens: 784_000, concurrent: 2, last_active_ms: 0 }),
+    others: (t0) => [
+      sonnet({ key: "mock-session-2", ctx_pct: 91, ctx_tokens: 182_000, concurrent: 2, project: "demo-app", last_active_ms: t0 - 4 * MIN })(t0),
+      opus({ key: "mock-session-3", ctx_pct: 45, ctx_tokens: 450_000, ctx_basis: "identity", ctx_is_estimate: true, concurrent: 2, entrypoint: "desktop", project: "infra-scripts", last_active_ms: t0 - 3 * HOUR })(t0),
+    ],
     cliAgo: 1 * MIN,
   },
   limit: {
@@ -321,12 +343,13 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
   });
   const session = spec.session(t0);
   if (session && session.last_active_ms === 0) session.last_active_ms = t0 - (spec.cliAgo ?? MIN);
+  // Newest first, like Rust; the header session is the newest one here.
+  const sessions = session ? [session, ...(spec.others?.(t0) ?? [])].sort((a, b) => b.last_active_ms - a.last_active_ms) : [];
   return {
     generated_ms: now,
     windows,
     session,
-    // TODO(stream A): several concurrent mock sessions for the Sessions view.
-    sessions: session ? [session] : [],
+    sessions,
     health: {
       desktop: spec.desktop(t0),
       cli_last_capture_ms: spec.cliAgo === null ? null : t0 - spec.cliAgo,
@@ -468,8 +491,25 @@ export function createMockBackend(params: URLSearchParams): Backend {
     },
     open_data_folder: () => console.info("[mock] open_data_folder"),
     quit_app: () => console.info("[mock] quit_app"),
-    // TODO(stream A): realistic 14-day mock history.
-    get_history: (args) => ({ from_ms: t0 - Number(args.days ?? 14) * DAY, to_ms: t0, windows: [] }),
+    get_history: async (args) => {
+      // ?history=slow|error previews the History view's loading and error states.
+      const mode = params.get("history");
+      await sleep(mode === "slow" ? 60 * SEC : 120);
+      if (mode === "error") throw new Error("history.jsonl could not be read (mock error)");
+      return mockHistory({
+        windows: spec.windows.map((w) => ({
+          kind: w.kind,
+          pct: snapshot.windows.find((live) => live.kind === w.kind)?.pct ?? w.pct,
+          resetIn: w.resetIn,
+          integers: w.source === "desktop",
+          silentFor: w.stale ? w.observedAgo : undefined,
+        })),
+        t0,
+        now: Date.now(),
+        days: Number(args.days ?? MOCK_HISTORY_DAYS),
+        seed: hashSeed(`${scenario}:history`),
+      });
+    },
     set_dock_expanded: (args) => {
       ui = { ...ui, dock_expanded: Boolean(args.expanded) };
       emit("ui-state", ui);

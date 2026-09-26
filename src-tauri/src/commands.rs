@@ -169,6 +169,8 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
         || new.stale_min != old.stale_min
         || new.ctx_overrides != old.ctx_overrides
         || new.show_project != old.show_project
+        || new.ctx_alerts != old.ctx_alerts
+        || new.ctx_thresholds != old.ctx_thresholds
     {
         shared.send(Msg::SettingsChanged);
     }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { clampPct, fillColor } from "../color";
   import { ctxLabel, formatAge, formatTokens, modelLabel } from "../format";
+  import { app } from "../stores.svelte";
   import type { Entrypoint, SessionView } from "../types";
   import Icon, { type IconName } from "./Icon.svelte";
 
@@ -36,9 +37,12 @@
     const est = session.ctx_is_estimate ? " (estimated from the transcript)" : "";
     return `Context: ${used}${formatTokens(session.ctx_size)} tokens${est}\nWindow size: ${BASIS[session.ctx_basis]}`;
   });
+  // Other sessions of the last 12 hours (the list includes this one).
+  const others = $derived(Math.max(0, (app.snapshot?.sessions.length ?? 1) - 1));
+  const listText = $derived(others > 0 ? `Show all ${others + 1} recent sessions` : "Show recent sessions");
   const chipTip = $derived(
     session
-      ? [surface?.name, modelLabel(session), session.model_id, session.project ? `Project: ${session.project}` : null, session.concurrent > 1 ? `${session.concurrent} sessions active` : null]
+      ? [surface?.name, modelLabel(session), session.model_id, session.project ? `Project: ${session.project}` : null, session.concurrent > 1 ? `${session.concurrent} sessions active` : null, listText]
           .filter(Boolean)
           .join("\n")
       : "",
@@ -47,11 +51,11 @@
 
 {#if session}
   <div class="head">
-    <span class="chip" title={chipTip}>
+    <button type="button" class="chip" title={chipTip} aria-label="{modelLabel(session)}. {listText}" onclick={() => app.setView("sessions")}>
       {#if surface}<Icon name={surface.icon} size={12} />{/if}
       <span class="model">{modelLabel(session)}</span>
-      {#if session.concurrent > 1}<span class="more" aria-label="{session.concurrent} sessions">+{session.concurrent - 1}</span>{/if}
-    </span>
+      {#if others > 0}<span class="more" aria-hidden="true">+{others}</span>{/if}
+    </button>
     <!-- Reversed wrapping row: the age and then the project name are shown only when they fit
          in full; the empty lead item lets even the age wrap onto the hidden second line. -->
     <span class="meta">
@@ -90,6 +94,7 @@
     gap: 5px;
     height: 22px;
     padding: 0 8px 0 7px;
+    border: 0;
     border-radius: 11px;
     background: var(--fill-control);
     box-shadow: inset 0 0 0 1px var(--stroke);
@@ -99,6 +104,13 @@
     /* Shrinks (model name ellipsized) before the context bar is pushed out of the card. */
     flex: 0 1 auto;
     min-width: 0;
+    transition: background-color 120ms ease-out;
+  }
+  .chip:hover {
+    background: var(--fill-control-hover);
+  }
+  .chip:active {
+    background: var(--fill-press);
   }
   .model {
     min-width: 0;
@@ -110,7 +122,13 @@
   }
   .more {
     flex: none;
+    margin-right: -2px;
+    padding: 0 4px;
+    border-radius: 6px;
+    /* Not a control fill: in light theme that equals the chip's hover fill and the badge vanished. */
+    background: var(--track);
     font-size: 10px;
+    line-height: 13px;
     font-weight: 600;
     color: var(--fg-2);
   }

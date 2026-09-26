@@ -7,6 +7,8 @@
 //!   never watched), Desktop Code-tab sessions every 30 s, and a full transcript rescan runs
 //!   every 5 min. Every 30 s the snapshot is recomputed anyway (stale flags, reset phases).
 //! - A snapshot is emitted only when it differs from the last one (ignoring `generated_ms`).
+//! - Limit alerts (`alerts.json`) and, when enabled, context alerts over `Snapshot::sessions`
+//!   (persisted in `state.json`) are evaluated on every tick.
 //!
 //! [`Engine`] holds all state and does no Tauri work, so it is unit-tested against temp dirs.
 
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
-use cuw_core::alerts::{AlertEvent, AlertSettings, AlertState};
+use cuw_core::alerts::{AlertSettings, AlertState};
 use cuw_core::capture::CaptureRecord;
 use cuw_core::engine::snapshot::{self, EngineInputs};
 use cuw_core::engine::types::{DesktopHealth, Snapshot};
@@ -31,6 +33,7 @@ use cuw_core::sources::SourceError;
 use cuw_core::time::{DAY_MS, MINUTE_MS, Ms, SECOND_MS, now_ms};
 use tauri::{AppHandle, Emitter};
 
+use crate::notify::Alert;
 use crate::settings::Settings;
 use crate::state::{PersistedState, Shared, load_json, lock, save_json};
 
@@ -84,7 +87,8 @@ pub struct TickOutput {
     pub snapshot: Snapshot,
     /// Differs from the previous snapshot (ignoring `generated_ms`).
     pub changed: bool,
-    pub alerts: Vec<AlertEvent>,
+    /// Limit alerts first, then context alerts.
+    pub alerts: Vec<Alert>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,12 +199,24 @@ impl Engine {
             notify_reset: settings.notify_reset,
         };
         let alerts_before = self.alerts.clone();
-        let alerts = self.alerts.evaluate(&states, &alert_settings, self.first_eval);
+        let mut alerts: Vec<Alert> = self
+            .alerts
+            .evaluate(&states, &alert_settings, self.first_eval)
+            .into_iter()
+            .map(Alert::Limit)
+            .collect();
         self.first_eval = false;
         if self.alerts != alerts_before {
             if let Err(e) = save_json(&self.paths.alerts_file(), &self.alerts) {
                 log(&format!("alerts.json write failed: {e}"));
             }
+        }
+        if settings.ctx_alerts {
+            let ctx = self
+                .persisted
+                .ctx_alerts
+                .evaluate(&snap.sessions, &settings.ctx_thresholds, now);
+            alerts.extend(ctx.into_iter().map(Alert::Context));
         }
 
         if now.saturating_sub(self.persisted.last_maintenance_ms) >= MAINTENANCE_EVERY_MS {
@@ -387,7 +403,11 @@ impl Engine {
 
 /// Snapshots equal apart from their generation time.
 fn same_content(a: &Snapshot, b: &Snapshot) -> bool {
-    a.windows == b.windows && a.session == b.session && a.health == b.health && a.warnings == b.warnings
+    a.windows == b.windows
+        && a.session == b.session
+        && a.sessions == b.sessions
+        && a.health == b.health
+        && a.warnings == b.warnings
 }
 
 /// A `.jsonl` file outside any `subagents` directory.
@@ -539,10 +559,15 @@ mod tests {
     }
 
     fn write_transcript(paths: &Paths, session: &str, ts: &str) -> PathBuf {
+        write_transcript_ctx(paths, session, ts, 99_990)
+    }
+
+    /// A one-turn transcript whose context is `cache_read + 10` tokens.
+    fn write_transcript_ctx(paths: &Paths, session: &str, ts: &str, cache_read: u64) -> PathBuf {
         let dir = paths.projects_dir().join("proj");
         std::fs::create_dir_all(&dir).unwrap();
         let line = format!(
-            r#"{{"type":"assistant","isSidechain":false,"sessionId":"{session}","entrypoint":"cli","cwd":"C:\\p\\proj","timestamp":"{ts}","message":{{"model":"claude-opus-5-5","usage":{{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":99990}}}}}}"#
+            r#"{{"type":"assistant","isSidechain":false,"sessionId":"{session}","entrypoint":"cli","cwd":"C:\\p\\proj","timestamp":"{ts}","message":{{"model":"claude-opus-5-5","usage":{{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":{cache_read}}}}}}}"#
         );
         let path = dir.join(format!("{session}.jsonl"));
         std::fs::write(&path, format!("{line}\n")).unwrap();
@@ -613,6 +638,87 @@ mod tests {
         assert_eq!(out.alerts.len(), 1, "80% threshold fires");
         let out = engine.tick(now + 3, &settings, &dirty);
         assert!(out.alerts.is_empty(), "only once");
+    }
+
+    fn context_alerts(out: &TickOutput) -> Vec<&cuw_core::ctx_alerts::CtxAlertEvent> {
+        out.alerts
+            .iter()
+            .filter_map(|a| match a {
+                Alert::Context(e) => Some(e),
+                Alert::Limit(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_alerts_fire_once_and_survive_restarts() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        // 180K of the default 200K window: 90%.
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 179_990);
+        let settings = Settings::default();
+        let mut engine = Engine::new(paths.clone());
+        let out = engine.tick(now, &settings, &Dirty::all());
+        let fired = context_alerts(&out);
+        assert_eq!(fired.len(), 1, "{:?}", out.alerts);
+        assert_eq!(fired[0].threshold, 90, "only the highest crossed threshold");
+        assert_eq!(fired[0].key, out.snapshot.sessions[0].key);
+        assert_eq!(fired[0].project, None, "project names are off by default");
+        assert!(engine.tick(now + 1, &settings, &Dirty::default()).alerts.is_empty());
+
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.ctx_alerts.sessions.len(), 1);
+        let mut restarted = Engine::new(paths.clone());
+        assert!(restarted.tick(now + 2, &settings, &Dirty::all()).alerts.is_empty(), "no re-fire");
+
+        // Turned off: a second session at 90% stays quiet.
+        write_transcript_ctx(&paths, "s2", &chrono_like(now), 179_990);
+        let off = Settings {
+            ctx_alerts: false,
+            ..Settings::default()
+        };
+        let out = restarted.tick(now + 3, &off, &Dirty::all());
+        assert!(out.alerts.is_empty());
+        assert_eq!(out.snapshot.sessions.len(), 2);
+        // Back on: only the new session alerts.
+        let out = restarted.tick(now + 4, &settings, &Dirty::default());
+        let fired = context_alerts(&out);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].key, out.snapshot.sessions[0].key);
+    }
+
+    #[test]
+    fn context_thresholds_come_from_settings() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        write_transcript(&paths, "s1", &chrono_like(now - 1_000)); // 50%
+        let mut engine = Engine::new(paths.clone());
+        assert!(engine.tick(now, &Settings::default(), &Dirty::all()).alerts.is_empty());
+        let low = Settings {
+            ctx_thresholds: vec![40, 45],
+            ..Settings::default()
+        };
+        let fired = engine.tick(now + 1, &low, &Dirty::default());
+        assert_eq!(context_alerts(&fired).iter().map(|e| e.threshold).collect::<Vec<_>>(), vec![45]);
+    }
+
+    #[test]
+    fn session_list_changes_are_emitted() {
+        let (_t, paths) = setup();
+        let now = now_ms();
+        write_transcript(&paths, "s1", &chrono_like(now - 1_000));
+        let mut engine = Engine::new(paths.clone());
+        assert!(engine.tick(now, &Settings::default(), &Dirty::all()).changed);
+        // An older second session changes only the list, not the header session.
+        let path = write_transcript(&paths, "s2", &chrono_like(now - 3_600_000));
+        let dirty = Dirty {
+            transcripts: vec![path],
+            ..Dirty::default()
+        };
+        let out = engine.tick(now, &Settings::default(), &dirty);
+        assert!(out.changed);
+        assert_eq!(out.snapshot.sessions.len(), 2);
+        assert_eq!(out.snapshot.session.as_ref(), out.snapshot.sessions.first());
     }
 
     #[test]

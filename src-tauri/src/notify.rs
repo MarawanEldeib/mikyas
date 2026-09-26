@@ -1,11 +1,21 @@
-//! OS toast notifications for limit alerts.
+//! OS toast notifications for limit and context alerts.
 
 use chrono::{Local, TimeZone};
 use cuw_core::alerts::AlertEvent;
+use cuw_core::ctx_alerts::CtxAlertEvent;
 use cuw_core::engine::types::WindowKind;
 use cuw_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, now_ms};
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
+
+/// Anything the pipeline turns into a toast.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Alert {
+    /// A usage limit crossed a threshold or reset.
+    Limit(AlertEvent),
+    /// A session's context window crossed a threshold.
+    Context(CtxAlertEvent),
+}
 
 /// "5-hour", "weekly", "weekly Opus", …
 pub fn window_name(kind: &WindowKind) -> String {
@@ -72,14 +82,42 @@ pub fn alert_text(event: &AlertEvent, now: Ms) -> (String, String) {
     }
 }
 
+/// "Opus 5.5" from a display name, else a tidied model id ("sonnet-5"), else a generic name.
+fn model_title(model: Option<&str>) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => m.strip_prefix("claude-").unwrap_or(m).to_owned(),
+        None => "Claude session".into(),
+    }
+}
+
+/// Title and body of a context-alert notification: "Opus 5.5 at 90% context" /
+/// "Consider /compact or a new session." (+ " · <project>" when the project is shown).
+pub fn ctx_alert_text(event: &CtxAlertEvent) -> (String, String) {
+    let title = format!("{} at {}% context", model_title(event.model.as_deref()), event.threshold);
+    let mut body = String::from("Consider /compact or a new session.");
+    if let Some(project) = event.project.as_deref().filter(|p| !p.is_empty()) {
+        body.push_str(" · ");
+        body.push_str(project);
+    }
+    (title, body)
+}
+
+/// Title and body of any toast.
+pub fn toast_text(alert: &Alert, now: Ms) -> (String, String) {
+    match alert {
+        Alert::Limit(event) => alert_text(event, now),
+        Alert::Context(event) => ctx_alert_text(event),
+    }
+}
+
 pub fn show(app: &AppHandle, title: &str, body: &str) {
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         crate::pipeline::log(&format!("notification failed: {e}"));
     }
 }
 
-pub fn show_alert(app: &AppHandle, event: &AlertEvent) {
-    let (title, body) = alert_text(event, now_ms());
+pub fn show_alert(app: &AppHandle, alert: &Alert) {
+    let (title, body) = toast_text(alert, now_ms());
     show(app, &title, &body);
 }
 
@@ -98,7 +136,7 @@ pub fn simulate(app: &AppHandle, id: &str) {
             kind: WindowKind::SevenDay,
         },
     };
-    show_alert(app, &event);
+    show_alert(app, &Alert::Limit(event));
 }
 
 #[cfg(test)]
@@ -124,5 +162,32 @@ mod tests {
         assert_eq!(window_name(&WindowKind::Other("seven_day_opus".into())), "weekly Opus");
         assert_eq!(duration_text(2 * DAY_MS + 3 * HOUR_MS), "2d 3h");
         assert_eq!(duration_text(30_000), "<1m");
+    }
+
+    fn ctx_event(model: Option<&str>, project: Option<&str>) -> CtxAlertEvent {
+        CtxAlertEvent {
+            key: "af63dc4c8601ec8c".into(),
+            threshold: 90,
+            pct: 91.4,
+            model: model.map(Into::into),
+            project: project.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn context_texts() {
+        let (t, b) = ctx_alert_text(&ctx_event(Some("Opus 5.5"), None));
+        assert_eq!(t, "Opus 5.5 at 90% context");
+        assert_eq!(b, "Consider /compact or a new session.");
+        let (t, b) = ctx_alert_text(&ctx_event(Some("claude-sonnet-5"), Some("demo-app")));
+        assert_eq!(t, "sonnet-5 at 90% context");
+        assert_eq!(b, "Consider /compact or a new session. · demo-app");
+        let (t, b) = ctx_alert_text(&ctx_event(Some("  "), Some("")));
+        assert_eq!(t, "Claude session at 90% context");
+        assert_eq!(b, "Consider /compact or a new session.");
+        let alert = Alert::Context(ctx_event(None, None));
+        assert_eq!(toast_text(&alert, 0).0, "Claude session at 90% context");
+        let limit = Alert::Limit(AlertEvent::Reset { kind: WindowKind::FiveHour });
+        assert_eq!(toast_text(&limit, 0).0, "Claude 5-hour limit reset");
     }
 }
