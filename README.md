@@ -1,147 +1,183 @@
+<div align="center">
+
 # Claude Usage Widget
 
-A small floating, always-on-top Windows widget that shows what the Claude Code statusline shows,
-even when no Claude Code terminal is open:
+**Your Claude limits, always in sight.**
+A small floating Windows widget that shows your Claude 5-hour and weekly usage, when each limit
+resets, and the model and context of your current Claude Code session — without ever touching
+your Claude login.
 
-- **5-hour limit** usage with a reset countdown
-- **Weekly limit** usage with a reset countdown (plus per-model weekly limits when reported)
-- **Current model** and **context-window %** of your most recently active Claude Code / Cowork session
-- Extras: 80 % / 95 % / reset notifications, a burn-rate forecast ("at this pace you hit 100 % at
-  15:40"), 24 h / 7 d sparklines, a compact pill view, a click-through "ghost" mode toggled with
-  a global hotkey (default **Ctrl+Alt+U**), a show / hide hotkey (default **Ctrl+Alt+H**), and
-  automatic hiding while a fullscreen video, course or app is in front
+[**Download for Windows**](https://github.com/MarawanEldeib/claude-usage-widget/releases/latest) ·
+[Install guide](INSTALL.md) · [Privacy](PRIVACY.md)
 
-**Install:** download the installer from the
-[Releases page](https://github.com/MarawanEldeib/claude-usage-widget/releases) — see
-[INSTALL.md](INSTALL.md) for the SmartScreen prompt, first run and uninstalling.
+<img src="docs/images/card.png" alt="The widget's card view: 5-hour and weekly usage with reset countdowns, burn forecast, sparklines, model and context" width="380">
 
-It runs beside Claude Desktop, sits in the tray, and uses little memory (WebView2 is asked to keep
-its memory use low; see *Performance*).
+</div>
 
-## Privacy: token-free by design
+---
 
-The widget **never** reads `~/.claude/.credentials.json`, cookies, browser storage or keychains,
-**never** calls `api.anthropic.com`, claude.ai or `claude -p /usage`, and makes **no network calls
-unless you enable the update check**; then it asks only `api.github.com` (once a day, or when you
-click "Check now") whether a newer release exists, through Windows' own `curl.exe` — the app
-itself contains no HTTP client. Every file it reads goes through an allowlist (`crates/core/src/saferead.rs`) that
-hard-denies credential, cookie and browser-storage files. Each person only ever sees their own
-numbers, computed from files already on their own machine:
+## Why
+
+Claude Pro and Max plans share a 5-hour and a weekly usage limit between Claude, Claude Desktop
+and Claude Code. The numbers live in a settings page or in Claude Code's status line — which is
+only visible while a terminal is open. This widget keeps them on screen next to whatever you are
+doing: coding, watching a course, reading docs, or working in Claude Desktop.
+
+## Features
+
+**At a glance**
+- 5-hour and weekly usage with live reset countdowns (exact from Claude Code, estimated with "~"
+  from Claude Desktop)
+- Current model and context-window % of your active Claude Code, Desktop Code tab or Cowork session
+  — with 1M-context detection
+- Burn-rate forecast: *"On pace for ~72% at reset"* or *"100% at 15:40"*
+- Sparklines, a 14-day **History** view with reset marks, and weekly budget used per day
+- **Sessions** view listing every session from the last 12 hours
+- A "▲" marker when Claude has worked since a reading, so an older number never looks final
+
+**Stays out of your way**
+- Floating, pin-on-top window with a compact **pill** view, or tucked into a screen **edge dock**
+- **Click-through ghost mode** (Ctrl+Alt+U) and a **show / hide** shortcut (Ctrl+Alt+H)
+- Hides automatically while a fullscreen video, course or app is in front
+- Hover the top edge for minimize / close; right-click for a menu; lives in the tray with the live
+  % drawn in its icon
+- Remembers its position per monitor setup; accent colours, rings or bars, four UI sizes
+
+**Notifications**
+- Limits at 80% / 95%, and when a limit resets
+- **Pace alert** — warned *before* you run out, plus a heads-up 10 minutes before a capped window
+  reopens
+- **Claude finished** — when a long Claude Code turn completes while you are elsewhere
+- Context-window alerts ("Opus 5.5 at 90% context — consider /compact")
+- A **weekly recap** when the weekly limit resets
+- A warning if something rewrites your Claude Code status line, with one-click Reconnect
+
+Every notification can be switched off in **Settings → Automations**.
+
+## Screenshots
+
+| Card | Pill | Edge dock |
+|:---:|:---:|:---:|
+| <img src="docs/images/card-light.png" width="300" alt="Card view, light theme"> | <img src="docs/images/pill-light.png" width="240" alt="Pill view"><br><br><img src="docs/images/pill.png" width="240" alt="Pill view, dark"> | <img src="docs/images/dock-strip.png" width="44" alt="Docked strip"> |
+
+| History | Sessions | Settings → Automations |
+|:---:|:---:|:---:|
+| <img src="docs/images/history.png" width="300" alt="14-day history"> | <img src="docs/images/sessions.png" width="280" alt="Sessions list"> | <img src="docs/images/settings-automations.png" width="280" alt="Automation settings"> |
+
+## Install
+
+1. Download `Claude.Usage.Widget_x.y.z_x64-setup.exe` from the
+   [latest release](https://github.com/MarawanEldeib/claude-usage-widget/releases/latest).
+2. Run it. No admin rights needed — it installs for your user only.
+   The installer is not code-signed yet, so Windows may say *"Windows protected your PC"*:
+   click **More info → Run anyway**.
+3. The widget appears in the corner of your screen and in the tray. It already works from
+   Claude Desktop's own usage data.
+4. For exact, live numbers, open **Settings → Claude Code → Connect**
+   (see [Connect Claude Code](#connect-claude-code)).
+
+Uninstalling (Windows Settings → Apps) puts your Claude Code status line back exactly as it was.
+Full guide: [INSTALL.md](INSTALL.md).
+
+## Privacy — token-free by design
+
+The widget **never** reads your Claude login (`~/.claude/.credentials.json`), cookies, browser
+storage or keychains, and **never** calls Anthropic's servers or claude.ai. It makes **no network
+requests at all** unless you turn on the update check, which only asks `api.github.com` whether a
+newer release exists.
+
+Everything it shows is computed from files already on your computer:
 
 | Source | What it gives |
 |---|---|
-| Claude Code statusline JSON (via the optional capture shim, see *Connect*) | exact 5 h / 7 d %, exact reset times, model, context % |
-| Claude Desktop's `%APPDATA%\Claude\plan-usage-history.json` | 5 h / 7 d % (whole numbers, every ~15 min while Desktop runs); reset times are estimated and shown with "~" |
-| Claude Code / Cowork transcripts (`~/.claude/projects/**/*.jsonl`) | model and context size of the latest session (message text is never parsed or kept) |
+| Claude Code's status-line data (after **Connect**) | exact 5-hour / weekly %, exact reset times, model, context % |
+| Claude Desktop's usage file (`%APPDATA%\Claude\plan-usage-history.json`) | 5-hour / weekly % every ~15 minutes while Desktop runs |
+| Claude Code / Cowork session files (`~/.claude/projects/**/*.jsonl`) | model, context size and turn timing — message text is never read |
 
+Every file read goes through an allowlist that hard-blocks credential, cookie and browser-storage
+files. Each person only ever sees their own numbers; nothing is uploaded anywhere.
 [PRIVACY.md](PRIVACY.md) lists every file read and written.
 
-Model and context % of plain Claude Desktop *chat* conversations are not stored anywhere locally,
-so the widget shows the most recent Code / CLI / Cowork session instead (with its age).
+> Claude Desktop *chat* conversations don't store their model or context size on disk, so for
+> those the widget shows your most recent Claude Code / Cowork session instead.
 
-## Build
+## Connect Claude Code
 
-Requirements: Windows 10/11, Rust (see `rust-toolchain.toml`), Node 20+, VS Build Tools (C++),
-WebView2 runtime.
+Connecting makes the numbers exact and live. It is optional and fully reversible.
+
+<img src="docs/images/connect-preview-light.png" alt="Connect preview showing the status line before and after" width="300" align="right">
+
+1. The widget shows you the exact change first.
+2. It copies a tiny helper, `cuw-capture.exe`, into `%LOCALAPPDATA%\ClaudeUsageWidget\bin\`.
+3. It changes **only** `statusLine.command` in `~/.claude/settings.json` so Claude Code's
+   status-line data passes through the helper first. Your own status line keeps working and looks
+   exactly the same; a backup of the file is kept.
+4. The helper saves a few whitelisted numbers (usage %, reset times, model, context) — no prompts,
+   no credentials.
+5. A self-test compares your status line's output before and after.
+
+**Disconnect** (Settings or the tray menu) restores the original command byte-for-byte.
+
+<br clear="right">
+
+## FAQ
+
+**Does it work without Claude Code?** Yes — with Claude Desktop open it reads Desktop's usage file
+(updated about every 15 minutes). Reset times are then estimated and marked "~".
+
+**Why is a number grey?** It is older than your stale threshold (default 20 minutes), usually
+because neither Claude Code nor Claude Desktop has run since. The age is shown next to it.
+
+**Does it slow my PC down?** No. It idles at a fraction of a percent of one CPU core and about
+25–45 MB of private memory.
+
+**Can it show over fullscreen apps?** It hides by default while something fullscreen is in front.
+Turn on click-through ghost mode (Ctrl+Alt+U) to keep it visible and see-through instead.
+
+## For developers
+
+<details>
+<summary>Build, test and project layout</summary>
+
+Requirements: Windows 10/11, Rust (see `rust-toolchain.toml`), Node 20+, Visual Studio Build Tools
+(C++), WebView2 runtime.
 
 ```powershell
-npm ci
-.\scripts\build-sidecar.ps1          # builds cuw-capture.exe → src-tauri\binaries\ (required once, and after shim changes)
-npx tauri build --no-bundle          # → <target>\release\claude-usage-widget.exe (+ cuw-capture.exe next to it)
-npx tauri build                      # per-user NSIS installer → <target>\release\bundle\nsis\*-setup.exe
+npm install
+.\scripts\build-sidecar.ps1     # builds cuw-capture.exe into src-tauri\binaries\
+npx tauri build                 # app + per-user NSIS installer (target\release\bundle\nsis\)
 ```
 
-### Installer
+Checks: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`npm test`, `npm run check`, `node scripts/privacy-grep.mjs`.
 
-`npx tauri build` makes a per-user NSIS installer (no admin rights; installs to
-`%LOCALAPPDATA%\Claude Usage Widget`) that ships `cuw-capture.exe` as a sidecar. Its hooks
-(`src-tauri/windows/hooks.nsh`) make a real uninstall run `claude-usage-widget.exe --disconnect
---quiet`, which restores the user's Claude Code statusline, and remove the "Start with Windows"
-entry; with "Delete the application data" ticked, the widget's data folder goes too (only once the
-statusline no longer points at the shim in it). When the uninstaller only runs as part of an update
-or reinstall — started with `/UPDATE`, or in place by a newer installer's "uninstall before
-installing" step — the connection and autostart are kept.
+The UI runs in a plain browser with a mock backend: `npm run dev`, then open
+`http://localhost:1420/?scenario=normal&view=card` (views: `pill`, `card`, `settings`,
+`sessions`, `history`).
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the installer with
-`tauri-apps/tauri-action` and creates a **draft** GitHub release with the installer and
-`SHA256SUMS`. The versions in `package.json`, `Cargo.toml` and `src-tauri/tauri.conf.json` must
-equal the tag. `.github/workflows/ci.yml` runs gitleaks, clippy, the Rust and UI tests,
-svelte-check, the UI build and a check that no HTTP client crate entered the dependency tree.
-
-Tests: `cargo test -p cuw-core -p cuw-capture -p claude-usage-widget`,
-`cargo clippy --workspace --all-targets -- -D warnings`, `npm test`, `npm run check`.
-The UI can be developed in a plain browser with a mock backend: `npm run dev`, then open
-`http://localhost:1420/?scenario=normal&view=card`.
-
-Development overrides: `CUW_DATA_DIR` (widget data dir), `CLAUDE_CONFIG_DIR` (Claude Code dir, as
-Claude Code itself honours it), `CUW_X` / `CUW_Y` (initial window position in physical pixels), `CUW_MEMORY_NORMAL` (skip the
-WebView2 low memory target), `CUW_BROWSER_ARGS` (replace the WebView2 browser arguments; repeat
-wry's defaults `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`).
-
-## Connect Claude Code (optional, but gives exact numbers)
-
-Without connecting, the widget already works from Claude Desktop's usage file and the transcripts.
-**Connect** (Settings → Claude Code) makes the numbers exact and live:
-
-1. The widget shows a preview of the change first.
-2. It copies the tiny capture shim `cuw-capture.exe` to `%LOCALAPPDATA%\ClaudeUsageWidget\bin\`.
-3. It changes only `statusLine.command` in `~/.claude/settings.json` into
-   `"<shim>" --tee | <your original command>` (the exact form depends on the shell Claude Code uses
-   on your machine). Every other byte of the file stays as it was; a backup goes to
-   `%LOCALAPPDATA%\ClaudeUsageWidget\backups\`.
-4. The shim passes Claude Code's statusline JSON through to your own statusline **unchanged**, so it
-   looks exactly as before, and saves a few whitelisted numbers (no prompts, no paths other than the
-   transcript path, no credentials) to `%LOCALAPPDATA%\ClaudeUsageWidget\capture\`.
-5. A self-test runs your original and the wrapped command on the same sample input and compares
-   their output.
-
-With no statusline configured, the shim prints a compact default line instead. **Disconnect**
-(tray menu or Settings) restores the original command byte-for-byte;
-`claude-usage-widget.exe --disconnect --quiet` does the same from the command line (for the
-uninstaller hook).
-
-## Notes
-
-- **Fullscreen auto-hide** (Settings → System, on by default): the widget hides while a fullscreen
-  video, course or app is in front. Every 1.5 s it asks Windows which window is in front
-  (`GetForegroundWindow`, `GetWindowRect`, `MonitorFromWindow` / `GetMonitorInfoW`,
-  `GetClassNameW`) and whether the shell reports a fullscreen / presentation state
-  (`SHQueryUserNotificationState`). When a fullscreen app covers the monitor the widget is
-  on, the widget hides, and it comes back — without taking the focus — once that app leaves the
-  foreground. Window queries only: the widget never reads, injects into or hooks other programs. A
-  widget you hid yourself stays hidden, and one you brought back with the show / hide hotkey while
-  something is fullscreen stays visible.
-- **Update check** (Settings → System, off by default): see *Privacy*. A newer release shows a
-  dismissible "Update vX.Y.Z available · View" line on the widget and one notification; "View"
-  opens the release page in your browser (only this repository's release pages can be opened).
-- **SmartScreen:** the installer is not code-signed yet, so Windows may show "Windows protected your
-  PC" on first run (More info → Run anyway).
-- **Backdrop effects:** Mica/Acrylic/Blur are selectable, but because the widget never takes focus,
-  Windows renders Mica and Acrylic flat; the default is a near-opaque surface ("none").
-- Data goes stale when neither Claude Code nor Claude Desktop is running; stale values are greyed
-  out with their age.
-
-## Performance
-
-Measured on the development laptop (Ryzen 7 5800H, 16 threads, 125 % scaling) with real data,
-**idle with the display locked** (WebView2 was not compositing, so expect somewhat more while the
-widget is visible): idle CPU for the app plus its WebView2 processes ≈ 0.03–0.06 % of all cores;
-private working set ≈ 20–45 MB with WebView2's low memory target (83–99 MB without it; commit
-≈ 130 MB either way). Set `CUW_MEMORY_NORMAL=1` to keep WebView2's normal memory target. Measure
-with `scripts\measure-ram.ps1`.
-
-## Layout
-
+Layout:
 - `crates/core` — token-free parsers and the engine (merge, reset estimation, burn rate, context,
-  history, alerts, Connect/Disconnect file edits). No Tauri; most tests live here.
-- `crates/capture` — `cuw-capture.exe`, the statusline tee shim.
-- `src-tauri` — the app shell: pipeline thread, file watchers, window, tray, hotkeys, fullscreen
-  auto-hide, the opt-in update check, notifications, and the NSIS installer hooks
-  (`src-tauri/windows/hooks.nsh`).
-- `src` — Svelte 5 UI.
+  history, alerts, recap, safe settings edits)
+- `crates/capture` — `cuw-capture.exe`, the status-line helper
+- `src-tauri` — the app: data pipeline, file watchers, window, tray, hotkeys, notifications,
+  installer hooks
+- `src` — Svelte 5 UI
+
+Development overrides: `CUW_DATA_DIR`, `CLAUDE_CONFIG_DIR`, `CUW_X` / `CUW_Y`,
+`CUW_MEMORY_NORMAL`, `CUW_BROWSER_ARGS`.
+
+</details>
+
+## Credits
+
+- **Idea:** Eng. Abdulrahman Alhelali — who came up with the idea of a live, always-visible view of
+  Claude usage limits.
+- **Design & development:** Eng. Marawan Eldeib — built and maintains the widget.
 
 ## License
 
-Copyright (c) 2026 Marawan Eldeib. **All rights reserved** — see [LICENSE](LICENSE). You may install and use the official releases from this repository for personal use; copying, modifying or redistributing the code or the app is not permitted without written permission.
+Copyright © 2026 Marawan Eldeib. **All rights reserved** — see [LICENSE](LICENSE).
+You may install and use the official releases for personal use. Copying, modifying or
+redistributing the code or the app is not permitted without written permission.
 
 Not affiliated with or endorsed by Anthropic. "Claude" is a trademark of Anthropic.

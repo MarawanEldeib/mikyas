@@ -272,6 +272,7 @@
     </div>
 
     <button type="button" class="btn quit" onclick={() => api.quitApp()}><Icon name="power" size={13} />Quit Claude Usage</button>
+    <p class="credits">Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib</p>
   </div>
 </div>
 
@@ -569,6 +570,12 @@
     margin-top: 12px;
     width: 100%;
     justify-content: center;
+  }
+  .credits {
+    margin: 10px 0 2px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--fg-3);
   }
   .quit:hover {
     color: var(--crit);
