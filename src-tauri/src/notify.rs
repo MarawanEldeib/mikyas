@@ -26,7 +26,6 @@ pub enum Alert {
     /// A long Claude turn ended.
     Finished(FinishedTurn),
     /// Claude Code's status line no longer runs the widget's capture.
-    #[allow(dead_code)] // TODO(stream shell): raised by the watchdog.
     ConnectionLost,
 }
 

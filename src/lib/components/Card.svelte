@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { connectionBannerVisible } from "../connection";
   import { startDock } from "../dock";
   import { liveWindow } from "../format";
   import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { CardRows, WindowView } from "../types";
+  import ConnectionBanner from "./ConnectionBanner.svelte";
   import IconButton from "./IconButton.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SourceBadges from "./SourceBadges.svelte";
@@ -14,6 +16,7 @@
   const snap = $derived(app.snapshot);
   const ghost = $derived(app.ui.click_through);
   const warn = $derived(notices(snap));
+  const lost = $derived(connectionBannerVisible(app.ui, app.settings?.connection_watchdog ?? true));
   const shown = $derived.by(() => {
     const ws = snap?.windows ?? [];
     const main = ["five_hour", "seven_day"]
@@ -59,7 +62,9 @@
 
   <footer>
     <div class="status">
-      {#if warn.length}
+      {#if lost}
+        <ConnectionBanner />
+      {:else if warn.length}
         <StatusBanner notices={warn} compact onopen={ghost ? undefined : () => app.setView("settings")} />
       {:else if snap && rows.sources}
         <SourceBadges health={snap.health} now={app.now} staleMin={app.settings?.stale_min ?? 15} />

@@ -164,7 +164,7 @@ fn default_position(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
 /// Physical rectangle (x, y, w, h).
 pub type Rect = (i32, i32, i32, i32);
 
-fn window_rect(window: &WebviewWindow) -> Option<Rect> {
+pub fn window_rect(window: &WebviewWindow) -> Option<Rect> {
     let pos = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
     Some((pos.x, pos.y, size.width as i32, size.height as i32))
@@ -254,10 +254,10 @@ fn clamp_into(rect: Rect, area: Rect) -> (i32, i32) {
 
 /// New position for a size change that keeps the corner nearest to the screen edges fixed.
 /// Which corner stays fixed: (right, bottom).
-type Anchor = (bool, bool);
+pub type Anchor = (bool, bool);
 
 /// The corner nearest to the screen edges.
-fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
+pub fn nearest_anchor(rect: Rect, area: Rect) -> Anchor {
     (
         rect.0 + rect.2 / 2 > area.0 + area.2 / 2,
         rect.1 + rect.3 / 2 > area.1 + area.3 / 2,
@@ -273,7 +273,7 @@ pub fn is_panel(view: ViewMode) -> bool {
     matches!(view, ViewMode::Settings | ViewMode::Sessions | ViewMode::History)
 }
 
-fn anchored_position_with(rect: Rect, new_w: i32, new_h: i32, area: Rect, (right, bottom): Anchor) -> (i32, i32) {
+pub fn anchored_position_with(rect: Rect, new_w: i32, new_h: i32, area: Rect, (right, bottom): Anchor) -> (i32, i32) {
     let x = if right { rect.0 + rect.2 - new_w } else { rect.0 };
     let y = if bottom { rect.1 + rect.3 - new_h } else { rect.1 };
     clamp_into((x, y, new_w, new_h), area)
@@ -448,7 +448,8 @@ pub fn set_click_through(app: &AppHandle, on: bool, effect: EffectName) {
 }
 
 /// Applies the appearance settings that change the window (the `apply_settings_patch` hook,
-/// which emits `ui-state` afterwards).
+/// which emits `ui-state` afterwards), and hands the tray number and the connection watchdog
+/// their setting changes.
 pub fn on_settings_changed(app: &AppHandle, shared: &Shared, old: &Settings, new: &Settings) {
     let Some(window) = get(app) else { return };
     let view = shared.ui().view;
@@ -460,6 +461,12 @@ pub fn on_settings_changed(app: &AppHandle, shared: &Shared, old: &Settings, new
         dock::forget();
         // Docked placement ignores the Settings anchor; one saved before docking is stale.
         *crate::state::lock(&SETTINGS_ANCHOR) = None;
+    }
+    if new.tray_number != old.tray_number {
+        crate::tray::refresh_style(app);
+    }
+    if new.connection_watchdog != old.connection_watchdog {
+        crate::watchdog::wake(app);
     }
     let rows_changed = new.card_rows != old.card_rows && view == ViewMode::Card;
     if dock_changed || rows_changed || new.ui_scale != old.ui_scale {

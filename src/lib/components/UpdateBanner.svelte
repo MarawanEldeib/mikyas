@@ -14,7 +14,8 @@
   import Icon from "./Icon.svelte";
 
   const update = $derived(app.ui.update);
-  const warnings = $derived(notices(app.snapshot).length > 0);
+  // The status-line banner takes the same footer slot on the card.
+  const warnings = $derived(notices(app.snapshot).length > 0 || app.ui.connection_lost);
   const visible = $derived(bannerVisible(app.ui, app.settings?.dock ?? "off", dismissed, warnings));
   const pill = $derived(app.ui.view === "pill");
 
