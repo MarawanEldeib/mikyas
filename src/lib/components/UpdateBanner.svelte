@@ -7,12 +7,14 @@
 
 <script lang="ts">
   import { api } from "../ipc";
+  import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import { bannerVisible, saveDismissed } from "../update";
   import Icon from "./Icon.svelte";
 
   const update = $derived(app.ui.update);
-  const visible = $derived(bannerVisible(app.ui, app.settings?.dock ?? "off", dismissed));
+  const warnings = $derived(notices(app.snapshot).length > 0);
+  const visible = $derived(bannerVisible(app.ui, app.settings?.dock ?? "off", dismissed, warnings));
   const pill = $derived(app.ui.view === "pill");
 
   function view(url: string) {

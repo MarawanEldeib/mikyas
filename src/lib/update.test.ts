@@ -33,6 +33,12 @@ describe("bannerVisible", () => {
     expect(bannerVisible(ui({ dock_expanded: true }), "right", null)).toBe(true);
   });
 
+  it("never covers the card footer's health warnings (the pill's warning dot sits elsewhere)", () => {
+    expect(bannerVisible(ui(), "off", null, true)).toBe(false);
+    expect(bannerVisible(ui({ view: "pill" }), "off", null, true)).toBe(true);
+    expect(bannerVisible(ui(), "off", null, false)).toBe(true);
+  });
+
   it("respects a dismissal of that version only", () => {
     expect(bannerVisible(ui(), "off", "0.2.0")).toBe(false);
     expect(bannerVisible(ui({ update: { ...UPDATE, version: "0.3.0" } }), "off", "0.2.0")).toBe(true);

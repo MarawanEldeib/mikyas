@@ -8,11 +8,12 @@ import type { DockEdge, UiState, UpdateInfo } from "./types";
 export const APP_VERSION: string = packageVersion;
 
 /** Whether the banner shows: an update is known, the card or pill is visible (not docked away)
- *  and interactive, and this version was not dismissed. */
-export function bannerVisible(ui: UiState, dock: DockEdge, dismissed: string | null): boolean {
+ *  and interactive, and this version was not dismissed. On the card it would cover the footer's
+ *  health warnings (`warnings`), which matter more; Settings → System still lists the update. */
+export function bannerVisible(ui: UiState, dock: DockEdge, dismissed: string | null, warnings = false): boolean {
   return (
     ui.update !== null &&
-    (ui.view === "card" || ui.view === "pill") &&
+    (ui.view === "pill" || (ui.view === "card" && !warnings)) &&
     (dock === "off" || ui.dock_expanded) &&
     !ui.click_through &&
     ui.update.version !== dismissed
