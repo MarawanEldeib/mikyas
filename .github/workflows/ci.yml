@@ -9,8 +9,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # release.yml runs this whole workflow as its quality and privacy gate.
+  # release.yml runs this whole workflow as its quality and privacy gate, with no_cache: true so a
+  # release never restores (or saves) a cache that another ref could have written.
   workflow_call:
+    inputs:
+      no_cache:
+        description: Run without restoring or saving any Rust or npm cache.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,11 +71,12 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.no_cache }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ !inputs.no_cache && 'npm' || '' }}
       # No install scripts: the only ones are lefthook's git-hook installer (not needed on a
       # runner) and fsevents (macOS only).
       - run: npm ci --ignore-scripts
@@ -96,8 +103,10 @@ jobs:
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
 
-      # Advisory until the existing code is formatted in one sweep (it predates rustfmt in CI);
-      # crates/capture is already clean.
+      # crates/capture is formatted: keep it that way.
+      - name: rustfmt (capture shim)
+        run: cargo fmt -p cuw-capture -- --check
+      # Advisory for the rest until it is formatted in one sweep (it predates rustfmt in CI).
       - name: rustfmt
         continue-on-error: true
         run: cargo fmt --all -- --check

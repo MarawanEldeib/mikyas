@@ -32,6 +32,8 @@ jobs:
   check:
     name: CI gate
     uses: ./.github/workflows/ci.yml
+    with:
+      no_cache: true
     permissions:
       contents: read
 
