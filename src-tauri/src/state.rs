@@ -65,12 +65,29 @@ pub enum HiddenReason {
     Fullscreen,
 }
 
-/// A newer release found by the opt-in update checker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The releases newer than this build that the opt-in (notify-only) update checker found.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateInfo {
+    /// Newest version (`releases[0].version`).
+    pub latest: String,
+    /// Number of versions newer than this build (`releases.len()`).
+    pub count: usize,
+    /// Every newer published release, newest first.
+    pub releases: Vec<ReleaseInfo>,
+    /// The user chose "Later" for `latest`: the banner stays hidden until a newer version appears.
+    pub dismissed: bool,
+}
+
+/// One release newer than this build.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReleaseInfo {
     pub version: String,
-    /// Release page (always under https://github.com/).
+    /// Release page of this repository (allowlisted in `updates::is_release_url`).
     pub url: String,
+    /// Up to 5 short plain-text bullets from the release notes.
+    pub notes: Vec<String>,
 }
 
 /// What the UI shows about the window itself (`ui-state` event).
