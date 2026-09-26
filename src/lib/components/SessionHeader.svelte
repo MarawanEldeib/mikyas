@@ -2,8 +2,9 @@
   import { clampPct, fillColor } from "../color";
   import { ctxLabel, formatAge, formatTokens, modelLabel } from "../format";
   import { app } from "../stores.svelte";
-  import type { Entrypoint, SessionView } from "../types";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import { SURFACE } from "../surface";
+  import type { SessionView } from "../types";
+  import Icon from "./Icon.svelte";
 
   interface Props {
     session: SessionView | null;
@@ -12,13 +13,6 @@
   }
 
   let { session, now, showProject }: Props = $props();
-
-  const SURFACE: Record<Entrypoint, { icon: IconName; name: string } | null> = {
-    cli: { icon: "terminal", name: "Claude Code (terminal)" },
-    desktop: { icon: "desktop", name: "Claude Desktop — Code" },
-    cowork: { icon: "cowork", name: "Claude Desktop — Cowork" },
-    unknown: null,
-  };
 
   const BASIS: Record<SessionView["ctx_basis"], string> = {
     statusline: "reported by Claude Code",
@@ -29,7 +23,8 @@
     default: "default 200K",
   };
 
-  const surface = $derived(session ? SURFACE[session.entrypoint] : null);
+  // An unknown surface gets no icon here (the Sessions view still labels it).
+  const surface = $derived(session && session.entrypoint !== "unknown" ? SURFACE[session.entrypoint] : null);
   const ctx = $derived(session?.ctx_pct == null ? null : clampPct(session.ctx_pct));
   const ctxTip = $derived.by(() => {
     if (!session) return "";

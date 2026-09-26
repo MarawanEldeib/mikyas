@@ -2,10 +2,11 @@
 // via the `ui-state` event; the UI requests changes through commands and applies the result.
 
 import { api, inTauri, onSnapshot, onUiState, type Unlisten } from "./ipc";
+import { PatchQueue } from "./settings-queue";
 import type { TickTargets } from "./tick";
 import type { ConnectionStatus, Settings, Snapshot, UiState, ViewMode, WindowView } from "./types";
 
-class AppState {
+export class AppState {
   /** Latest snapshot; replaced wholesale on every `snapshot` event. */
   snapshot = $state.raw<Snapshot | null>(null);
   settings = $state.raw<Settings | null>(null);
@@ -29,43 +30,80 @@ class AppState {
   error = $state<string | null>(null);
   readonly mock = !inTauri;
 
-  #unlisten: Unlisten[] = [];
+  #unSnapshot: Unlisten | null = null;
+  #unUi: Unlisten | null = null;
+  /** Set by the event listeners: pushed state is newer than a fetch started before it. */
+  #pushedSnapshot = false;
+  #pushedUi = false;
+  #initializing = false;
+  /** Settings as confirmed by Rust, with the patches still in flight and any local preview. */
+  #settings = new PatchQueue<Settings>();
+  /** Bumped on every connection write so a slow status read never replaces a newer one. */
+  #connectionSeq = 0;
 
-  /** Loads the initial state and subscribes to backend events. */
+  /**
+   * Subscribes to backend events and loads the initial state. Events that arrive while the
+   * fetch is in flight win over the fetched values. Safe to call again after a failure (Retry).
+   */
   async init(): Promise<void> {
+    if (this.#initializing || (this.ready && this.#unSnapshot && this.#unUi)) return;
+    this.#initializing = true;
+    this.error = null;
     try {
-      this.#unlisten.push(
-        await onSnapshot((s) => {
+      // Each subscription is made once; a retry only adds what a failed attempt left out.
+      if (!this.#unSnapshot) {
+        this.#pushedSnapshot = false;
+        this.#unSnapshot = await onSnapshot((s) => {
+          this.#pushedSnapshot = true;
           this.snapshot = s;
           this.now = Date.now();
-        }),
-        await onUiState((u) => this.#applyUi(u)),
-      );
+        });
+      }
+      if (!this.#unUi) {
+        this.#pushedUi = false;
+        this.#unUi = await onUiState((u) => {
+          this.#pushedUi = true;
+          this.#applyUi(u);
+        });
+      }
+      const connSeq = this.#connectionSeq;
       const [snapshot, settings, ui, connection] = await Promise.all([
         api.getSnapshot(),
         api.getSettings(),
         api.getUiState(),
         api.connectionStatus(),
       ]);
-      this.snapshot = snapshot;
-      this.settings = settings;
-      this.connection = connection;
+      if (!this.#pushedSnapshot) this.snapshot = snapshot;
+      this.#settings.reset(settings);
+      this.settings = this.#settings.current();
+      if (connSeq === this.#connectionSeq) this.#setConnection(connection);
       if (settings.view === "pill" || settings.view === "card") this.previousView = settings.view;
-      this.#applyUi(ui);
+      if (!this.#pushedUi) this.#applyUi(ui);
+      else if (this.ui.view === "pill" || this.ui.view === "card") this.previousView = this.ui.view;
       this.now = Date.now();
       this.ready = true;
     } catch (e) {
       this.error = errorText(e);
+    } finally {
+      this.#initializing = false;
     }
   }
 
   dispose(): void {
-    for (const u of this.#unlisten.splice(0)) u();
+    this.#unSnapshot?.();
+    this.#unUi?.();
+    this.#unSnapshot = null;
+    this.#unUi = null;
   }
 
   #applyUi(u: UiState): void {
+    const prev = this.ui;
     if (u.view === "pill" || u.view === "card") this.previousView = u.view;
     this.ui = u;
+    // Settings shows the connection state: re-read it when Settings opens and whenever the
+    // watchdog reports a change, so it is never the one loaded at startup.
+    const opened = u.view === "settings" && prev.view !== "settings";
+    if (this.ready && (opened || u.connection_lost !== prev.connection_lost)) void this.#refreshConnectionQuietly();
   }
 
   /**
@@ -86,35 +124,85 @@ class AppState {
   }
 
   async togglePinned(): Promise<void> {
-    const pinned = !this.ui.pinned;
+    const before = this.ui.pinned;
+    const pinned = !before;
     this.ui = { ...this.ui, pinned };
-    await this.#run(() => api.setPinned(pinned));
+    await this.#run(
+      () => api.setPinned(pinned),
+      () => {
+        // Unless a pushed ui-state has replaced the optimistic value meanwhile.
+        if (this.ui.pinned === pinned) this.ui = { ...this.ui, pinned: before };
+      },
+    );
   }
 
   /** Local-only change (e.g. while a slider is dragged); commit with `updateSettings`. */
   previewSettings(patch: Partial<Settings>): void {
-    if (this.settings) this.settings = { ...this.settings, ...patch };
+    this.#settings.preview(patch);
+    this.settings = this.#settings.current();
   }
 
-  /** Persists a settings change; the returned settings replace the local copy. */
+  /**
+   * Persists a settings change, shown at once. A failure rolls it back, and the answer to an
+   * older call never hides a newer change that is still on its way.
+   */
   async updateSettings(patch: Partial<Settings>): Promise<void> {
-    this.previewSettings(patch);
-    await this.#run(async () => {
-      this.settings = await api.updateSettings(patch);
-    });
+    const id = this.#settings.begin(patch);
+    this.settings = this.#settings.current();
+    await this.#run(
+      async () => {
+        this.#settings.settle(id, await api.updateSettings(patch));
+      },
+      () => this.#settings.fail(id),
+    );
+    this.settings = this.#settings.current();
+  }
+
+  /** Fire-and-forget `updateSettings` for event handlers (errors land in `error`). */
+  patch(patch: Partial<Settings>): void {
+    void this.updateSettings(patch);
   }
 
   async refreshConnection(): Promise<void> {
-    await this.#run(async () => {
-      this.connection = await api.connectionStatus();
-    });
+    await this.#run(() => this.#readConnection());
   }
 
-  async #run(fn: () => Promise<unknown>): Promise<void> {
+  /** Removes the statusline capture; the status is re-read afterwards even when it failed. */
+  async disconnect(): Promise<void> {
+    const seq = ++this.#connectionSeq;
+    try {
+      const status = await api.disconnectClaudeCode();
+      if (seq === this.#connectionSeq) this.#setConnection(status);
+    } finally {
+      await this.#refreshConnectionQuietly();
+    }
+  }
+
+  async #readConnection(): Promise<void> {
+    const seq = ++this.#connectionSeq;
+    const status = await api.connectionStatus();
+    if (seq === this.#connectionSeq) this.#setConnection(status);
+  }
+
+  /** A background re-read: leaves `error` (which may belong to something else) alone. */
+  async #refreshConnectionQuietly(): Promise<void> {
+    try {
+      await this.#readConnection();
+    } catch (e) {
+      console.warn("connection_status failed", e);
+    }
+  }
+
+  #setConnection(status: ConnectionStatus): void {
+    this.connection = status;
+  }
+
+  async #run(fn: () => Promise<unknown>, rollback?: () => void): Promise<void> {
     try {
       await fn();
       this.error = null;
     } catch (e) {
+      rollback?.();
       this.error = errorText(e);
     }
   }

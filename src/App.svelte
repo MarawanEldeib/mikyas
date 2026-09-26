@@ -90,10 +90,14 @@
 <div class="widget" class:ghost={app.ui.click_through} style:--widget-opacity={opacity} {onmousedown}>
   <UpdateBanner />
   <!-- First in the DOM so Tab reaches the caption buttons before the view's content. -->
-  {#if app.ready}<WindowControls />{/if}
+  <!-- Also while loading or after a failed start, so the widget can always be hidden or closed. -->
+  <WindowControls />
   {#if !app.ready}
     {#if app.error}
-      <p class="fatal" role="alert">Couldn't load usage data: {app.error}</p>
+      <div class="fatal" role="alert">
+        <p>Couldn't load usage data: {app.error}</p>
+        <button type="button" class="retry" onclick={() => void app.init()}>Retry</button>
+      </div>
     {/if}
   {:else if docked}
     <DockBar />
@@ -128,8 +132,25 @@
     pointer-events: none;
   }
   .fatal {
-    margin: 0;
     padding: 12px;
     color: var(--fg-2);
+  }
+  .fatal p {
+    margin: 0 0 8px;
+    /* Clear of the caption buttons in the top-right corner. */
+    padding-right: 72px;
+  }
+  .retry {
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius-s);
+    background: var(--fill-control);
+    box-shadow: inset 0 0 0 1px var(--stroke-control);
+    font-weight: 500;
+  }
+  .retry:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>

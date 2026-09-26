@@ -2,7 +2,7 @@
   import { ACCENTS, ACCENT_NAMES } from "../color";
   import { CARD_ROWS, UI_SIZES, nearestUiSize } from "../layout";
   import { app } from "../stores.svelte";
-  import type { CardRows, DockEdge, GaugeStyle, Settings } from "../types";
+  import type { CardRows, DockEdge, GaugeStyle } from "../types";
   import Toggle from "./Toggle.svelte";
 
   // Settings → Layout: accent, gauge style, UI size, edge dock, and the card's optional rows.
@@ -22,12 +22,9 @@
     { value: "top", label: "Top edge" },
   ];
 
-  function update(patch: Partial<Settings>) {
-    void app.updateSettings(patch);
-  }
 
   function setRow(rows: CardRows, key: keyof CardRows, on: boolean) {
-    update({ card_rows: { ...rows, [key]: on } });
+    app.patch({ card_rows: { ...rows, [key]: on } });
   }
 </script>
 
@@ -39,7 +36,7 @@
       <div class="swatches" role="radiogroup" aria-labelledby="{uid}-accent">
         {#each ACCENTS as a (a)}
           <label class="swatch-hit" title={ACCENT_NAMES[a]}>
-            <input type="radio" name="{uid}-accent" value={a} checked={s.accent === a} aria-label={ACCENT_NAMES[a]} onchange={() => update({ accent: a })} />
+            <input type="radio" name="{uid}-accent" value={a} checked={s.accent === a} aria-label={ACCENT_NAMES[a]} onchange={() => app.patch({ accent: a })} />
             <span class="swatch" class:auto={a === "auto"} style:--c={a === "auto" ? undefined : `var(--accent-${a})`}></span>
           </label>
         {/each}
@@ -50,7 +47,7 @@
       <div class="seg" role="radiogroup" aria-labelledby="{uid}-gauge">
         {#each GAUGES as g (g.value)}
           <label>
-            <input type="radio" name="{uid}-gauge" value={g.value} checked={s.gauge_style === g.value} onchange={() => update({ gauge_style: g.value })} />
+            <input type="radio" name="{uid}-gauge" value={g.value} checked={s.gauge_style === g.value} onchange={() => app.patch({ gauge_style: g.value })} />
             <span>{g.label}</span>
           </label>
         {/each}
@@ -61,7 +58,7 @@
       <div class="seg fill" role="radiogroup" aria-labelledby="{uid}-size">
         {#each UI_SIZES as z (z.value)}
           <label>
-            <input type="radio" name="{uid}-size" value={z.value} checked={size === z.value} onchange={() => update({ ui_scale: z.value })} />
+            <input type="radio" name="{uid}-size" value={z.value} checked={size === z.value} onchange={() => app.patch({ ui_scale: z.value })} />
             <span>{z.label}</span>
           </label>
         {/each}
@@ -69,7 +66,7 @@
     </div>
     <div class="row">
       <label class="label" for="{uid}-dock">Dock to screen edge</label>
-      <select id="{uid}-dock" value={s.dock} onchange={(e) => update({ dock: e.currentTarget.value as DockEdge })}>
+      <select id="{uid}-dock" value={s.dock} onchange={(e) => app.patch({ dock: e.currentTarget.value as DockEdge })}>
         {#each DOCKS as d (d.value)}
           <option value={d.value}>{d.label}</option>
         {/each}

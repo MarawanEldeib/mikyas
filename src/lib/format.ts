@@ -2,6 +2,7 @@
 // (tick.ts) and the tests agree on exactly when a string changes.
 
 import { clampPct } from "./color";
+import { dtf, type ClockOptions } from "./intl";
 import type { Burn, ResetInfo, SessionView, WindowKind, WindowView } from "./types";
 
 export const SEC = 1_000;
@@ -12,12 +13,7 @@ export const DAY = 24 * HOUR;
 /** Countdowns switch to a per-second "m:ss" display below this many ms. */
 export const SECONDS_BELOW = 10 * MIN;
 
-export interface ClockOptions {
-  /** BCP 47 locale; defaults to the user's. */
-  locale?: string;
-  /** IANA zone; defaults to the system zone. */
-  timeZone?: string;
-}
+export type { ClockOptions };
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -65,17 +61,6 @@ export function formatAgeShort(atMs: number, now: number): string {
   return `${Math.floor(a / DAY)}d`;
 }
 
-const fmtCache = new Map<string, Intl.DateTimeFormat>();
-function dtf(opts: ClockOptions, extra: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
-  const key = JSON.stringify([opts.locale ?? "", opts.timeZone ?? "", extra]);
-  let f = fmtCache.get(key);
-  if (!f) {
-    f = new Intl.DateTimeFormat(opts.locale, { ...extra, timeZone: opts.timeZone });
-    fmtCache.set(key, f);
-  }
-  return f;
-}
-
 /** True when the locale writes times on a 12-hour clock. */
 export function uses12h(opts: ClockOptions = {}): boolean {
   const ro = dtf(opts, { hour: "numeric" }).resolvedOptions();
@@ -92,6 +77,16 @@ export function formatTime(atMs: number, opts: ClockOptions = {}): string {
 
 function dayKey(ms: number, opts: ClockOptions): string {
   return dtf({ timeZone: opts.timeZone, locale: "en-CA" }, { year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
+}
+
+/** Whole calendar days from `from` to `to` in the zone of `opts` (DST-proof: compares dates). */
+function calendarDays(to: number, from: number, opts: ClockOptions): number {
+  const f = dtf({ timeZone: opts.timeZone, locale: "en-US" }, { year: "numeric", month: "numeric", day: "numeric" });
+  const utcDay = (ms: number) => {
+    const part = (type: string) => Number(f.formatToParts(ms).find((p) => p.type === type)?.value);
+    return Date.UTC(part("year"), part("month") - 1, part("day"));
+  };
+  return Math.round((utcDay(to) - utcDay(from)) / DAY);
 }
 
 /** A letter of any script but Latin ("오후", "م", "शनि"). */
@@ -124,14 +119,16 @@ function compactWeekday(opts: ClockOptions): "short" | "narrow" | null {
 
 /**
  * Reset clock: time only when it falls on the same calendar day as `now`, otherwise
- * "Sat 15:40" within the coming week and "12 Oct 15:40" beyond that (compacted as above).
+ * "Sat 15:40" up to six calendar days away and "12 Oct 15:40" beyond that (compacted as above).
  */
 export function formatClock(atMs: number, now: number, opts: ClockOptions = {}): string {
   if (!Number.isFinite(atMs)) return "—";
   const compact = compactWeekday(opts);
   const time = compact ? dtf(opts, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(atMs) : formatTime(atMs, opts);
-  if (dayKey(atMs, opts) === dayKey(now, opts)) return time;
-  if (Math.abs(atMs - now) < 6.5 * DAY) {
+  const days = Math.abs(calendarDays(atMs, now, opts));
+  if (days === 0) return time;
+  // By calendar day, not elapsed time: seven days on is the same weekday as today.
+  if (days <= 6) {
     return `${dtf(opts, { weekday: compact ?? "short" }).format(atMs)} ${time}`;
   }
   return `${dtf(opts, { day: "numeric", month: "short" }).format(atMs)} ${time}`;

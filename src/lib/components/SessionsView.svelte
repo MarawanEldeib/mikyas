@@ -2,16 +2,10 @@
   import { clampPct, fillColor } from "../color";
   import { formatAge, formatPct, formatTime, formatTokens, modelLabel } from "../format";
   import { app } from "../stores.svelte";
-  import type { Entrypoint, SessionView } from "../types";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import { SURFACE } from "../surface";
+  import type { SessionView } from "../types";
+  import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-
-  const SURFACE: Record<Entrypoint, { icon: IconName; short: string; name: string }> = {
-    cli: { icon: "terminal", short: "Terminal", name: "Claude Code (terminal)" },
-    desktop: { icon: "desktop", short: "Desktop · Code", name: "Claude Desktop — Code" },
-    cowork: { icon: "cowork", short: "Cowork", name: "Claude Desktop — Cowork" },
-    unknown: { icon: "info", short: "Claude Code", name: "Claude Code" },
-  };
 
   const sessions = $derived(app.snapshot?.sessions ?? []);
   const activeKey = $derived(app.snapshot?.session?.key ?? null);

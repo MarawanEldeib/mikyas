@@ -40,6 +40,7 @@
   }
 
   async function confirm() {
+    error = null;
     phase = "connecting";
     try {
       result = await api.connectClaudeCode(false);
@@ -56,7 +57,7 @@
     result = null;
     phase = "disconnecting";
     try {
-      app.connection = await api.disconnectClaudeCode();
+      await app.disconnect();
     } catch (e) {
       error = errorText(e);
     }

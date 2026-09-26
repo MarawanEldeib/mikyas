@@ -1,6 +1,5 @@
 <script lang="ts">
   import { app } from "../stores.svelte";
-  import type { Settings } from "../types";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
@@ -11,9 +10,6 @@
     return [first, Math.min(100, Math.max(first + 1, second))] as const;
   });
 
-  function update(patch: Partial<Settings>) {
-    void app.updateSettings(patch);
-  }
 </script>
 
 {#if s}
@@ -21,17 +17,17 @@
   <div class="group">
     <div class="row">
       <span class="label">Alert on high context</span>
-      <Toggle label="Alert on high context" checked={s.ctx_alerts} onchange={(v) => update({ ctx_alerts: v })} />
+      <Toggle label="Alert on high context" checked={s.ctx_alerts} onchange={(v) => app.patch({ ctx_alerts: v })} />
     </div>
     <fieldset class="sub" disabled={!s.ctx_alerts}>
       <legend class="sr">Context alert thresholds</legend>
       <div class="row">
         <span class="label">First alert at</span>
-        <Stepper label="First context alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => update({ ctx_thresholds: [v, t[1]] })} />
+        <Stepper label="First context alert threshold" value={t[0]} min={10} max={t[1] - 1} suffix="%" onchange={(v) => app.patch({ ctx_thresholds: [v, t[1]] })} />
       </div>
       <div class="row">
         <span class="label">Second alert at</span>
-        <Stepper label="Second context alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => update({ ctx_thresholds: [t[0], v] })} />
+        <Stepper label="Second context alert threshold" value={t[1]} min={t[0] + 1} max={100} suffix="%" onchange={(v) => app.patch({ ctx_thresholds: [t[0], v] })} />
       </div>
     </fieldset>
   </div>
