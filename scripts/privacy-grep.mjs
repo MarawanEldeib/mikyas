@@ -12,8 +12,9 @@ const ROOTS = ["src-tauri", "crates", "src"];
 const PATTERNS = [/\.credentials/i, /api\/oauth/i, /claude\.ai/i];
 const DOCS = /\.(md|txt)$/i;
 
-// Each entry names a file and the exact code it may contain. An entry that no longer matches
-// anything fails too, so the list cannot go stale.
+// Each entry names a file and the exact code it may contain; `tests` limits it to the file's
+// `#[cfg(test)] mod tests`. An entry that no longer matches anything fails too, so the list
+// cannot go stale.
 const ALLOW = [
   {
     file: "crates/core/src/saferead.rs",
@@ -23,6 +24,7 @@ const ALLOW = [
   {
     file: "crates/core/src/saferead.rs",
     line: /\.join\("\.credentials\.json"\)/,
+    tests: true,
     why: "tests that the denylist refuses it",
   },
 ];
@@ -76,6 +78,14 @@ function codeLines(file, text) {
   return out;
 }
 
+/** 1-based line of a Rust file's `#[cfg(test)]` that opens `mod tests` (the rest of the file is
+ * its tests), or Infinity. */
+function testsStart(text) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
+  const i = lines.findIndex((l, k) => l === "#[cfg(test)]" && /^mod tests\b/.test(lines[k + 1] ?? ""));
+  return i < 0 ? Infinity : i + 1;
+}
+
 function listFiles() {
   const out = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...ROOTS], {
     encoding: "utf8",
@@ -95,9 +105,11 @@ for (const file of listFiles()) {
     continue; // deleted in the working tree
   }
   if (buf.subarray(0, 8192).includes(0)) continue;
-  for (const { n, text } of codeLines(file, buf.toString("utf8"))) {
+  const source = buf.toString("utf8");
+  const tests = testsStart(source);
+  for (const { n, text } of codeLines(file, source)) {
     if (!PATTERNS.some((p) => p.test(text))) continue;
-    const allowed = ALLOW.findIndex((a) => a.file === file && a.line.test(text));
+    const allowed = ALLOW.findIndex((a) => a.file === file && a.line.test(text) && (!a.tests || n > tests));
     if (allowed >= 0) used.add(allowed);
     else hits.push(`${file}:${n}: ${text}`);
   }
