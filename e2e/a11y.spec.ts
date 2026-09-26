@@ -166,21 +166,37 @@ async function seriousViolations(page: Page): Promise<string[]> {
     .map((v) => `${v.id} (${v.impact}): ${v.target}`);
 }
 
-const isKnown = (finding: string) => KNOWN_AXE.some((k) => finding.startsWith(`${k.id} `) && finding.endsWith(k.target));
+/** Only the open update list has the known findings; every other scan reports everything. */
+const isKnown = (finding: string) => KNOWN_AXE.some((k) => finding === `${k.id} (serious): ${k.target}`);
+
+/** Light mode, card with the update list open (where the known findings are). */
+async function openUpdateList(page: Page): Promise<void> {
+  await page.emulateMedia({ colorScheme: "light" });
+  await openWidget(page, { params: { update: "1", bg: "light" } });
+  await page.getByRole("button", { name: "3 updates available" }).click();
+  await expect(page.getByRole("dialog", { name: "Updates available" })).toBeVisible();
+}
 
 test.describe("known issues (expected to fail until fixed)", () => {
-  test("update list: no serious axe findings in light mode", async ({ page }) => {
-    test.fail(true, KNOWN_AXE.map((k) => k.why).join("; "));
-    await page.emulateMedia({ colorScheme: "light" });
-    await openWidget(page, { params: { update: "1", bg: "light" } });
-    await page.getByRole("button", { name: "3 updates available" }).click();
-    expect(await seriousViolations(page)).toEqual([]);
-  });
+  // One test per finding, so each one flips on its own when it is fixed.
+  for (const k of KNOWN_AXE) {
+    test(`update list: no ${k.id} finding on ${k.target}`, async ({ page }) => {
+      test.fail(true, k.why);
+      await openUpdateList(page);
+      expect((await seriousViolations(page)).filter((f) => f.startsWith(`${k.id} `))).toEqual([]);
+    });
+  }
 
-  test("sessions: the screen-reader words keep their spaces", async ({ page }) => {
+  test("sessions: the count keeps its screen-reader space", async ({ page }) => {
     test.fail(true, 'SessionsView.svelte: Svelte 5 trims the leading space of <span class="sr"> sessions</span>, so it reads "4sessions"');
     await openWidget(page, { view: "sessions" });
     await expect(page.locator(".count")).toHaveText("4 sessions");
+  });
+
+  test("sessions: the context label keeps its screen-reader space", async ({ page }) => {
+    test.fail(true, 'SessionsView.svelte: Svelte 5 trims the trailing space of <span class="sr">context </span>, so it reads "context34%"');
+    await openWidget(page, { view: "sessions" });
+    await expect(page.locator(".ctx-pct").first()).toHaveText("context 34%");
   });
 });
 
@@ -205,7 +221,9 @@ test.describe("axe-core", () => {
           waitFor: c.params?.dock ? VIEW_ROOT.dock : undefined,
         });
         if (c.params?.update) await page.getByRole("button", { name: "3 updates available" }).click();
-        const serious = (await seriousViolations(page)).filter((f) => !isKnown(f));
+        const all = await seriousViolations(page);
+        // Known findings are only skipped where they are known to be: the open update list.
+        const serious = c.params?.update ? all.filter((f) => !isKnown(f)) : all;
         expect(serious).toEqual([]);
       });
     }
