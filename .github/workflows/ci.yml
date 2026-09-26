@@ -126,8 +126,10 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo test --workspace
           if ($LASTEXITCODE -ne 0) { throw "cargo test failed ($LASTEXITCODE)" }
-          cargo llvm-cov report --summary-only
-          cargo llvm-cov report --lcov --output-path lcov.info --fail-under-lines $env:COVERAGE_MIN_LINES
+          # The released v0 status-line code the migration tests run is a test fixture, not app code.
+          $ignore = 'migrate[\\/]legacy_v0'
+          cargo llvm-cov report --summary-only --ignore-filename-regex $ignore
+          cargo llvm-cov report --lcov --output-path lcov.info --fail-under-lines $env:COVERAGE_MIN_LINES --ignore-filename-regex $ignore
           if ($LASTEXITCODE -ne 0) { throw "line coverage is below $env:COVERAGE_MIN_LINES%" }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}

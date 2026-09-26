@@ -35,7 +35,7 @@ listed here cannot be opened.
 | `%APPDATA%\Claude\local-agent-mode-sessions\**\.claude\projects\**\*.jsonl` (Cowork transcripts) | same as above. Other files in that tree — e.g. a session's `.claude\history.jsonl` prompt history — are not readable. |
 | `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`). |
 | `%LOCALAPPDATA%\SovaWatch\**` | the widget's own data (below). |
-| `%LOCALAPPDATA%\ClaudeUsageWidget\` | only once, on the first start after moving from Claude Usage Widget (the app's former name): its settings, state, history, alerts, window positions, update-check record, connection record (`wrap.json`) and captures are copied into `%LOCALAPPDATA%\SovaWatch\`. The old folder is not deleted; its `wrap.json` is renamed `wrap.json.migrated` once the status line points at the new helper. |
+| `%LOCALAPPDATA%\ClaudeUsageWidget\` | only once, on the first start after moving from Claude Usage Widget (the app's former name): its settings, state, history, alerts, window positions, connection record (`wrap.json`) and captures are copied into `%LOCALAPPDATA%\SovaWatch\`. The old folder is not deleted; its `wrap.json` is renamed `wrap.json.migrated` once the status line points at the new helper. |
 
 ## Files written
 

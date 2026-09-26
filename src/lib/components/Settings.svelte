@@ -617,8 +617,9 @@
     color: var(--fg-3);
   }
   .notices {
-    align-self: center;
-    margin-top: 6px;
+    display: flex;
+    width: fit-content;
+    margin: 8px auto 0;
   }
   .quit:hover {
     color: var(--crit);

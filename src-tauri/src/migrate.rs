@@ -38,10 +38,10 @@ pub const MARKER_FILE: &str = "migrated.json";
 /// The old folder's connection record is renamed to this after the status line was switched.
 pub const RETIRED_WRAP_FILE: &str = "wrap.json.migrated";
 /// The old app's own files that are copied (when present and not yet in the new folder).
-/// `wrap.json` is handled separately; backups, logs, the helper and the watchdog's dismissed
-/// fingerprints are left behind.
-pub const COPIED_FILES: &[&str] =
-    &["settings.json", "state.json", "history.jsonl", "alerts.json", "positions.json", "update-check.json"];
+/// `wrap.json` is handled separately; backups, logs, the helper, the watchdog's dismissed
+/// fingerprints and `update-check.json` (its release page is on the old repository address,
+/// which `open_url` refuses) are left behind.
+pub const COPIED_FILES: &[&str] = &["settings.json", "state.json", "history.jsonl", "alerts.json", "positions.json"];
 const CAS_ATTEMPTS: u32 = 3;
 /// A capture file is small; anything bigger in the old capture folder is not ours to copy.
 const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
