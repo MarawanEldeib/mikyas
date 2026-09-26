@@ -156,6 +156,10 @@ pub fn apply_settings_patch(app: &AppHandle, shared: &Shared, patch: &serde_json
     if new.hotkey != old.hotkey {
         crate::hotkey::register(app, shared, &new.hotkey);
     }
+    // [stream B] appearance hooks (ui_scale, card_rows, dock) go here.
+
+    // [stream C] system hooks (toggle_hotkey, auto_hide_fullscreen, check_updates) go here.
+
     let view_patched = patch.get("view").is_some() && new.view != shared.ui().view;
     if view_patched {
         apply_view(app, shared, new.view);
