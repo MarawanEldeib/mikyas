@@ -21,9 +21,9 @@
 //! no identity) may contain an `attachment` line whose identity model id ends with `[1m]`, e.g.
 //! `{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}`
 //! — search tolerantly for any string value matching `claude-…[1m]` inside lines with
-//! `"type":"attachment"`. `message.model` never has the suffix, and the head is written once, so
-//! the marker only counts while the last line's model is the identity's model (after `/model`
-//! switches to another one it no longer applies).
+//! `"type":"attachment"`; the last such line in the head counts. `message.model` never has the
+//! suffix, and the head is written once, so the marker only counts while the last line's model is
+//! the identity's model (after `/model` switches to another one it no longer applies).
 
 use std::ffi::OsStr;
 use std::fs::{DirEntry, File};
@@ -464,22 +464,22 @@ fn head_identity(file: &mut File, len: u64, chunk: &[u8], chunk_start: u64) -> R
     Ok(None)
 }
 
-/// Looks for the identity attachment in the first bytes of a transcript: the last `[1m]` model id
-/// of an attachment line, else the last plain identity model id. The last line may be cut off at
-/// the head boundary; the scan tolerates that.
+/// Looks for the identity attachment in the first bytes of a transcript: the model id of the last
+/// attachment line that has one (a later identity line describes a newer choice), its `[1m]` value
+/// preferred over a plain identity in the same line. The last line may be cut off at the head
+/// boundary; the scan tolerates that.
 fn scan_head(head: &[u8]) -> Option<String> {
-    let (mut one_m, mut plain) = (None, None);
+    let mut found = None;
     for line in head.split(|&b| b == b'\n') {
         if !contains(line, b"attachment") {
             continue;
         }
         let scan = scan_attachment_line(line);
         if scan.is_attachment {
-            one_m = scan.one_m.or(one_m);
-            plain = scan.identity.or(plain);
+            found = scan.one_m.or(scan.identity).or(found);
         }
     }
-    one_m.or(plain).map(|id| String::from_utf8_lossy(id).into_owned())
+    found.map(|id| String::from_utf8_lossy(id).into_owned())
 }
 
 /// True if the identity model id has `[1m]` and names the same model as `model` (a
@@ -1131,13 +1131,32 @@ mod tests {
     }
 
     #[test]
-    fn head_identity_prefers_the_last_1m_one() {
+    fn head_identity_is_the_last_one() {
         let ids = |ids: &[&str]| lines(&ids.iter().map(|id| identity_line(id)).collect::<Vec<_>>());
+        // A later identity line (a `/model` switch early in the session) replaces an earlier one.
         let head = ids(&["claude-sonnet-5[1m]", "claude-opus-5-5[1m]", "claude-opus-5-5"]);
-        assert_eq!(scan_head(&head).as_deref(), Some("claude-opus-5-5[1m]"));
-        let head = ids(&["claude-opus-5-5", "claude-sonnet-5"]);
-        assert_eq!(scan_head(&head).as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-opus-5-5"));
+        let head = ids(&["claude-opus-5-5", "claude-sonnet-5[1m]"]);
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-sonnet-5[1m]"));
+        // Within one line a 1M value still wins over a plain identity.
+        let mixed = json!({"type": "attachment", "a": {"modelId": "claude-opus-5-5", "b": "claude-sonnet-5[1m]"}});
+        let head = lines(&[identity_line("claude-opus-5-5"), mixed, user("hi")]);
+        assert_eq!(scan_head(&head).as_deref(), Some("claude-sonnet-5[1m]"));
         assert_eq!(scan_head(&lines(&[user("hi")])), None);
+
+        // End to end: the switch from the 1M to the 200K variant of the same model is visible
+        // while both identity lines are in the head.
+        let e = env();
+        let path = e.write(
+            "p/variant.jsonl",
+            &lines(&[
+                identity_line("claude-opus-5-5[1m]"),
+                assistant("claude-opus-5-5", 1, 1, 1),
+                identity_line("claude-opus-5-5"),
+                assistant("claude-opus-5-5", 2, 2, 2),
+            ]),
+        );
+        assert_eq!(e.scan(&path).unwrap().identity_1m, Some(false));
     }
 
     #[test]
