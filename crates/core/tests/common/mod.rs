@@ -12,24 +12,24 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use mikyas_core::alerts::{AlertEvent, AlertSettings, AlertState};
+use mikyas_core::capture::{self, WriteOutcome};
+use mikyas_core::ctx_alerts::{CtxAlertEvent, CtxAlertState};
+use mikyas_core::engine::snapshot::{self, EngineInputs};
+use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind, WindowView};
+use mikyas_core::history::History;
+use mikyas_core::pace_alerts::{PaceAlertEvent, PaceAlertState, PaceSettings};
+use mikyas_core::paths::Paths;
+use mikyas_core::recap::{RecapState, WeeklyRecap};
+use mikyas_core::saferead::SafeReader;
+use mikyas_core::sources::SourceError;
+use mikyas_core::sources::desktop_usage::{self, DesktopUsage};
+use mikyas_core::sources::statusline;
+use mikyas_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
+use mikyas_core::time::{DAY_MS, MINUTE_MS, Ms};
+use mikyas_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sovawatch_core::alerts::{AlertEvent, AlertSettings, AlertState};
-use sovawatch_core::capture::{self, WriteOutcome};
-use sovawatch_core::ctx_alerts::{CtxAlertEvent, CtxAlertState};
-use sovawatch_core::engine::snapshot::{self, EngineInputs};
-use sovawatch_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind, WindowView};
-use sovawatch_core::history::History;
-use sovawatch_core::pace_alerts::{PaceAlertEvent, PaceAlertState, PaceSettings};
-use sovawatch_core::paths::Paths;
-use sovawatch_core::recap::{RecapState, WeeklyRecap};
-use sovawatch_core::saferead::SafeReader;
-use sovawatch_core::sources::SourceError;
-use sovawatch_core::sources::desktop_usage::{self, DesktopUsage};
-use sovawatch_core::sources::statusline;
-use sovawatch_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
-use sovawatch_core::time::{DAY_MS, MINUTE_MS, Ms};
-use sovawatch_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 
 pub const SID: &str = "00000000-0000-4000-8000-000000000001";
 pub const SID2: &str = "22222222-2222-4222-8222-222222222222";
@@ -82,7 +82,7 @@ impl Env {
         fs::write(self.desktop_file(), bytes).unwrap();
     }
 
-    /// Runs one statusline payload through the shim's capture path, as `sovawatch-capture.exe` does.
+    /// Runs one statusline payload through the shim's capture path, as `mikyas-capture.exe` does.
     pub fn statusline(&self, payload: &Statusline, now_ms: Ms) -> WriteOutcome {
         let bytes = serde_json::to_vec(&payload.json()).unwrap();
         capture::capture_from_bytes(&bytes, &self.paths.capture_dir(), now_ms).unwrap()

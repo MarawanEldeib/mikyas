@@ -224,6 +224,40 @@ pub fn disconnect(bytes: &[u8], wrap: Option<&WrapRecord>) -> Result<Option<Vec<
     Ok(Some(out))
 }
 
+/// The move from Claude Usage Widget: when the status line runs the legacy helper `legacy_shim`
+/// (compared case-insensitively, command form), returns the file with ONLY that helper path
+/// replaced by `new_shim` — the wrap form and the user's command stay exactly as they are, so a
+/// record of the original command keeps restoring it byte for byte. `Ok(None)` when there is no
+/// such status line (not connected, someone else's command, another helper, already moved).
+pub fn migrate_shim(bytes: &[u8], legacy_shim: &str, new_shim: &str) -> Result<Option<Vec<u8>>, SettingsError> {
+    cmdline::validate_shim_path(new_shim)?;
+    if is_blank(bytes) {
+        return Ok(None);
+    }
+    let doc = Doc::parse(bytes)?;
+    let StatusLine::Command { literal, command, .. } = doc.status_line()? else {
+        return Ok(None);
+    };
+    let Some(outer) = cmdline::unwrap(&command) else {
+        return Ok(None);
+    };
+    if !cmdline::is_legacy_shim(&outer.shim_path) || !outer.shim_path.eq_ignore_ascii_case(legacy_shim) {
+        return Ok(None);
+    }
+    let prefix = if command.starts_with("& ") { "& " } else { "" };
+    let old_head = format!("{prefix}\"{}\"", outer.shim_path);
+    let tail = command.strip_prefix(&old_head).ok_or(SettingsError::NotStrictJson)?;
+    let moved = format!("{prefix}\"{new_shim}\"{tail}");
+    // Same form, same user command, only the helper differs.
+    let check = cmdline::unwrap(&moved).ok_or(SettingsError::NotStrictJson)?;
+    if check.shim_path != new_shim || check.mode != outer.mode || check.original != outer.original {
+        return Err(SettingsError::NotStrictJson);
+    }
+    let out = doc.splice(literal, &json_string(&moved)?)?;
+    verify(&doc, &out, Some(&moved))?;
+    Ok(Some(out))
+}
+
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 const STATUS_LINE: &str = "statusLine";
 

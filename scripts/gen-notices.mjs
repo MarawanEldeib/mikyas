@@ -28,7 +28,7 @@ const normalise = (text) =>
 
 function rustSection() {
   // cargo-about refuses to write to a redirected stdout under PowerShell: always use -o.
-  const dir = mkdtempSync(join(tmpdir(), "sova-notices-"));
+  const dir = mkdtempSync(join(tmpdir(), "mikyas-notices-"));
   try {
     const file = join(dir, "rust.md");
     execFileSync("cargo", ["about", "generate", "--offline", "--locked", "-o", file, "about.hbs"], {
@@ -36,7 +36,7 @@ function rustSection() {
       stdio: ["ignore", "inherit", "inherit"],
     });
     const out = readFileSync(file, "utf8");
-    if (/\bsovawatch/i.test(out)) throw new Error("our own crates must not be listed as third-party components");
+    if (/\bmikyas/i.test(out)) throw new Error("our own crates must not be listed as third-party components");
     return out;
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -45,7 +45,7 @@ function rustSection() {
 
 /** npm packages whose code ends up in dist/, from the source maps of a throwaway build. */
 function bundledPackages() {
-  const dir = mkdtempSync(join(tmpdir(), "sova-notices-"));
+  const dir = mkdtempSync(join(tmpdir(), "mikyas-notices-"));
   try {
     const vite = join(root, "node_modules", "vite", "bin", "vite.js");
     execFileSync(process.execPath, [vite, "build", "--sourcemap", "--outDir", dir, "--emptyOutDir", "--logLevel", "error"], {
@@ -86,11 +86,11 @@ function npmSection(packages) {
 
 const header = `# Third-party notices
 
-SovaWatch — usage widget for Claude Code & Claude Desktop — is proprietary software (see
+Mikyas — usage widget for Claude Code & Claude Desktop — is proprietary software (see
 LICENSE), but it is built from open-source components. Their licenses are reproduced below, as
-those licenses require. Nothing here changes the terms of SovaWatch itself.
+those licenses require. Nothing here changes the terms of Mikyas itself.
 
-- **Rust crates** compiled into \`sovawatch.exe\` and \`sovawatch-capture.exe\` for Windows
+- **Rust crates** compiled into \`mikyas.exe\` and \`mikyas-capture.exe\` for Windows
   (x86_64-pc-windows-msvc), grouped by license text.
 - **npm packages** compiled into the app's user interface.
 

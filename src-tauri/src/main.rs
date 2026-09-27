@@ -3,6 +3,6 @@
 
 fn main() {
     // First, before anything can load a DLL.
-    sovawatch_lib::restrict_dll_search();
-    sovawatch_lib::run()
+    mikyas_lib::restrict_dll_search();
+    mikyas_lib::run()
 }

@@ -3,8 +3,8 @@
 //
 // Usage (Windows):
 //   npm run build                               # the frontend the exe embeds (dist/)
-//   cargo build -p sovawatch --features tauri/custom-protocol
-//                                               # needs src-tauri/binaries/sovawatch-capture-*.exe
+//   cargo build -p mikyas --features tauri/custom-protocol
+//                                               # needs src-tauri/binaries/mikyas-capture-*.exe
 //   npm install --no-save playwright-core       # unless it is already a devDependency
 //   node scripts/app-e2e.mjs
 //
@@ -12,8 +12,8 @@
 // the Vite dev server (devUrl) instead of the embedded frontend. The test fails on such a build.
 //
 // Env:
-//   SOVA_APP_EXE        the debug exe (default <CARGO_TARGET_DIR or ./target>/debug/sovawatch.exe)
-//   SOVA_E2E_KEEP=1     keep the temp dir afterwards (its path is printed)
+//   MIKYAS_APP_EXE      the debug exe (default <CARGO_TARGET_DIR or ./target>/debug/mikyas.exe)
+//   MIKYAS_E2E_KEEP=1   keep the temp dir afterwards (its path is printed)
 //
 // What it checks:
 //   - the window appears and renders the fixture's 5-hour % and model
@@ -21,13 +21,17 @@
 //   - the private working set of the app + WebView2 process tree stays under 150 MB
 //   - the process tree holds no established TCP connection except the test's own DevTools socket
 //   - `quit_app` ends the app and all of its WebView2 processes with exit code 0
-//   - the real %LOCALAPPDATA%\SovaWatch listing (names only) is unchanged
+//   - the real %LOCALAPPDATA%\Mikyas listing (names only) is unchanged, and so are those of the
+//     app's former names (%LOCALAPPDATA%\SovaWatch, %LOCALAPPDATA%\ClaudeUsageWidget): the test
+//     instance runs under MIKYAS_DATA_DIR, so it must never move their data
 //
 // Safety:
-//   - The app is single-instance. If any sovawatch process is running (e.g. the user's
+//   - The app is single-instance. If any mikyas process is running (e.g. the user's
 //     installed widget) the test SKIPS (exit 0) and never stops it. The check runs right before
 //     the launch; a widget started during the test would hand over to the test instance.
-//   - Widget data (SOVA_DATA_DIR) and Claude Code data (CLAUDE_CONFIG_DIR) point at the temp dir;
+//     It also skips while a former name of the app runs (sovawatch, claude-usage-widget): that
+//     one keeps writing its own folder, whose listing is compared.
+//   - Widget data (MIKYAS_DATA_DIR) and Claude Code data (CLAUDE_CONFIG_DIR) point at the temp dir;
 //     WEBVIEW2_USER_DATA_FOLDER keeps the WebView2 profile there too (verified below).
 //   - There is no override for Claude Desktop's folders, so the app still READS (never writes)
 //     the machine's Claude Desktop data if there is any. The fixture capture is stamped "now" so
@@ -35,7 +39,7 @@
 //   - The window-state plugin saves the window position under the app identifier on quit
 //     (%APPDATA%\<identifier from tauri.conf.json>\.window-state.json, shared with the installed
 //     widget). The file is saved before the launch and restored byte for byte after.
-//   - Debug builds only honour SOVA_BROWSER_ARGS (the remote debugging port); release builds
+//   - Debug builds only honour MIKYAS_BROWSER_ARGS (the remote debugging port); release builds
 //     ignore it.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -48,10 +52,16 @@ import { CTX_SIZE, FIVE_HOUR_PCT, MODEL_NAME, writeFixtures } from "./app-e2e/fi
 import { pageKind } from "./app-e2e/page.mjs";
 import { anyAlive, inspectTree, isAppOrigin, killTree, listNames, pidsNamed, unexpectedConnections } from "./app-e2e/win.mjs";
 
-const APP_NAME = "sovawatch";
+const APP_NAME = "mikyas";
+/** The app's own process and data folder, then its former names' (see the header). */
+const APPS = [
+  { process: APP_NAME, dir: "Mikyas" },
+  { process: "sovawatch", dir: "SovaWatch" },
+  { process: "claude-usage-widget", dir: "ClaudeUsageWidget" },
+];
 const MAX_PRIVATE_MB = 150;
 const VIEWS = ["pill", "card", "sessions", "history", "settings", "card"];
-// wry's own default WebView2 arguments: SOVA_BROWSER_ARGS replaces them, so they are repeated.
+// wry's own default WebView2 arguments: MIKYAS_BROWSER_ARGS replaces them, so they are repeated.
 const WRY_DEFAULT_ARGS = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,19 +109,20 @@ function freePort() {
 }
 
 function appExe() {
-  if (process.env.SOVA_APP_EXE) return resolve(process.env.SOVA_APP_EXE);
+  if (process.env.MIKYAS_APP_EXE) return resolve(process.env.MIKYAS_APP_EXE);
   const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(repo, "target");
   return join(target, "debug", `${APP_NAME}.exe`);
 }
 
-/** The user's real widget data dir; capture files churn there whenever Claude Code runs. */
-function realDataListing() {
+/** The user's real widget data dirs (the app's and its former names'), by folder name; capture
+ *  files churn there whenever Claude Code runs. */
+function realDataListings() {
   const local = process.env.LOCALAPPDATA;
   if (!local) return null;
-  const dir = join(local, "SovaWatch");
   // The statusline helper writes capture\*.json (and *.tmp) for any running Claude Code session,
   // independently of the app, so those entries are not compared.
-  return listNames(dir, (rel) => /^capture\\.+/i.test(rel) || /\.tmp$/i.test(rel));
+  const skipChurn = (rel) => /^capture\\.+/i.test(rel) || /\.tmp$/i.test(rel);
+  return Object.fromEntries(APPS.map(({ dir }) => [dir, listNames(join(local, dir), skipChurn)]));
 }
 
 function rmdirIfEmpty(dir) {
@@ -142,27 +153,30 @@ async function main() {
     process.exit(1);
   }
 
-  const running = pidsNamed(APP_NAME);
-  if (running.length) {
-    skip(`${APP_NAME} is already running (pid ${running.join(", ")}); the app is single-instance and the test never stops it`);
+  for (const { process: name } of APPS) {
+    const running = pidsNamed(name);
+    if (!running.length) continue;
+    const why =
+      name === APP_NAME ? "the app is single-instance" : "a former name of the app keeps writing its data folder, which is compared";
+    skip(`${name} is already running (pid ${running.join(", ")}); ${why}, and the test never stops it`);
   }
 
-  const root = mkdtempSync(join(tmpdir(), "sova-app-e2e-"));
+  const root = mkdtempSync(join(tmpdir(), "mikyas-app-e2e-"));
   const { dataDir, claudeDir, webviewDir } = writeFixtures(root);
   const windowState = process.env.APPDATA ? join(process.env.APPDATA, IDENTIFIER, ".window-state.json") : null;
   const windowStateBefore = windowState ? readIfExists(windowState) : null;
   const windowStateDirBefore = windowState ? existsSync(dirname(windowState)) : true;
-  const realBefore = realDataListing();
+  const realBefore = realDataListings();
   const port = await freePort();
 
   console.log(`app-e2e: ${exe}\n  temp dir ${root}\n  devtools port ${port}`);
   const child = spawn(exe, [], {
     env: {
       ...process.env,
-      SOVA_DATA_DIR: dataDir,
+      MIKYAS_DATA_DIR: dataDir,
       CLAUDE_CONFIG_DIR: claudeDir,
       WEBVIEW2_USER_DATA_FOLDER: webviewDir,
-      SOVA_BROWSER_ARGS: `${WRY_DEFAULT_ARGS} --remote-debugging-port=${port}`,
+      MIKYAS_BROWSER_ARGS: `${WRY_DEFAULT_ARGS} --remote-debugging-port=${port}`,
       RUST_BACKTRACE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -276,14 +290,18 @@ async function main() {
     }
   }
 
-  const realAfter = realDataListing();
-  const same = JSON.stringify(realBefore) === JSON.stringify(realAfter);
-  check(same, `%LOCALAPPDATA%\\SovaWatch listing unchanged (${realBefore ? realBefore.length : "absent"})`);
-  if (!same) {
-    const before = new Set(realBefore ?? []);
-    const after = new Set(realAfter ?? []);
-    console.log(`    added: ${[...after].filter((n) => !before.has(n)).join(", ") || "-"}`);
-    console.log(`    removed: ${[...before].filter((n) => !after.has(n)).join(", ") || "-"}`);
+  const realAfter = realDataListings();
+  for (const { dir } of APPS) {
+    const namesBefore = realBefore?.[dir] ?? null;
+    const namesAfter = realAfter?.[dir] ?? null;
+    const same = JSON.stringify(namesBefore) === JSON.stringify(namesAfter);
+    check(same, `%LOCALAPPDATA%\\${dir} listing unchanged (${namesBefore ? namesBefore.length : "absent"})`);
+    if (!same) {
+      const before = new Set(namesBefore ?? []);
+      const after = new Set(namesAfter ?? []);
+      console.log(`    added: ${[...after].filter((n) => !before.has(n)).join(", ") || "-"}`);
+      console.log(`    removed: ${[...before].filter((n) => !after.has(n)).join(", ") || "-"}`);
+    }
   }
   if (windowState) {
     const now = readIfExists(windowState);
@@ -293,7 +311,7 @@ async function main() {
     );
   }
 
-  if (process.env.SOVA_E2E_KEEP === "1") console.log(`  kept ${root}`);
+  if (process.env.MIKYAS_E2E_KEEP === "1") console.log(`  kept ${root}`);
   else rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 
   if (failures.length) {

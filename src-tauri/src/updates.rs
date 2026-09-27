@@ -22,8 +22,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mikyas_core::time::{DAY_MS, Ms, now_ms};
 use serde::{Deserialize, Serialize};
-use sovawatch_core::time::{DAY_MS, Ms, now_ms};
 use tauri::{AppHandle, Manager, State};
 
 use crate::state::{ReleaseInfo, Shared, UpdateInfo, load_json, lock, save_json};
@@ -31,7 +31,7 @@ use crate::state::{ReleaseInfo, Shared, UpdateInfo, load_json, lock, save_json};
 /// The GitHub repository (`owner/name`) whose releases are checked.
 macro_rules! repo {
     () => {
-        "MarawanEldeib/sovawatch"
+        "MarawanEldeib/mikyas"
     };
 }
 
@@ -346,7 +346,7 @@ pub fn curl_args() -> Vec<String> {
         "--header",
         "Accept: application/vnd.github+json",
         "--header",
-        concat!("User-Agent: sovawatch/", env!("CARGO_PKG_VERSION")),
+        concat!("User-Agent: mikyas/", env!("CARGO_PKG_VERSION")),
         "--header",
         "X-GitHub-Api-Version: 2022-11-28",
         // curl expands the "\n" itself, so the command line stays on one line.
@@ -531,12 +531,12 @@ pub fn remembered(record: &CheckRecord, current: &Version) -> Option<UpdateInfo>
 fn announcement(info: &UpdateInfo) -> (String, String) {
     if info.count > 1 {
         (
-            format!("{} SovaWatch updates are available", info.count),
+            format!("{} Mikyas updates are available", info.count),
             format!("Newest: {}. Open the widget to see what's new; nothing is installed automatically.", info.latest),
         )
     } else {
         (
-            format!("SovaWatch {} is available", info.latest),
+            format!("Mikyas {} is available", info.latest),
             "Open the widget to see what's new; nothing is installed automatically.".into(),
         )
     }
@@ -576,7 +576,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Updater { waker: Mutex::new(tx), record: Mutex::new(record), path, busy: Mutex::new(()) });
     let app = app.clone();
-    std::thread::Builder::new().name("sova-updates".into()).spawn(move || run(&app, &shared, &rx))?;
+    std::thread::Builder::new().name("mikyas-updates".into()).spawn(move || run(&app, &shared, &rx))?;
     Ok(())
 }
 
@@ -872,32 +872,35 @@ mod tests {
 
     #[test]
     fn only_this_repositorys_release_pages_are_allowed() {
-        assert_eq!(RELEASES_PREFIX, "https://github.com/MarawanEldeib/sovawatch/releases/");
+        assert_eq!(RELEASES_PREFIX, "https://github.com/MarawanEldeib/mikyas/releases/");
         for ok in [
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v0.2.0",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1.0.0-beta.1",
-            "https://github.com/MarawanEldeib/sovawatch/releases/latest",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v0.2.0",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1.0.0-beta.1",
+            "https://github.com/MarawanEldeib/mikyas/releases/latest",
         ] {
             assert!(is_release_url(ok), "{ok}");
         }
         for bad in [
             "",
-            "https://github.com/MarawanEldeib/sovawatch/releases/",
-            "https://github.com/MarawanEldeib/sovawatch/releases",
-            "http://github.com/MarawanEldeib/sovawatch/releases/tag/v1.0.0",
-            "https://github.com/someone-else/sovawatch/releases/tag/v1.0.0",
-            "https://github.com/MarawanEldeib/sovawatch/issues/1",
-            "https://github.com.evil.example/MarawanEldeib/sovawatch/releases/tag/v1",
-            "https://github.com/MarawanEldeib/sovawatch/releases/../../../evil",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/%2e%2e",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1?x=1",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1#top",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1 --flag",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1\"",
-            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v1,/select",
+            "https://github.com/MarawanEldeib/mikyas/releases/",
+            "https://github.com/MarawanEldeib/mikyas/releases",
+            "http://github.com/MarawanEldeib/mikyas/releases/tag/v1.0.0",
+            "https://github.com/someone-else/mikyas/releases/tag/v1.0.0",
+            "https://github.com/MarawanEldeib/mikyas/issues/1",
+            "https://github.com.evil.example/MarawanEldeib/mikyas/releases/tag/v1",
+            "https://github.com/MarawanEldeib/mikyas/releases/../../../evil",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/%2e%2e",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1?x=1",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1#top",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1 --flag",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1\"",
+            "https://github.com/MarawanEldeib/mikyas/releases/tag/v1,/select",
             "file:///C:/Windows/System32/calc.exe",
             "javascript:alert(1)",
-            "https://github.com/MARAWANELDEIB/sovawatch/releases/tag/v1.0.0",
+            "https://github.com/MARAWANELDEIB/mikyas/releases/tag/v1.0.0",
+            // The former names' repository addresses (a moved update-check.json would hold them).
+            "https://github.com/MarawanEldeib/sovawatch/releases/tag/v0.1.0",
+            "https://github.com/MarawanEldeib/claude-usage-widget/releases/tag/v0.1.0",
         ] {
             assert!(!is_release_url(bad), "{bad}");
         }
@@ -933,9 +936,9 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--proto-redir" && w[1] == "=https"));
         assert!(args.windows(2).any(|w| w[0] == "--max-filesize" && w[1] == MAX_RESPONSE.to_string()));
         let urls: Vec<&String> = args.iter().filter(|a| a.contains("://")).collect();
-        assert_eq!(urls, ["https://api.github.com/repos/MarawanEldeib/sovawatch/releases?per_page=30"]);
+        assert_eq!(urls, ["https://api.github.com/repos/MarawanEldeib/mikyas/releases?per_page=30"]);
         assert!(args.windows(2).any(|w| w[0] == "--proto" && w[1] == "=https"));
-        assert!(args.contains(&format!("User-Agent: sovawatch/{CURRENT_VERSION}")));
+        assert!(args.contains(&format!("User-Agent: mikyas/{CURRENT_VERSION}")));
         assert!(args.iter().all(|a| !a.to_ascii_lowercase().contains("authorization")));
         assert!(args.iter().all(|a| !a.contains(['\n', '\r', '"'])), "single-line, unquoted arguments");
         assert!(args.windows(2).any(|w| w[0] == "--write-out" && w[1] == r"\n%{http_code}"));
@@ -1003,10 +1006,10 @@ mod tests {
     #[test]
     fn announces_one_or_several_updates() {
         let (title, body) = announcement(&info(vec![release("0.2.0", &[])]));
-        assert_eq!(title, "SovaWatch 0.2.0 is available");
+        assert_eq!(title, "Mikyas 0.2.0 is available");
         assert!(body.contains("nothing is installed automatically"));
         let (title, body) = announcement(&info(vec![release("0.3.0", &[]), release("0.2.0", &[])]));
-        assert_eq!(title, "2 SovaWatch updates are available");
+        assert_eq!(title, "2 Mikyas updates are available");
         assert!(body.starts_with("Newest: 0.3.0."));
     }
 

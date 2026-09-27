@@ -34,7 +34,7 @@ test.describe("pill and card", () => {
   test("close=quit: the × quits", async ({ page }) => {
     const log = mockLog(page);
     await openWidget(page, { view: "pill", params: { close: "quit" } });
-    await page.getByRole("button", { name: "Quit SovaWatch" }).click();
+    await page.getByRole("button", { name: "Quit Mikyas" }).click();
     await expect.poll(() => log).toContain("[mock] quit_app");
   });
 
@@ -282,7 +282,7 @@ test.describe("settings", () => {
     ).toBeVisible();
     await page.getByRole("button", { name: "Third-party licenses" }).click();
     await expect.poll(() => log).toContain("[mock] open_third_party_notices");
-    await expect(page.getByRole("button", { name: "Quit SovaWatch" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Quit Mikyas" })).toBeVisible();
   });
 });
 
@@ -293,7 +293,7 @@ test.describe("connect Claude Code", () => {
     await connect.click();
     await expect(page.getByText("Before", { exact: true })).toBeVisible();
     await expect(page.locator(".preview pre").first()).toHaveText("(no statusLine)");
-    await expect(page.locator(".preview pre.after")).toContainText("sovawatch-capture.exe");
+    await expect(page.locator(".preview pre.after")).toContainText("mikyas-capture.exe");
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator(".preview")).toHaveCount(0);
     await connect.click();
@@ -370,7 +370,7 @@ test.describe("updates", () => {
     // Focus moves into the list.
     await expect(dialog.getByRole("button", { name: "Close the update list" })).toBeFocused();
     await dialog.getByRole("button", { name: "Update", exact: true }).click();
-    await expect.poll(() => log.join("\n")).toContain("open_url https://github.com/MarawanEldeib/sovawatch/releases/tag/v0.4.0");
+    await expect.poll(() => log.join("\n")).toContain("open_url https://github.com/MarawanEldeib/mikyas/releases/tag/v0.4.0");
     await expect(dialog).toHaveCount(0);
   });
 

@@ -224,11 +224,11 @@ jobs:
         run: npm run build
       - name: Build the capture shim
         run: ./scripts/build-sidecar.ps1
-      # A debug build (the harness's SOVA_BROWSER_ARGS only works with debug_assertions) that embeds
+      # A debug build (the harness's MIKYAS_BROWSER_ARGS only works with debug_assertions) that embeds
       # dist/: without tauri/custom-protocol a plain `cargo build` loads the devUrl
       # (http://localhost:1420), which nothing serves here, and the harness never finds its page.
       - name: Build the debug app
-        run: cargo build -p sovawatch --features tauri/custom-protocol
+        run: cargo build -p mikyas --features tauri/custom-protocol
       - name: App end-to-end tests
         run: npm run test:app-e2e
 

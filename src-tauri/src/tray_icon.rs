@@ -9,7 +9,7 @@
 //! - [`tray_values`] is the one reading of the snapshot behind the dot's level, the tooltip and
 //!   the number, so all three apply the same reset, limit-reached and clamp rules.
 
-use sovawatch_core::engine::types::{Phase, Snapshot, WindowKind};
+use mikyas_core::engine::types::{Phase, Snapshot, WindowKind};
 use tauri::image::Image;
 
 use crate::settings::TrayNumber;
@@ -282,7 +282,7 @@ pub fn taskbar_theme() -> Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovawatch_core::engine::types::{DesktopHealth, ResetInfo, Source, SourceHealth, WindowState, WindowView};
+    use mikyas_core::engine::types::{DesktopHealth, ResetInfo, Source, SourceHealth, WindowState, WindowView};
 
     fn snap(values: &[(WindowKind, f32, bool)]) -> Snapshot {
         Snapshot {

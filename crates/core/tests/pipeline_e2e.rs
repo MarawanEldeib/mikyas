@@ -7,10 +7,10 @@
 mod common;
 
 use common::{Env, SID, SID2, Statusline, Widget, assistant_line, identity_line, prompt_line};
-use sovawatch_core::alerts::AlertEvent;
-use sovawatch_core::engine::types::{Confidence, CtxBasis, DesktopHealth, Phase, ResetInfo, Source, WindowKind};
-use sovawatch_core::history::ViewRange;
-use sovawatch_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
+use mikyas_core::alerts::AlertEvent;
+use mikyas_core::engine::types::{Confidence, CtxBasis, DesktopHealth, Phase, ResetInfo, Source, WindowKind};
+use mikyas_core::history::ViewRange;
+use mikyas_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
 
 /// A multiple of five minutes (alert instance keys round to that).
 const T0: Ms = 1_790_000_100_000;

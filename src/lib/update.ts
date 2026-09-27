@@ -10,7 +10,7 @@ import type { DockEdge, UiState, UpdateInfo } from "./types";
 export const APP_VERSION: string = packageVersion;
 
 /** Every release page of the repository starts with this (Rust enforces it too). */
-export const RELEASES_PREFIX = "https://github.com/MarawanEldeib/sovawatch/releases/";
+export const RELEASES_PREFIX = "https://github.com/MarawanEldeib/mikyas/releases/";
 export const MAX_NOTES = 5;
 export const MAX_NOTE_CHARS = 80;
 

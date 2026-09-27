@@ -1,6 +1,6 @@
-# Builds the sovawatch-capture shim (release) and places it where Tauri's externalBin expects it:
-# src-tauri/binaries/sovawatch-capture-<target-triple>.exe. Run before `npx tauri build`.
-# Only the sovawatch-capture binary is built (the integration tests' helper is an example, never built
+# Builds the mikyas-capture shim (release) and places it where Tauri's externalBin expects it:
+# src-tauri/binaries/mikyas-capture-<target-triple>.exe. Run before `npx tauri build`.
+# Only the mikyas-capture binary is built (the integration tests' helper is an example, never built
 # here), so nothing test-only is ever bundled.
 #
 # The target triple is TAURI_ENV_TARGET_TRIPLE when Tauri sets it, otherwise rustc's host triple.
@@ -26,7 +26,7 @@ try {
     $savedFlags = $env:CARGO_ENCODED_RUSTFLAGS
     $env:CARGO_ENCODED_RUSTFLAGS = & (Join-Path $PSScriptRoot 'release-rustflags.ps1')
     try {
-        cargo build -p sovawatch-capture --release --bin sovawatch-capture --target $triple
+        cargo build -p mikyas-capture --release --bin mikyas-capture --target $triple
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
     } finally {
         $env:CARGO_ENCODED_RUSTFLAGS = $savedFlags
@@ -36,9 +36,9 @@ try {
 }
 
 $exe = if ($triple -like '*windows*') { '.exe' } else { '' }
-$src = Join-Path $targetDir "$triple\release\sovawatch-capture$exe"
+$src = Join-Path $targetDir "$triple\release\mikyas-capture$exe"
 $dstDir = Join-Path $root 'src-tauri\binaries'
 New-Item -ItemType Directory -Force $dstDir | Out-Null
-$dst = Join-Path $dstDir "sovawatch-capture-$triple$exe"
+$dst = Join-Path $dstDir "mikyas-capture-$triple$exe"
 Copy-Item -LiteralPath $src -Destination $dst -Force
 Write-Host "sidecar: $dst ($((Get-Item $dst).Length) bytes)"

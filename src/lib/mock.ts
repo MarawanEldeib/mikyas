@@ -47,7 +47,7 @@ const HIDDEN: readonly HiddenReason[] = ["none", "user", "fullscreen"];
  *  nothing; error: it fails (like Tauri, with a string). By default "Check now" finds
  *  MOCK_UPDATE. "Later" (dismiss_update) hides the banner. */
 const UPDATE_MODES = ["default", "1", "one", "none", "error"] as const;
-const releasePage = (version: string) => `https://github.com/MarawanEldeib/sovawatch/releases/tag/v${version}`;
+const releasePage = (version: string) => `https://github.com/MarawanEldeib/mikyas/releases/tag/v${version}`;
 export const MOCK_UPDATE: UpdateInfo = {
   latest: "0.4.0",
   count: 3,
@@ -191,7 +191,7 @@ const opus =
     ctx_is_estimate: false,
     entrypoint: "cli",
     last_active_ms: t0 - 2 * MIN,
-    project: "sovawatch",
+    project: "mikyas",
     concurrent: 1,
     ...over,
   });
@@ -483,7 +483,7 @@ function pick<T extends string>(value: string | null, allowed: readonly T[], fal
   return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-const CAPTURE = String.raw`"%LOCALAPPDATA%\SovaWatch\bin\sovawatch-capture.exe"`;
+const CAPTURE = String.raw`"%LOCALAPPDATA%\Mikyas\bin\mikyas-capture.exe"`;
 const FOREIGN_CMD = "npx -y ccstatusline@latest";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -644,7 +644,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
       console.info("[mock] hide_widget");
       if (!settings.hide_hint_shown) {
         settings = { ...settings, hide_hint_shown: true };
-        console.info("[mock] toast: SovaWatch is still running");
+        console.info("[mock] toast: Mikyas is still running");
       }
       ui = { ...ui, hidden_reason: "user" };
       emit("ui-state", ui);

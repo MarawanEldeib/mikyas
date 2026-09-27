@@ -1,10 +1,10 @@
 # Third-party notices
 
-SovaWatch — usage widget for Claude Code & Claude Desktop — is proprietary software (see
+Mikyas — usage widget for Claude Code & Claude Desktop — is proprietary software (see
 LICENSE), but it is built from open-source components. Their licenses are reproduced below, as
-those licenses require. Nothing here changes the terms of SovaWatch itself.
+those licenses require. Nothing here changes the terms of Mikyas itself.
 
-- **Rust crates** compiled into `sovawatch.exe` and `sovawatch-capture.exe` for Windows
+- **Rust crates** compiled into `mikyas.exe` and `mikyas-capture.exe` for Windows
   (x86_64-pc-windows-msvc), grouped by license text.
 - **npm packages** compiled into the app's user interface.
 

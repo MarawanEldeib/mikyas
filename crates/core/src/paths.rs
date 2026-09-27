@@ -5,15 +5,22 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf, Prefix};
 
 /// Directory name of the widget's own data under the OS local-data dir.
-pub const APP_DIR_NAME: &str = "SovaWatch";
-/// Directory name of the data under the app's former name (Claude Usage Widget), moved over once
-/// on SovaWatch's first start.
-pub const LEGACY_APP_DIR_NAME: &str = "ClaudeUsageWidget";
+pub const APP_DIR_NAME: &str = "Mikyas";
+/// The app's former names, newest first. On Mikyas's first start one of their data folders is
+/// moved over once (`migrate.rs` in the app decides which).
+pub const LEGACY_APPS: [LegacyApp; 2] = [
+    LegacyApp { dir_name: "SovaWatch", display_name: "SovaWatch", shim_exe: crate::cmdline::LEGACY_SHIM_EXE_NAMES[0] },
+    LegacyApp {
+        dir_name: "ClaudeUsageWidget",
+        display_name: "Claude Usage Widget",
+        shim_exe: crate::cmdline::LEGACY_SHIM_EXE_NAMES[1],
+    },
+];
 /// Directory under the data root where the shim writes statusline captures.
 const CAPTURE_DIR_NAME: &str = "capture";
 /// Env var that overrides the widget data root (tests, dev builds, Connect's self-test). Only an
 /// absolute local path without `..` is honoured (see [`data_root_from`]).
-pub const DATA_DIR_ENV: &str = "SOVA_DATA_DIR";
+pub const DATA_DIR_ENV: &str = "MIKYAS_DATA_DIR";
 /// Claude Code's own override for `~/.claude`.
 pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 
@@ -132,18 +139,45 @@ impl Paths {
     }
 }
 
-/// Where Claude Usage Widget (the app's former name) kept its data: `<local data dir>/ClaudeUsageWidget`.
-/// `None` while [`DATA_DIR_ENV`] points the data root elsewhere (tests, development): the move
-/// from the old app then never touches the real old data or the real Claude Code settings.
-pub fn detect_legacy_data_root() -> Option<PathBuf> {
-    legacy_root_from(std::env::var_os(DATA_DIR_ENV), dirs::data_local_dir)
+/// One of the app's former names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacyApp {
+    /// Its data folder under the OS local-data dir (SovaWatch installed itself there too).
+    pub dir_name: &'static str,
+    /// The name its users knew it by.
+    pub display_name: &'static str,
+    /// The statusline helper its Connect installed into `<data folder>/bin`.
+    pub shim_exe: &'static str,
 }
 
-fn legacy_root_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
-    if env_value.is_some_and(|v| !v.is_empty()) {
-        return None;
+/// Where a former name of the app kept its data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyRoot {
+    pub app: LegacyApp,
+    pub root: PathBuf,
+}
+
+impl LegacyRoot {
+    /// The helper that app's Connect installed: `<root>/bin/<shim_exe>`.
+    pub fn installed_shim(&self) -> PathBuf {
+        self.root.join("bin").join(self.app.shim_exe)
     }
-    local_dir().map(|d| d.join(LEGACY_APP_DIR_NAME))
+}
+
+/// Where the app's former names ([`LEGACY_APPS`]) kept their data, `<local data dir>/<dir_name>`
+/// (the folders may not exist). Empty while [`DATA_DIR_ENV`] points the data root elsewhere
+/// (tests, development): the move from an old app then never touches the real old data or the
+/// real Claude Code settings.
+pub fn detect_legacy_data_roots() -> Vec<LegacyRoot> {
+    legacy_roots_from(std::env::var_os(DATA_DIR_ENV), dirs::data_local_dir)
+}
+
+fn legacy_roots_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> Option<PathBuf>) -> Vec<LegacyRoot> {
+    if env_value.is_some_and(|v| !v.is_empty()) {
+        return Vec::new();
+    }
+    let Some(local) = local_dir() else { return Vec::new() };
+    LEGACY_APPS.iter().map(|&app| LegacyRoot { app, root: local.join(app.dir_name) }).collect()
 }
 
 fn home_dir() -> PathBuf {
@@ -157,7 +191,7 @@ fn detect_data_root() -> PathBuf {
 }
 
 /// The [`DATA_DIR_ENV`] value if it is a usable override ([`valid_override`]), else
-/// `<local data dir>/SovaWatch`.
+/// `<local data dir>/Mikyas`.
 fn data_root_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> PathBuf) -> PathBuf {
     env_value.map(PathBuf::from).filter(|p| valid_override(p)).unwrap_or_else(|| local_dir().join(APP_DIR_NAME))
 }
@@ -208,11 +242,11 @@ mod tests {
 
     #[test]
     fn layout_is_derived_from_roots() {
-        let p = Paths::with_roots("/h/.claude".into(), vec!["/d/Claude".into()], "/data/sova".into());
+        let p = Paths::with_roots("/h/.claude".into(), vec!["/d/Claude".into()], "/data/mikyas".into());
         assert_eq!(p.claude_settings(), PathBuf::from("/h/.claude/settings.json"));
         assert_eq!(p.projects_dir(), PathBuf::from("/h/.claude/projects"));
-        assert_eq!(p.capture_dir(), PathBuf::from("/data/sova/capture"));
-        assert_eq!(p.history_file(), PathBuf::from("/data/sova/history.jsonl"));
+        assert_eq!(p.capture_dir(), PathBuf::from("/data/mikyas/capture"));
+        assert_eq!(p.history_file(), PathBuf::from("/data/mikyas/history.jsonl"));
         assert!(p.desktop_usage_files().is_empty(), "non-existent roots are filtered");
     }
 
@@ -224,7 +258,7 @@ mod tests {
     #[test]
     fn data_root_honours_the_env_override_unless_empty() {
         let local = || PathBuf::from("/local");
-        let default = PathBuf::from("/local/SovaWatch");
+        let default = PathBuf::from("/local/Mikyas");
         let override_dir = absolute("override");
         assert_eq!(data_root_from(Some(override_dir.clone().into()), || unreachable!("override wins")), override_dir);
         assert_eq!(data_root_from(Some(OsString::new()), local), default);
@@ -234,8 +268,9 @@ mod tests {
     #[test]
     fn data_root_override_must_be_an_absolute_local_path() {
         let local = || PathBuf::from("/local");
-        let default = PathBuf::from("/local/SovaWatch");
-        for bad in ["relative", r".\here", r"\\server\share\sova", r"\\?\UNC\server\share\sova", r"\\.\pipe\sova"] {
+        let default = PathBuf::from("/local/Mikyas");
+        for bad in ["relative", r".\here", r"\\server\share\mikyas", r"\\?\UNC\server\share\mikyas", r"\\.\pipe\mikyas"]
+        {
             assert_eq!(data_root_from(Some(bad.into()), local), default, "{bad}");
         }
         let climbing = absolute("x").join("..").join("y");
@@ -246,19 +281,38 @@ mod tests {
             // Verbatim paths are not normalised: `.` and `..` there are refused all the same.
             assert_eq!(data_root_from(Some(r"\\?\C:\x\..\y".into()), local), default);
             assert_eq!(data_root_from(Some(r"\\?\C:\x\.\y".into()), local), default);
-            let verbatim = PathBuf::from(r"\\?\C:\sova");
+            let verbatim = PathBuf::from(r"\\?\C:\mikyas");
             assert_eq!(data_root_from(Some(verbatim.clone().into()), local), verbatim);
         }
     }
 
     #[test]
-    fn legacy_root_is_the_old_folder_unless_the_data_root_is_overridden() {
+    fn legacy_roots_are_the_old_folders_unless_the_data_root_is_overridden() {
         let local = || Some(PathBuf::from("/local"));
-        assert_eq!(legacy_root_from(None, local), Some(PathBuf::from("/local/ClaudeUsageWidget")));
-        assert_eq!(legacy_root_from(Some(OsString::new()), local), Some(PathBuf::from("/local/ClaudeUsageWidget")));
-        assert_eq!(legacy_root_from(Some(absolute("dev").into()), local), None, "tests and dev runs never migrate");
-        assert_eq!(legacy_root_from(Some("relative".into()), local), None, "any override, even an ignored one");
-        assert_eq!(legacy_root_from(None, || None), None);
+        let expected = vec![
+            LegacyRoot { app: LEGACY_APPS[0], root: PathBuf::from("/local/SovaWatch") },
+            LegacyRoot { app: LEGACY_APPS[1], root: PathBuf::from("/local/ClaudeUsageWidget") },
+        ];
+        assert_eq!(legacy_roots_from(None, local), expected);
+        assert_eq!(legacy_roots_from(Some(OsString::new()), local), expected);
+        assert_eq!(legacy_roots_from(Some(absolute("dev").into()), local), [], "tests and dev runs never migrate");
+        assert_eq!(legacy_roots_from(Some("relative".into()), local), [], "any override, even an ignored one");
+        assert_eq!(legacy_roots_from(None, || None), []);
+    }
+
+    #[test]
+    fn legacy_apps_are_the_former_names_newest_first() {
+        let names: Vec<_> = LEGACY_APPS.iter().map(|a| (a.dir_name, a.display_name, a.shim_exe)).collect();
+        assert_eq!(
+            names,
+            [
+                ("SovaWatch", "SovaWatch", "sovawatch-capture.exe"),
+                ("ClaudeUsageWidget", "Claude Usage Widget", "cuw-capture.exe")
+            ]
+        );
+        assert!(LEGACY_APPS.iter().all(|a| a.dir_name != APP_DIR_NAME));
+        let root = LegacyRoot { app: LEGACY_APPS[0], root: PathBuf::from("/local/SovaWatch") };
+        assert_eq!(root.installed_shim(), PathBuf::from("/local/SovaWatch/bin/sovawatch-capture.exe"));
     }
 
     #[test]

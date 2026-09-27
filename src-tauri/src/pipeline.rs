@@ -27,21 +27,21 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
-use sovawatch_core::alerts::{AlertSettings, AlertState};
-use sovawatch_core::capture::CaptureRecord;
-use sovawatch_core::engine::snapshot::{self, EngineInputs};
-use sovawatch_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind};
-use sovawatch_core::history::History;
-use sovawatch_core::pace_alerts::PaceSettings;
-use sovawatch_core::paths::Paths;
-use sovawatch_core::saferead::SafeReader;
-use sovawatch_core::sources::SourceError;
-use sovawatch_core::sources::desktop_sessions::{DesktopSession, DesktopSessionCache};
-use sovawatch_core::sources::desktop_usage::{self, DesktopUsage};
-use sovawatch_core::sources::statusline::{self, CaptureCache};
-use sovawatch_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
-use sovawatch_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
-use sovawatch_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
+use mikyas_core::alerts::{AlertSettings, AlertState};
+use mikyas_core::capture::CaptureRecord;
+use mikyas_core::engine::snapshot::{self, EngineInputs};
+use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind};
+use mikyas_core::history::History;
+use mikyas_core::pace_alerts::PaceSettings;
+use mikyas_core::paths::Paths;
+use mikyas_core::saferead::SafeReader;
+use mikyas_core::sources::SourceError;
+use mikyas_core::sources::desktop_sessions::{DesktopSession, DesktopSessionCache};
+use mikyas_core::sources::desktop_usage::{self, DesktopUsage};
+use mikyas_core::sources::statusline::{self, CaptureCache};
+use mikyas_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
+use mikyas_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
+use mikyas_core::turns::{FinishedTurn, FinishedTurns, TurnInfo};
 use tauri::{AppHandle, Emitter};
 
 pub use crate::diag::log;
@@ -519,7 +519,7 @@ impl PipelineState {
 fn empty_history(paths: &Paths) -> History {
     let mut beside = paths.history_file().into_os_string();
     beside.push(".unopened");
-    let unique = format!("sova-no-history-{}-{}", std::process::id(), now_ms());
+    let unique = format!("mikyas-no-history-{}-{}", std::process::id(), now_ms());
     let candidates = [
         PathBuf::from(beside),
         paths.data_root().join(&unique).join("history.jsonl"),
@@ -742,7 +742,7 @@ fn pair_turns<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovawatch_core::engine::types::{Source, WindowKind};
+    use mikyas_core::engine::types::{Source, WindowKind};
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let tmp = tempfile::tempdir().unwrap();
@@ -853,7 +853,7 @@ mod tests {
         assert!(out.alerts.is_empty(), "only once");
     }
 
-    fn context_alerts(out: &TickOutput) -> Vec<&sovawatch_core::ctx_alerts::CtxAlertEvent> {
+    fn context_alerts(out: &TickOutput) -> Vec<&mikyas_core::ctx_alerts::CtxAlertEvent> {
         out.alerts
             .iter()
             .filter_map(|a| match a {
@@ -1221,7 +1221,7 @@ mod tests {
             let done = finished(engine.tick(now + 60_000, &settings, &dirty));
             assert_eq!(done.len(), 1, "show_project={show_project}");
             assert_eq!(done[0].duration_ms, 5 * MINUTE_MS + 30_000);
-            assert_eq!(done[0].entrypoint, sovawatch_core::engine::types::Entrypoint::Cli);
+            assert_eq!(done[0].entrypoint, mikyas_core::engine::types::Entrypoint::Cli);
             assert_eq!(done[0].project.as_deref(), show_project.then_some("demo-app"));
             assert!(finished(engine.tick(now + 90_000, &settings, &dirty)).is_empty(), "reported once");
         }
@@ -1241,7 +1241,7 @@ mod tests {
         let tail = |path: &str, session: &str, last: Ms, ended: Ms| TranscriptTail {
             path: PathBuf::from(path),
             session_id: session.into(),
-            entrypoint: sovawatch_core::engine::types::Entrypoint::Cowork,
+            entrypoint: mikyas_core::engine::types::Entrypoint::Cowork,
             model_id: Some("claude-opus-5-5".into()),
             ctx_tokens: 1,
             max_ctx_tokens_seen: 1,
@@ -1258,9 +1258,9 @@ mod tests {
             ctx_pct: None,
             ctx_tokens: None,
             ctx_size: 200_000,
-            ctx_basis: sovawatch_core::engine::types::CtxBasis::Default,
+            ctx_basis: mikyas_core::engine::types::CtxBasis::Default,
             ctx_is_estimate: true,
-            entrypoint: sovawatch_core::engine::types::Entrypoint::Cowork,
+            entrypoint: mikyas_core::engine::types::Entrypoint::Cowork,
             last_active_ms: 20,
             project: None,
             concurrent: 1,
@@ -1284,9 +1284,9 @@ mod tests {
 #[cfg(test)]
 mod pace_recap_tests {
     use super::*;
-    use sovawatch_core::engine::types::WindowKind;
-    use sovawatch_core::pace_alerts::PaceAlertEvent;
-    use sovawatch_core::time::HOUR_MS;
+    use mikyas_core::engine::types::WindowKind;
+    use mikyas_core::pace_alerts::PaceAlertEvent;
+    use mikyas_core::time::HOUR_MS;
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let tmp = tempfile::tempdir().unwrap();

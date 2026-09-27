@@ -195,7 +195,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(tx));
     let app = app.clone();
-    std::thread::Builder::new().name("sova-fullscreen".into()).spawn(move || run(&app, &shared, &rx))?;
+    std::thread::Builder::new().name("mikyas-fullscreen".into()).spawn(move || run(&app, &shared, &rx))?;
     Ok(())
 }
 

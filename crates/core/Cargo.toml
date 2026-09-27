@@ -1,6 +1,6 @@
 [package]
-name = "sovawatch-core"
-description = "Token-free Claude usage data sources and engine for SovaWatch"
+name = "mikyas-core"
+description = "Token-free Claude usage data sources and engine for Mikyas"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true

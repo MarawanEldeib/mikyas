@@ -15,9 +15,9 @@
 **/capture/*.json
 history.jsonl
 
-# widget data files, in case SOVA_DATA_DIR points inside the repo. For development use
-# SOVA_DATA_DIR=<repo>\.sova-data (ignored as a whole).
-/.sova-data/
+# widget data files, in case MIKYAS_DATA_DIR points inside the repo. For development use
+# MIKYAS_DATA_DIR=<repo>\.mikyas-data (ignored as a whole).
+/.mikyas-data/
 /bin/
 **/backups/
 **/settings-*.json

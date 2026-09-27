@@ -2077,6 +2077,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "mikyas"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "mikyas-core",
+ "notify",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+ "tempfile",
+ "thiserror 2.0.21",
+ "webview2-com",
+ "windows-core 0.61.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mikyas-capture"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "mikyas-core",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mikyas-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 6.0.0",
+ "pretty_assertions",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3386,54 +3434,6 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
-]
-
-[[package]]
-name = "sovawatch"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "notify",
- "serde",
- "serde_json",
- "sovawatch-core",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
- "tempfile",
- "thiserror 2.0.21",
- "webview2-com",
- "windows-core 0.61.2",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "sovawatch-capture"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde_json",
- "sovawatch-core",
- "tempfile",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "sovawatch-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs 6.0.0",
- "pretty_assertions",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use sovawatch_core::engine::types::Snapshot;
+use mikyas_core::engine::types::Snapshot;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -50,7 +50,7 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     let parts: Vec<String> = tray_values(snapshot)
         .map(|v| format!("{} {}%{}", v.kind.short(), v.pct, if v.stale { "?" } else { "" }))
         .collect();
-    if parts.is_empty() { "SovaWatch — no data yet".into() } else { parts.join(" · ") }
+    if parts.is_empty() { "Mikyas — no data yet".into() } else { parts.join(" · ") }
 }
 
 fn icon(level: Level) -> Option<Image<'static>> {
@@ -169,12 +169,12 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
             std::thread::spawn(move || {
                 let shared = app.state::<Arc<Shared>>().inner().clone();
                 let _guard = crate::state::lock(&shared.connect_lock);
-                let result = crate::connect::disconnect(&paths, sovawatch_core::time::now_ms());
+                let result = crate::connect::disconnect(&paths, mikyas_core::time::now_ms());
                 let body = match result {
                     Ok(_) => "Claude Code's statusline was restored.".to_owned(),
                     Err(e) => format!("Disconnect failed: {e}"),
                 };
-                crate::notify::show(&app, "SovaWatch", &body);
+                crate::notify::show(&app, "Mikyas", &body);
             });
         }
         "quit" => crate::commands::quit(app, &shared),
@@ -232,7 +232,7 @@ pub fn sync_checks(app: &AppHandle, shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sovawatch_core::engine::types::{
+    use mikyas_core::engine::types::{
         DesktopHealth, Phase, ResetInfo, Source, SourceHealth, WindowKind, WindowState, WindowView,
     };
 
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(level(&snap(&[(WindowKind::FiveHour, 39.0, false)])), Level::Green);
         assert_eq!(level(&snap(&[(WindowKind::FiveHour, 90.0, true)])), Level::Grey);
         assert_eq!(level(&snap(&[])), Level::Grey);
-        assert_eq!(tooltip(&snap(&[])), "SovaWatch — no data yet");
+        assert_eq!(tooltip(&snap(&[])), "Mikyas — no data yet");
         assert_eq!(tooltip(&snap(&[(WindowKind::FiveHour, 5.0, true)])), "5h 5%?");
         assert_eq!(show_hide_label(HiddenReason::None), "Hide widget");
         assert_eq!(show_hide_label(HiddenReason::User), "Show widget");
