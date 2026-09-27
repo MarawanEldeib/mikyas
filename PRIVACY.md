@@ -8,13 +8,14 @@ Mikyas is **token-free** and **offline by default**:
   (`crates/core/src/saferead.rs`) even inside otherwise allowed folders.
 - It makes **no network calls unless you enable the update check** (no Anthropic API, no
   claude.ai, no telemetry). With **Settings → System → Check for updates daily** on (off by
-  default), it asks `https://api.github.com/repos/MarawanEldeib/mikyas/releases/latest`
-  at most once a day, plus whenever you click **Check now** (which works even with the daily
-  check off). The request is made by Windows' own `%SystemRoot%\System32\curl.exe`; the app links
-  no HTTP client. It sends only the app version (in the User-Agent header) — no account, token,
-  usage data or identifier — and uses only the release's version tag and page address from the
-  answer. **View** opens that release page in your default browser; no other address can be
-  opened.
+  default), it asks `https://api.github.com/repos/MarawanEldeib/mikyas/releases?per_page=30`
+  (the newest 30 releases) at most once a day, plus whenever you click **Check now** (which works
+  even with the daily check off). The request is made by Windows' own
+  `%SystemRoot%\System32\curl.exe`; the app links no HTTP client. It sends only the app version
+  (in the User-Agent header) — no account, token, usage data or identifier — and uses only each
+  release's version tag, page address, draft / pre-release flags and up to five short bullet
+  lines of its release notes from the answer. **Update** opens the newest release page in your
+  default browser; no address other than this repository's release pages can be opened.
 - The window is drawn by **Microsoft Edge WebView2**, a component of Windows. On computers
   signed in to a Microsoft account, WebView2's own `msedgewebview2.exe` processes may contact
   Microsoft services (for example at startup) — this is Microsoft's runtime, the same as in every
@@ -56,7 +57,7 @@ listed here cannot be opened.
 | `positions.json` | while **Settings → Automations → Remember position per display** is on (default): for up to 16 monitor setups, a signature of the setup (monitor positions, sizes and scale factors) and the widget's window rectangle and last-used time there. |
 | `watchdog.json` | while **Settings → Automations → Warn if the connection breaks** is on (default): fingerprints of status-line changes you dismissed (newest 32) and of the one already warned about — never the command itself. |
 | `settings.json` | your widget settings. |
-| `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, and the newer release that check found (version and release page, so the notice survives a restart). |
+| `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, the newer releases that check found (version, release page and those short notes, so the notice survives a restart) and the version you chose **Later** for. |
 | `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 3 kept, none older than 30 days). |
 | `bin\mikyas-capture.exe` | the capture helper your status-line command points to. |
@@ -73,8 +74,8 @@ Other locations:
 - `%APPDATA%\io.github.marawaneldeib.mikyas\.window-state.json` — the widget's screen
   position.
 - `%LOCALAPPDATA%\io.github.marawaneldeib.mikyas\EBWebView\` — the WebView2 profile
-  used to render the widget UI (contains no Claude data; its local storage only remembers which
-  update notice you dismissed).
+  used to render the widget UI (contains no Claude data; the UI keeps nothing in its local
+  storage).
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` — only if you enable "Start with Windows".
 
 ## Uninstalling
