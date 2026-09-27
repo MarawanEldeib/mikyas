@@ -15,6 +15,11 @@ SovaWatch is **token-free** and **offline by default**:
   usage data or identifier — and uses only the release's version tag and page address from the
   answer. **View** opens that release page in your default browser; no other address can be
   opened.
+- The window is drawn by **Microsoft Edge WebView2**, a component of Windows. On computers
+  signed in to a Microsoft account, WebView2's own `msedgewebview2.exe` processes may contact
+  Microsoft services (for example at startup) — this is Microsoft's runtime, the same as in every
+  other app that uses it, not SovaWatch: `sovawatch.exe` itself opens no connections, and none of
+  your usage data or files is ever handed to WebView2 for sending.
 - The UI has no file-system, shell or HTTP access; it can only call the app's own commands.
 - **Fullscreen auto-hide** only asks Windows which window is in front, its size, class name and
   monitor, and whether the shell reports a fullscreen / presentation state. It never opens other

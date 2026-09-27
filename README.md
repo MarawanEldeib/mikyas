@@ -86,7 +86,8 @@ SovaWatch was called Claude Usage Widget before; to move over, see
 The widget **never** reads your Claude login (`~/.claude/.credentials.json`), cookies, browser
 storage or keychains, and **never** calls Anthropic's servers or claude.ai. It makes **no network
 requests at all** unless you turn on the update check, which only asks `api.github.com` whether a
-newer release exists.
+newer release exists. (Windows' WebView2 component, which draws the window, may talk to
+Microsoft on its own — see [PRIVACY.md](PRIVACY.md).)
 
 Everything it shows is computed from files already on your computer:
 
