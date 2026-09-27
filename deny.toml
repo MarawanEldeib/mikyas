@@ -49,17 +49,17 @@ allow = [
 # Our own crates are proprietary (LICENSE: all rights reserved) and never published. They have no
 # SPDX id, so each is clarified to a LicenseRef that only they use.
 [[licenses.clarify]]
-crate = "sovawatch-core"
+crate = "mikyas-core"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 
 [[licenses.clarify]]
-crate = "sovawatch-capture"
+crate = "mikyas-capture"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 
 [[licenses.clarify]]
-crate = "sovawatch"
+crate = "mikyas"
 expression = "LicenseRef-AllRightsReserved"
 license-files = []
 

@@ -224,7 +224,8 @@ pub fn disconnect(bytes: &[u8], wrap: Option<&WrapRecord>) -> Result<Option<Vec<
     Ok(Some(out))
 }
 
-/// The move from Claude Usage Widget: when the status line runs the legacy helper `legacy_shim`
+/// The move from a former name of the app (SovaWatch or Claude Usage Widget, see
+/// `cmdline::LEGACY_SHIM_EXE_NAMES`): when the status line runs the legacy helper `legacy_shim`
 /// (compared case-insensitively, command form), returns the file with ONLY that helper path
 /// replaced by `new_shim` — the wrap form and the user's command stay exactly as they are, so a
 /// record of the original command keeps restoring it byte for byte. `Ok(None)` when there is no
@@ -752,8 +753,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use proptest::prelude::*;
 
-    const SHIM: &str = "C:/Users/tester/AppData/Local/SovaWatch/bin/sovawatch-capture.exe";
-    const SHIM2: &str = "D:/Program Files/SovaWatch/bin/sovawatch-capture.exe";
+    const SHIM: &str = "C:/Users/tester/AppData/Local/Mikyas/bin/mikyas-capture.exe";
+    const SHIM2: &str = "D:/Program Files/Mikyas/bin/mikyas-capture.exe";
     const NOW: Ms = 1_790_208_000_000;
     const REALISTIC: &str = include_str!("../tests/fixtures/claude_settings/realistic.json");
     const USER_CMD: &str = "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/tester/.claude/statusline.ps1\"";
@@ -900,60 +901,90 @@ mod tests {
         }
     }
 
-    const LEGACY_SHIM: &str = "C:/Users/tester/AppData/Local/ClaudeUsageWidget/bin/cuw-capture.exe";
+    /// The helpers of the app's former names: SovaWatch, then Claude Usage Widget.
+    const LEGACY_SHIMS: [&str; 2] = [
+        "C:/Users/tester/AppData/Local/SovaWatch/bin/sovawatch-capture.exe",
+        "C:/Users/tester/AppData/Local/ClaudeUsageWidget/bin/cuw-capture.exe",
+    ];
+    const SHELLS: [ShellKind; 4] = [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh, ShellKind::LegacyPowerShell];
 
-    /// A settings file connected by Claude Usage Widget: `REALISTIC` with its command wrapped by
-    /// the legacy helper, in `shell`'s form.
-    fn legacy_connected(shell: ShellKind) -> String {
-        let legacy_command = |c: String| c.replacen(SHIM, LEGACY_SHIM, 1);
+    /// A settings file connected by a former name of the app: `REALISTIC` with its command
+    /// wrapped by the legacy helper `legacy_shim`, in `shell`'s form.
+    fn legacy_connected(legacy_shim: &str, shell: ShellKind) -> String {
         let (connected, _) = connect(REALISTIC.as_bytes(), SHIM, shell, NOW).unwrap();
         let text = String::from_utf8(connected).unwrap();
         let Status::Connected { .. } = status(text.as_bytes()).unwrap() else { panic!() };
-        legacy_command(text)
+        text.replacen(SHIM, legacy_shim, 1)
     }
 
     #[test]
     fn legacy_commands_count_as_connected_and_disconnect_exactly() {
-        for shell in [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh] {
-            let legacy = legacy_connected(shell);
-            let Status::Connected { shim_path, .. } = status(legacy.as_bytes()).unwrap() else { panic!("{shell:?}") };
-            assert_eq!(shim_path, LEGACY_SHIM);
-            let restored = disconnect(legacy.as_bytes(), None).unwrap().unwrap();
-            assert_eq!(s(&restored), REALISTIC, "{shell:?}");
+        for legacy_shim in LEGACY_SHIMS {
+            for shell in SHELLS {
+                let legacy = legacy_connected(legacy_shim, shell);
+                let Status::Connected { shim_path, .. } = status(legacy.as_bytes()).unwrap() else {
+                    panic!("{shell:?}")
+                };
+                assert_eq!(shim_path, legacy_shim);
+                let restored = disconnect(legacy.as_bytes(), None).unwrap().unwrap();
+                assert_eq!(s(&restored), REALISTIC, "{legacy_shim} {shell:?}");
+            }
         }
     }
 
     #[test]
     fn migrate_shim_swaps_only_the_legacy_helper_path() {
-        for shell in [ShellKind::Bash, ShellKind::Cmd, ShellKind::Pwsh, ShellKind::LegacyPowerShell] {
-            let original = REALISTIC;
-            let Ok((ours, _)) = connect(original.as_bytes(), SHIM, shell, NOW) else { continue };
-            let ours = String::from_utf8(ours).unwrap();
-            let legacy = ours.replacen(SHIM, LEGACY_SHIM, 1);
-            let migrated = migrate_shim(legacy.as_bytes(), LEGACY_SHIM, SHIM).unwrap().expect("legacy prefix");
-            assert_eq!(s(&migrated), ours, "only the helper path changed ({shell:?})");
-            // Idempotent: nothing legacy is left.
-            assert_eq!(migrate_shim(&migrated, LEGACY_SHIM, SHIM).unwrap(), None);
-            assert_eq!(s(&disconnect(&migrated, None).unwrap().unwrap()), original);
+        for legacy_shim in LEGACY_SHIMS {
+            for shell in SHELLS {
+                let original = REALISTIC;
+                let (ours, _) = connect(original.as_bytes(), SHIM, shell, NOW).unwrap();
+                let ours = String::from_utf8(ours).unwrap();
+                let legacy = ours.replacen(SHIM, legacy_shim, 1);
+                assert_ne!(legacy, ours);
+                let migrated = migrate_shim(legacy.as_bytes(), legacy_shim, SHIM).unwrap().expect("legacy prefix");
+                assert_eq!(s(&migrated), ours, "only the helper path changed ({legacy_shim}, {shell:?})");
+                // Byte for byte: everything before and after the helper path is the legacy file's.
+                let at = legacy.find(legacy_shim).unwrap();
+                assert_eq!(&migrated[..at], &legacy.as_bytes()[..at]);
+                assert_eq!(&migrated[at + SHIM.len()..], &legacy.as_bytes()[at + legacy_shim.len()..]);
+                // Idempotent: nothing legacy is left.
+                assert_eq!(migrate_shim(&migrated, legacy_shim, SHIM).unwrap(), None);
+                assert_eq!(s(&disconnect(&migrated, None).unwrap().unwrap()), original);
+            }
         }
     }
 
     #[test]
     fn migrate_shim_leaves_everything_else_alone() {
-        // Not connected, someone else's command, or a different legacy helper path.
-        assert_eq!(migrate_shim(b"", LEGACY_SHIM, SHIM).unwrap(), None);
-        assert_eq!(migrate_shim(REALISTIC.as_bytes(), LEGACY_SHIM, SHIM).unwrap(), None);
-        let ours = legacy_connected(ShellKind::Bash).replacen(LEGACY_SHIM, SHIM, 1);
-        assert_eq!(migrate_shim(ours.as_bytes(), LEGACY_SHIM, SHIM).unwrap(), None);
-        let elsewhere = legacy_connected(ShellKind::Bash).replacen(LEGACY_SHIM, "D:/elsewhere/cuw-capture.exe", 1);
-        assert_eq!(migrate_shim(elsewhere.as_bytes(), LEGACY_SHIM, SHIM).unwrap(), None);
-        // The legacy path is matched case-insensitively (Windows paths).
-        let upper = legacy_connected(ShellKind::Bash).replacen(LEGACY_SHIM, &LEGACY_SHIM.to_uppercase(), 1);
-        assert!(migrate_shim(upper.as_bytes(), LEGACY_SHIM, SHIM).unwrap().is_some());
-        // An unsafe new helper path is refused.
-        let legacy = legacy_connected(ShellKind::Bash);
-        assert!(migrate_shim(legacy.as_bytes(), LEGACY_SHIM, "C:/a&b/sovawatch-capture.exe").is_err());
-        assert_eq!(migrate_shim(b"{ // jsonc\n}", LEGACY_SHIM, SHIM), Err(SettingsError::NotStrictJson));
+        let [sova, cuw] = LEGACY_SHIMS;
+        for (legacy_shim, other) in [(sova, cuw), (cuw, sova)] {
+            // Not connected, someone else's command, or a different legacy helper path.
+            assert_eq!(migrate_shim(b"", legacy_shim, SHIM).unwrap(), None);
+            assert_eq!(migrate_shim(REALISTIC.as_bytes(), legacy_shim, SHIM).unwrap(), None);
+            let ours = legacy_connected(legacy_shim, ShellKind::Bash).replacen(legacy_shim, SHIM, 1);
+            assert_eq!(migrate_shim(ours.as_bytes(), legacy_shim, SHIM).unwrap(), None);
+            // Asked to move one former name's helper, the other one's is left alone.
+            let others = legacy_connected(other, ShellKind::Bash);
+            assert_eq!(migrate_shim(others.as_bytes(), legacy_shim, SHIM).unwrap(), None);
+            let file = legacy_shim.rsplit('/').next().unwrap();
+            let elsewhere = legacy_connected(legacy_shim, ShellKind::Bash).replacen(
+                legacy_shim,
+                &format!("D:/elsewhere/{file}"),
+                1,
+            );
+            assert_eq!(migrate_shim(elsewhere.as_bytes(), legacy_shim, SHIM).unwrap(), None);
+            // The legacy path is matched case-insensitively (Windows paths).
+            let upper =
+                legacy_connected(legacy_shim, ShellKind::Bash).replacen(legacy_shim, &legacy_shim.to_uppercase(), 1);
+            assert!(migrate_shim(upper.as_bytes(), legacy_shim, SHIM).unwrap().is_some());
+            // An unsafe new helper path is refused.
+            let legacy = legacy_connected(legacy_shim, ShellKind::Bash);
+            assert!(migrate_shim(legacy.as_bytes(), legacy_shim, "C:/a&b/mikyas-capture.exe").is_err());
+            assert_eq!(migrate_shim(b"{ // jsonc\n}", legacy_shim, SHIM), Err(SettingsError::NotStrictJson));
+        }
+        // Our own helper is never "moved", even when named as the legacy one.
+        let (ours, _) = connect(REALISTIC.as_bytes(), SHIM, ShellKind::Bash, NOW).unwrap();
+        assert_eq!(migrate_shim(&ours, SHIM, SHIM2).unwrap(), None);
     }
 
     #[test]
@@ -1061,7 +1092,7 @@ mod tests {
     fn wrap_records_of_earlier_versions_still_load() {
         let old = concat!(
             r#"{"original_command":null,"original_command_raw":null,"#,
-            r#""shim_path":"C:/Users/tester/bin/sovawatch-capture.exe","mode":"default","shell":"bash","at_ms":1790208000000}"#
+            r#""shim_path":"C:/Users/tester/bin/mikyas-capture.exe","mode":"default","shell":"bash","at_ms":1790208000000}"#
         );
         let rec: WrapRecord = serde_json::from_str(old).unwrap();
         assert_eq!(rec.empty_object_ws, None);
@@ -1161,7 +1192,7 @@ mod tests {
             Err(SettingsError::Cmdline(CmdlineError::Unsupported))
         );
         assert!(matches!(
-            connect(input.as_bytes(), "C:/x&y/sovawatch-capture.exe", ShellKind::Bash, NOW),
+            connect(input.as_bytes(), "C:/x&y/mikyas-capture.exe", ShellKind::Bash, NOW),
             Err(SettingsError::Cmdline(CmdlineError::UnsafeShimPath(_)))
         ));
         let review = r#"{"statusLine": {"type": "command", "command": "a & (b)"}}"#;
@@ -1392,7 +1423,7 @@ mod tests {
         out
     }
 
-    const PLACEHOLDER: &str = "__sova_command_placeholder__";
+    const PLACEHOLDER: &str = "__mikyas_command_placeholder__";
 
     fn arb_settings() -> impl Strategy<Value = (Vec<u8>, bool)> {
         let layout = prop_oneof![

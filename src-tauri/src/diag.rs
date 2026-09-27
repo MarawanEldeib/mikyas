@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use sovawatch_core::time::now_ms;
+use mikyas_core::time::now_ms;
 
 pub const MAX_LOG_BYTES: u64 = 256 * 1024;
 const FILE_NAME: &str = "app.log";
@@ -28,7 +28,7 @@ pub fn init(data_root: &Path) {
 
 pub fn log(msg: &str) {
     if cfg!(debug_assertions) {
-        eprintln!("[sovawatch] {msg}");
+        eprintln!("[mikyas] {msg}");
     }
     if let Some(path) = LOG_FILE.get() {
         let _guard = crate::state::lock(&WRITE_LOCK);

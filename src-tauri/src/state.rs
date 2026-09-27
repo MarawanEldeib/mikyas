@@ -10,13 +10,13 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use mikyas_core::ctx_alerts::CtxAlertState;
+use mikyas_core::engine::types::{Snapshot, WindowKind};
+use mikyas_core::pace_alerts::PaceAlertState;
+use mikyas_core::paths::Paths;
+use mikyas_core::recap::RecapState;
+use mikyas_core::time::Ms;
 use serde::{Deserialize, Serialize};
-use sovawatch_core::ctx_alerts::CtxAlertState;
-use sovawatch_core::engine::types::{Snapshot, WindowKind};
-use sovawatch_core::pace_alerts::PaceAlertState;
-use sovawatch_core::paths::Paths;
-use sovawatch_core::recap::RecapState;
-use sovawatch_core::time::Ms;
 
 use crate::pipeline::Msg;
 use crate::settings::{Settings, ViewMode};
@@ -230,12 +230,12 @@ mod tests {
         s.recap.last_recapped_end_ms = Some(13);
         s.pace_alerts.kinds.insert(
             "five_hour".into(),
-            sovawatch_core::pace_alerts::KindPaceState { forecast_fired_for: Some(17), heads_up_fired_for: None },
+            mikyas_core::pace_alerts::KindPaceState { forecast_fired_for: Some(17), heads_up_fired_for: None },
         );
         s.learned_models.insert("claude-opus-5-5".into(), "Opus 5.5".into());
         s.ctx_alerts.sessions.insert(
             "af63dc4c8601ec8c".into(),
-            sovawatch_core::ctx_alerts::SessionCtxState { fired: [80, 90].into(), last_seen_ms: 11 },
+            mikyas_core::ctx_alerts::SessionCtxState { fired: [80, 90].into(), last_seen_ms: 11 },
         );
         save_json(&p, &s).unwrap();
         let back: PersistedState = load_json(&p);

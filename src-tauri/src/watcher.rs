@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use mikyas_core::paths::Paths;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
-use sovawatch_core::paths::Paths;
 
 use crate::pipeline::{Msg, log};
 use crate::state::Shared;

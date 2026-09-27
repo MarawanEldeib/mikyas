@@ -401,7 +401,7 @@ mod tests {
             return;
         }
         // The data root does not exist yet when the reader is built.
-        let p = Paths::with_roots(tmp.path().join(".claude"), vec![], linked.join("sova"));
+        let p = Paths::with_roots(tmp.path().join(".claude"), vec![], linked.join("mikyas"));
         let r = SafeReader::new(&p);
         std::fs::create_dir_all(p.capture_dir()).unwrap();
         let f = p.capture_dir().join("s.json");
@@ -417,7 +417,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");
         std::fs::create_dir_all(&real).unwrap();
-        let p = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("later").join("sova"));
+        let p = Paths::with_roots(tmp.path().join(".claude"), vec![], tmp.path().join("later").join("mikyas"));
         let r = SafeReader::new(&p);
         if !dir_link(&real, &tmp.path().join("later")) {
             return;
@@ -458,7 +458,7 @@ mod tests {
         assert!(!r.allows(&p.state_file()));
         assert!(!r.allows(&p.history_file()));
         assert!(!r.allows(&p.capture_dir().join("_shim.log")));
-        assert!(!r.allows(&p.bin_dir().join("sovawatch-capture.exe")));
+        assert!(!r.allows(&p.bin_dir().join("mikyas-capture.exe")));
     }
 
     #[test]

@@ -22,8 +22,8 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
+use mikyas_core::time::{Ms, now_ms};
 use serde::{Deserialize, Serialize};
-use sovawatch_core::time::{Ms, now_ms};
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
 
 use crate::dock::{self, DockState};
@@ -251,7 +251,7 @@ pub fn start(app: &AppHandle, shared: Arc<Shared>) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     app.manage(Waker(tx));
     let app = app.clone();
-    std::thread::Builder::new().name("sova-displays".into()).spawn(move || run(&app, &shared, poller, &rx))?;
+    std::thread::Builder::new().name("mikyas-displays".into()).spawn(move || run(&app, &shared, poller, &rx))?;
     Ok(())
 }
 

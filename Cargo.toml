@@ -9,7 +9,7 @@ license-file = "LICENSE"
 rust-version = "1.85"
 
 [workspace.dependencies]
-sovawatch-core = { path = "crates/core" }
+mikyas-core = { path = "crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
@@ -25,5 +25,5 @@ pretty_assertions = "1"
 lto = "thin"
 strip = true
 
-[profile.release.package.sovawatch-capture]
+[profile.release.package.mikyas-capture]
 opt-level = "z"

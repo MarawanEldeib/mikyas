@@ -1,5 +1,5 @@
 [package]
-name = "sovawatch-capture"
+name = "mikyas-capture"
 description = "Statusline tee shim: forwards Claude Code statusline JSON unchanged and saves whitelisted usage fields"
 version.workspace = true
 edition.workspace = true
@@ -8,15 +8,15 @@ rust-version.workspace = true
 publish = false
 
 [[bin]]
-name = "sovawatch-capture"
+name = "mikyas-capture"
 path = "src/main.rs"
 
-# The integration tests' helper process is examples/sovawatch-test-child.rs: an example, not a [[bin]],
+# The integration tests' helper process is examples/mikyas-test-child.rs: an example, not a [[bin]],
 # so `cargo build`/`cargo install` of this package never produce it. `cargo test` builds examples
 # before running the tests, and tests/shim.rs finds it next to the shim in `<profile>/examples/`.
 
 [dependencies]
-sovawatch-core.workspace = true
+mikyas-core.workspace = true
 serde_json.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 

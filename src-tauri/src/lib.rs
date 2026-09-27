@@ -1,5 +1,5 @@
-//! SovaWatch app shell: window, tray, hotkey, notifications and the data pipeline
-//! around the token-free `sovawatch-core` engine.
+//! Mikyas app shell: window, tray, hotkey, notifications and the data pipeline
+//! around the token-free `mikyas-core` engine.
 
 mod cli;
 mod commands;
@@ -33,8 +33,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
-use sovawatch_core::paths::Paths;
-use sovawatch_core::time::now_ms;
+use mikyas_core::paths::Paths;
+use mikyas_core::time::now_ms;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_window_state::StateFlags;
@@ -56,10 +56,10 @@ pub fn run() {
 
     let paths = Paths::detect();
     diag::init(paths.data_root());
-    // Once, before anything reads the data folder: the move from Claude Usage Widget. It runs
-    // before the single-instance check; a second launch at that moment finds nothing left to switch.
-    let migrated =
-        migrate::run(&paths, migrate::legacy_root().as_deref(), connect::find_sidecar().as_deref(), now_ms());
+    // Once, before anything reads the data folder: the move from a former name of the app
+    // (SovaWatch or Claude Usage Widget). It runs before the single-instance check; a second
+    // launch at that moment finds nothing left to switch.
+    let migrated = migrate::run(&paths, &migrate::legacy_roots(), connect::find_sidecar().as_deref(), now_ms());
     let settings = settings::load(&paths.settings_file());
     // Reads only: a second launch exits in the single-instance plugin before anything is written.
     let mut pipeline_state = PipelineState::new(paths.clone());
@@ -104,9 +104,9 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             // "Start with Windows" was on in the old app: its Run entry has the old name.
-            if let migrate::Outcome::Moved { autostart: true, .. } = migrated {
+            if let migrate::Outcome::Moved { from, autostart: true, .. } = &migrated {
                 if let Err(e) = handle.autolaunch().enable() {
-                    diag::log(&format!("move from Claude Usage Widget: autostart: {e}"));
+                    diag::log(&format!("move from {}: autostart: {e}", from.display_name));
                 }
             }
             // Reflect the real autostart registration (it may have been changed outside the app).
@@ -130,7 +130,7 @@ pub fn run() {
             let thread_shared = shared.clone();
             let thread_handle = handle.clone();
             std::thread::Builder::new()
-                .name("sova-pipeline".into())
+                .name("mikyas-pipeline".into())
                 .spawn(move || pipeline::run(thread_handle, thread_shared, pipeline_state, rx))?;
             for event in &first.alerts {
                 notify::show_alert(&handle, event);
@@ -141,7 +141,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building SovaWatch");
+        .expect("error while building Mikyas");
 
     app.run(|app, event| {
         if let RunEvent::ExitRequested { api, code, .. } = event {

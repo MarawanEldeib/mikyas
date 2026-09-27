@@ -1,5 +1,5 @@
 //! Command-line mode, handled before Tauri starts:
-//! `sovawatch.exe --disconnect [--quiet]` restores Claude Code's statusline and exits
+//! `mikyas.exe --disconnect [--quiet]` restores Claude Code's statusline and exits
 //! (the uninstaller runs it). Anything else starts the app.
 //!
 //! Exit codes: 0 when the statusline is restored or there was nothing of ours to undo (never
@@ -8,13 +8,13 @@
 
 use std::io::Write;
 
-use sovawatch_core::paths::Paths;
-use sovawatch_core::time::Ms;
+use mikyas_core::paths::Paths;
+use mikyas_core::time::Ms;
 
 /// `Some(exit_code)` when the process should exit without starting the UI.
 pub fn handle_args() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    handle(&args, Paths::detect, sovawatch_core::time::now_ms(), &mut std::io::stdout(), &mut std::io::stderr())
+    handle(&args, Paths::detect, mikyas_core::time::now_ms(), &mut std::io::stdout(), &mut std::io::stderr())
 }
 
 fn handle(
@@ -50,7 +50,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use sovawatch_core::cmdline::{SHIM_EXE_NAME, ShellKind};
+    use mikyas_core::cmdline::{SHIM_EXE_NAME, ShellKind};
 
     use super::*;
     use crate::connect::{self, ConnectEnv, ConnectionStatus, Shell};

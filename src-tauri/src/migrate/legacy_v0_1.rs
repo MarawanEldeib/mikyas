@@ -1,7 +1,7 @@
-//! Claude Usage Widget's status-line code exactly as it was released (`crates/core/src/cmdline.rs`
-//! and `claude_settings.rs` at commit 42e52af, with their tests removed and the two `crate::`
-//! imports pointed here), so the migration tests can run what the OLD app — and its uninstaller's
-//! `claude-usage-widget.exe --disconnect --quiet` — would do against a moved status line.
+//! SovaWatch 0.1.0's status-line code exactly as it was released (`crates/core/src/cmdline.rs`
+//! and `claude_settings.rs` at tag v0.1.0, commit 9f3192c, with their tests removed and the two
+//! `crate::` imports pointed here), so the migration tests can run what the OLD app — and its
+//! uninstaller's `sovawatch.exe --disconnect --quiet` — would do against a moved status line.
 //! Test-only; never change these files except to re-copy them from that commit (or to follow a
 //! rename of the core crate in their imports).
 
@@ -9,16 +9,16 @@ use std::fs;
 
 use mikyas_core::paths::Paths;
 
-#[path = "legacy_v0_cmdline.rs"]
+#[path = "legacy_v0_1_cmdline.rs"]
 pub mod cmdline;
 
-#[path = "legacy_v0_claude_settings.rs"]
+#[path = "legacy_v0_1_claude_settings.rs"]
 pub mod claude_settings;
 
-/// v0's `connect::disconnect` (the uninstaller's `--disconnect`): its own `wrap.json` from its own
-/// data folder, the same settings file. Returns whether it wrote `settings.json`. (v0 also backs
-/// up, re-reads for its compare-and-swap and deletes its backups; none of that changes whether or
-/// what it writes.)
+/// v0.1.0's `connect::disconnect` (the uninstaller's `--disconnect`): its own `wrap.json` from its
+/// own data folder, the same settings file. Returns whether it wrote `settings.json`. (v0.1.0 also
+/// backs up, re-reads for its compare-and-swap and deletes its backups; none of that changes
+/// whether or what it writes.)
 pub fn disconnect(paths: &Paths) -> Result<bool, String> {
     let wrap: Option<claude_settings::WrapRecord> =
         fs::read(paths.wrap_file()).ok().and_then(|b| serde_json::from_slice(&b).ok());

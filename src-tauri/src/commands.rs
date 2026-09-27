@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use sovawatch_core::engine::types::Snapshot;
-use sovawatch_core::time::now_ms;
+use mikyas_core::engine::types::Snapshot;
+use mikyas_core::time::now_ms;
 use tauri::{AppHandle, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -283,7 +283,7 @@ pub fn quit(app: &AppHandle, shared: &Shared) {
 mod tests {
     use super::*;
     use crate::pipeline::{Dirty, PipelineState};
-    use sovawatch_core::paths::Paths;
+    use mikyas_core::paths::Paths;
 
     fn shared() -> (tempfile::TempDir, Shared) {
         let tmp = tempfile::tempdir().unwrap();

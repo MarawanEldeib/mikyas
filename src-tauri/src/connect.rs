@@ -1,8 +1,8 @@
-//! Connect / Disconnect Claude Code: file handling around `sovawatch_core::claude_settings`.
+//! Connect / Disconnect Claude Code: file handling around `mikyas_core::claude_settings`.
 //!
 //! Every path comes from a [`Paths`] value, so the whole flow is tested against temp dirs; the
 //! real `~/.claude/settings.json` is only touched when the user clicks Connect or Disconnect in the
-//! app (and once by the move from Claude Usage Widget, `crate::migrate`).
+//! app (and once by the move from a former name of the app, `crate::migrate`).
 //!
 //! Connect (real run):
 //! 1. copy the shim sidecar into `<data_root>/bin/` (only when its bytes differ),
@@ -25,12 +25,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use mikyas_core::claude_settings::{self, SettingsError, Status, WrapRecord};
+use mikyas_core::cmdline::{self, SHIM_EXE_NAME, ShellKind, WrapMode};
+use mikyas_core::paths::{CLAUDE_CONFIG_DIR_ENV, DATA_DIR_ENV, Paths};
+use mikyas_core::saferead::{ReadError, SafeReader};
+use mikyas_core::time::{DAY_MS, Ms};
 use serde::Serialize;
-use sovawatch_core::claude_settings::{self, SettingsError, Status, WrapRecord};
-use sovawatch_core::cmdline::{self, SHIM_EXE_NAME, ShellKind, WrapMode};
-use sovawatch_core::paths::{CLAUDE_CONFIG_DIR_ENV, DATA_DIR_ENV, Paths};
-use sovawatch_core::saferead::{ReadError, SafeReader};
-use sovawatch_core::time::{DAY_MS, Ms};
 
 use crate::state::{save_json, write_atomic};
 
@@ -91,7 +91,7 @@ pub struct Shell {
 /// Mirrors Claude Code's documented Windows behaviour: Git Bash when `CLAUDE_CODE_GIT_BASH_PATH`
 /// names it or it is installed in a usual place, else pwsh 7.4+, else Windows PowerShell. A
 /// machine where Claude Code picks differently is caught by the self-test after Connect (and
-/// `sovawatch-capture --diag` shows the shell actually used); every shell decision stays in here.
+/// `mikyas-capture --diag` shows the shell actually used); every shell decision stays in here.
 pub fn detect_shell() -> Shell {
     if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(PathBuf::from).filter(|p| p.is_file()) {
         return Shell { kind: ShellKind::Bash, exe: bash };
@@ -139,9 +139,7 @@ fn parse_version_at_least(text: &str, major: u32, minor: u32) -> bool {
 /// The shim sidecar shipped next to the app executable.
 pub fn find_sidecar() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    [dir.join(SHIM_EXE_NAME), dir.join("sovawatch-capture-x86_64-pc-windows-msvc.exe")]
-        .into_iter()
-        .find(|p| p.is_file())
+    [dir.join(SHIM_EXE_NAME), dir.join("mikyas-capture-x86_64-pc-windows-msvc.exe")].into_iter().find(|p| p.is_file())
 }
 
 /// Everything Connect needs; injectable for tests.
@@ -168,7 +166,7 @@ impl ConnectEnv {
     }
 }
 
-/// Where Connect installs the shim: `<data_root>/bin/sovawatch-capture.exe`.
+/// Where Connect installs the shim: `<data_root>/bin/mikyas-capture.exe`.
 pub fn installed_shim(paths: &Paths) -> PathBuf {
     paths.bin_dir().join(SHIM_EXE_NAME)
 }
@@ -235,7 +233,7 @@ pub fn preview(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
 /// Performs Connect (see the module docs).
 pub fn connect(env: &ConnectEnv, now: Ms) -> Result<ConnectPreview, String> {
     let source =
-        env.shim_source.as_deref().ok_or("the capture shim (sovawatch-capture.exe) was not found next to the app")?;
+        env.shim_source.as_deref().ok_or("the capture shim (mikyas-capture.exe) was not found next to the app")?;
     install_shim(source, &env.installed_shim()).map_err(|e| format!("cannot install the capture shim: {e}"))?;
     let shim = env.shim_command_path();
 
@@ -544,7 +542,7 @@ pub fn selftest(shell: &Shell, original: Option<&str>, wrapped: &str) -> bool {
 
 fn tempdir() -> io::Result<PathBuf> {
     let dir =
-        std::env::temp_dir().join(format!("sova-selftest-{}-{}", std::process::id(), sovawatch_core::time::now_ms()));
+        std::env::temp_dir().join(format!("mikyas-selftest-{}-{}", std::process::id(), mikyas_core::time::now_ms()));
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -684,7 +682,7 @@ mod tests {
         assert!(env.paths.wrap_file().is_file());
         assert!(matches!(status(&env.paths), ConnectionStatus::Connected { mode: WrapMode::Pipe, .. }));
         let connected = fs::read_to_string(env.paths.claude_settings()).unwrap();
-        assert!(connected.contains("sovawatch-capture.exe"));
+        assert!(connected.contains("mikyas-capture.exe"));
         assert!(connected.contains("\"padding\": 0"), "other keys untouched");
 
         // Idempotent.
@@ -717,7 +715,7 @@ mod tests {
     fn missing_sidecar_and_jsonc_are_errors() {
         let (_t, mut env) = setup(Some(ORIGINAL));
         env.shim_source = None;
-        assert!(connect(&env, 1).unwrap_err().contains("sovawatch-capture.exe"));
+        assert!(connect(&env, 1).unwrap_err().contains("mikyas-capture.exe"));
         let (_t2, env2) = setup(Some("{ // comment\n}"));
         assert!(preview(&env2, 1).is_err());
         assert!(matches!(status(&env2.paths), ConnectionStatus::Error { .. }));
@@ -759,9 +757,9 @@ mod tests {
     #[test]
     fn backups_older_than_thirty_days_are_pruned() {
         let tmp = tempfile::tempdir().unwrap();
-        let now = 100 * sovawatch_core::time::DAY_MS;
-        backup(tmp.path(), b"{}", now - 31 * sovawatch_core::time::DAY_MS).unwrap();
-        backup(tmp.path(), b"{}", now - 29 * sovawatch_core::time::DAY_MS).unwrap();
+        let now = 100 * mikyas_core::time::DAY_MS;
+        backup(tmp.path(), b"{}", now - 31 * mikyas_core::time::DAY_MS).unwrap();
+        backup(tmp.path(), b"{}", now - 29 * mikyas_core::time::DAY_MS).unwrap();
         backup(tmp.path(), b"{}", now).unwrap();
         let names = backup_names(tmp.path());
         assert_eq!(names.len(), 2, "{names:?}");
@@ -906,14 +904,14 @@ mod tests {
         let s = serde_json::to_value(ConnectionStatus::Connected {
             mode: WrapMode::PipeGrouped,
             original: None,
-            shim_path: "C:/x/sovawatch-capture.exe".into(),
+            shim_path: "C:/x/mikyas-capture.exe".into(),
         })
         .unwrap();
         assert_eq!(s, serde_json::json!({"state":"connected","mode":"pipe_grouped","original":null}));
     }
 
     /// Runs the real shim through the real shell when both are available (release build of
-    /// sovawatch-capture in the target dir). Uses only temp files.
+    /// mikyas-capture in the target dir). Uses only temp files.
     #[cfg(windows)]
     #[test]
     fn selftest_with_real_shim_when_available() {

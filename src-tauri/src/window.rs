@@ -91,7 +91,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
         None => view_size(settings.view, settings),
     };
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::default())
-        .title("SovaWatch")
+        .title("Mikyas")
         .inner_size(w, h)
         .decorations(false)
         .transparent(true)
@@ -111,7 +111,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
                 if !hidden {
                     let _ = window.show();
                 }
-                if dev_override("SOVA_MEMORY_NORMAL").is_none() {
+                if dev_override("MIKYAS_MEMORY_NORMAL").is_none() {
                     crate::platform::set_memory_low(&window, true);
                 }
             }
@@ -119,7 +119,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
     if let Some((x, y)) = default_position(app, w, h) {
         builder = builder.position(x, y);
     }
-    if let Some(args) = dev_override("SOVA_BROWSER_ARGS") {
+    if let Some(args) = dev_override("MIKYAS_BROWSER_ARGS") {
         builder = builder.additional_browser_args(&args);
     }
     let window = builder.build()?;
@@ -127,7 +127,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
     // The window-state plugin has restored the saved position by now; a monitor may have gone.
     // (This also snaps a docked widget flush to its edge.)
     ensure_on_screen(&window);
-    if let (Some(x), Some(y)) = (env_i32("SOVA_X"), env_i32("SOVA_Y")) {
+    if let (Some(x), Some(y)) = (env_i32("MIKYAS_X"), env_i32("MIKYAS_Y")) {
         let _ = window.set_position(PhysicalPosition::new(x, y));
     }
     apply_effect(&window, settings.effect, false);
@@ -163,7 +163,7 @@ fn env_i32(name: &str) -> Option<i32> {
     dev_override(name)?.trim().parse().ok()
 }
 
-/// A development override (`SOVA_BROWSER_ARGS`, `SOVA_MEMORY_NORMAL`, `SOVA_X` / `SOVA_Y`). Debug
+/// A development override (`MIKYAS_BROWSER_ARGS`, `MIKYAS_MEMORY_NORMAL`, `MIKYAS_X` / `MIKYAS_Y`). Debug
 /// builds only: a release build ignores them, so nothing can start it with extra WebView2 flags
 /// such as remote debugging.
 fn dev_override(name: &str) -> Option<String> {

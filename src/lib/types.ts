@@ -140,7 +140,7 @@ export interface CardRows {
   sources: boolean;
 }
 
-/** Persisted in %LOCALAPPDATA%\SovaWatch\settings.json. */
+/** Persisted in %LOCALAPPDATA%\Mikyas\settings.json. */
 export interface Settings {
   schema_version: number;
   view: ViewMode;
