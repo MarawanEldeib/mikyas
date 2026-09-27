@@ -295,6 +295,8 @@ fn argv_mode_streams_oversized_input_to_the_child_and_skips_the_capture() {
 
 /// A bug in the shim's own capture must never take the user's statusline program down with it
 /// (the kill-on-close job would otherwise kill the child as the panic unwinds).
+/// Needs the debug-only test hook, so it only runs in debug builds.
+#[cfg(debug_assertions)]
 #[test]
 fn argv_mode_survives_a_panic_in_its_own_capture() {
     let tmp = tempfile::tempdir().unwrap();
@@ -418,7 +420,7 @@ fn argv_mode_without_a_program_prints_default_line_and_logs_it() {
 /// In the pipe form the user's statusline reads the shim's stdout until EOF, so every millisecond
 /// the shim spends capturing with stdout still open delays the statusline. The debug-only test
 /// hook makes the capture slow by a known amount, which exposes the gap.
-#[cfg(windows)]
+#[cfg(all(windows, debug_assertions))]
 #[test]
 fn tee_closes_stdout_before_a_slow_capture() {
     const DELAY_MS: u64 = 600;
