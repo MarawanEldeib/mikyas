@@ -9,11 +9,17 @@ pub const APP_DIR_NAME: &str = "Mikyas";
 /// The app's former names, newest first. On Mikyas's first start one of their data folders is
 /// moved over once (`migrate.rs` in the app decides which).
 pub const LEGACY_APPS: [LegacyApp; 2] = [
-    LegacyApp { dir_name: "SovaWatch", display_name: "SovaWatch", shim_exe: crate::cmdline::LEGACY_SHIM_EXE_NAMES[0] },
+    LegacyApp {
+        dir_name: "SovaWatch",
+        display_name: "SovaWatch",
+        shim_exe: crate::cmdline::LEGACY_SHIM_EXE_NAMES[0],
+        identifier: "io.github.marawaneldeib.sovawatch",
+    },
     LegacyApp {
         dir_name: "ClaudeUsageWidget",
         display_name: "Claude Usage Widget",
         shim_exe: crate::cmdline::LEGACY_SHIM_EXE_NAMES[1],
+        identifier: "io.github.marawaneldeib.claude-usage-widget",
     },
 ];
 /// Directory under the data root where the shim writes statusline captures.
@@ -148,6 +154,9 @@ pub struct LegacyApp {
     pub display_name: &'static str,
     /// The statusline helper its Connect installed into `<data folder>/bin`.
     pub shim_exe: &'static str,
+    /// Its Tauri identifier: the name of its folder under the roaming app-data dir, where the
+    /// window-state plugin kept its screen position (`.window-state.json`).
+    pub identifier: &'static str,
 }
 
 /// Where a former name of the app kept its data.
@@ -155,6 +164,9 @@ pub struct LegacyApp {
 pub struct LegacyRoot {
     pub app: LegacyApp,
     pub root: PathBuf,
+    /// The roaming app-data dir (`%APPDATA%`, from the OS known folder), which holds each app's
+    /// `<identifier>` folder; `None` when the OS reports none.
+    pub app_data: Option<PathBuf>,
 }
 
 impl LegacyRoot {
@@ -162,22 +174,35 @@ impl LegacyRoot {
     pub fn installed_shim(&self) -> PathBuf {
         self.root.join("bin").join(self.app.shim_exe)
     }
+
+    /// That app's Tauri config folder, `<app_data>/<identifier>` (may not exist).
+    pub fn config_dir(&self) -> Option<PathBuf> {
+        self.app_data.as_ref().map(|dir| dir.join(self.app.identifier))
+    }
 }
 
 /// Where the app's former names ([`LEGACY_APPS`]) kept their data, `<local data dir>/<dir_name>`
 /// (the folders may not exist). Empty while [`DATA_DIR_ENV`] points the data root elsewhere
-/// (tests, development): the move from an old app then never touches the real old data or the
-/// real Claude Code settings.
+/// (tests, development): the move from an old app then never touches the real old data, the
+/// real Claude Code settings or the real roaming app-data dir.
 pub fn detect_legacy_data_roots() -> Vec<LegacyRoot> {
-    legacy_roots_from(std::env::var_os(DATA_DIR_ENV), dirs::data_local_dir)
+    legacy_roots_from(std::env::var_os(DATA_DIR_ENV), dirs::data_local_dir, dirs::config_dir)
 }
 
-fn legacy_roots_from(env_value: Option<OsString>, local_dir: impl FnOnce() -> Option<PathBuf>) -> Vec<LegacyRoot> {
+fn legacy_roots_from(
+    env_value: Option<OsString>,
+    local_dir: impl FnOnce() -> Option<PathBuf>,
+    app_data_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Vec<LegacyRoot> {
     if env_value.is_some_and(|v| !v.is_empty()) {
         return Vec::new();
     }
     let Some(local) = local_dir() else { return Vec::new() };
-    LEGACY_APPS.iter().map(|&app| LegacyRoot { app, root: local.join(app.dir_name) }).collect()
+    let app_data = app_data_dir();
+    LEGACY_APPS
+        .iter()
+        .map(|&app| LegacyRoot { app, root: local.join(app.dir_name), app_data: app_data.clone() })
+        .collect()
 }
 
 fn home_dir() -> PathBuf {
@@ -289,30 +314,51 @@ mod tests {
     #[test]
     fn legacy_roots_are_the_old_folders_unless_the_data_root_is_overridden() {
         let local = || Some(PathBuf::from("/local"));
+        let roaming = || Some(PathBuf::from("/roaming"));
+        let app_data = Some(PathBuf::from("/roaming"));
         let expected = vec![
-            LegacyRoot { app: LEGACY_APPS[0], root: PathBuf::from("/local/SovaWatch") },
-            LegacyRoot { app: LEGACY_APPS[1], root: PathBuf::from("/local/ClaudeUsageWidget") },
+            LegacyRoot { app: LEGACY_APPS[0], root: PathBuf::from("/local/SovaWatch"), app_data: app_data.clone() },
+            LegacyRoot { app: LEGACY_APPS[1], root: PathBuf::from("/local/ClaudeUsageWidget"), app_data },
         ];
-        assert_eq!(legacy_roots_from(None, local), expected);
-        assert_eq!(legacy_roots_from(Some(OsString::new()), local), expected);
-        assert_eq!(legacy_roots_from(Some(absolute("dev").into()), local), [], "tests and dev runs never migrate");
-        assert_eq!(legacy_roots_from(Some("relative".into()), local), [], "any override, even an ignored one");
-        assert_eq!(legacy_roots_from(None, || None), []);
+        assert_eq!(legacy_roots_from(None, local, roaming), expected);
+        assert_eq!(legacy_roots_from(Some(OsString::new()), local, roaming), expected);
+        assert_eq!(
+            legacy_roots_from(Some(absolute("dev").into()), local, roaming),
+            [],
+            "tests and dev runs never migrate"
+        );
+        assert_eq!(legacy_roots_from(Some("relative".into()), local, roaming), [], "any override, even an ignored one");
+        assert_eq!(legacy_roots_from(None, || None, roaming), []);
+        // Without a roaming dir the data still moves, only the window position cannot.
+        let no_roaming = legacy_roots_from(None, local, || None);
+        assert_eq!(no_roaming.len(), 2);
+        assert!(no_roaming.iter().all(|r| r.app_data.is_none() && r.config_dir().is_none()));
     }
 
     #[test]
     fn legacy_apps_are_the_former_names_newest_first() {
-        let names: Vec<_> = LEGACY_APPS.iter().map(|a| (a.dir_name, a.display_name, a.shim_exe)).collect();
+        let names: Vec<_> =
+            LEGACY_APPS.iter().map(|a| (a.dir_name, a.display_name, a.shim_exe, a.identifier)).collect();
         assert_eq!(
             names,
             [
-                ("SovaWatch", "SovaWatch", "sovawatch-capture.exe"),
-                ("ClaudeUsageWidget", "Claude Usage Widget", "cuw-capture.exe")
+                ("SovaWatch", "SovaWatch", "sovawatch-capture.exe", "io.github.marawaneldeib.sovawatch"),
+                (
+                    "ClaudeUsageWidget",
+                    "Claude Usage Widget",
+                    "cuw-capture.exe",
+                    "io.github.marawaneldeib.claude-usage-widget"
+                )
             ]
         );
         assert!(LEGACY_APPS.iter().all(|a| a.dir_name != APP_DIR_NAME));
-        let root = LegacyRoot { app: LEGACY_APPS[0], root: PathBuf::from("/local/SovaWatch") };
+        let root = LegacyRoot {
+            app: LEGACY_APPS[0],
+            root: PathBuf::from("/local/SovaWatch"),
+            app_data: Some(PathBuf::from("/roaming")),
+        };
         assert_eq!(root.installed_shim(), PathBuf::from("/local/SovaWatch/bin/sovawatch-capture.exe"));
+        assert_eq!(root.config_dir(), Some(PathBuf::from("/roaming/io.github.marawaneldeib.sovawatch")));
     }
 
     #[test]

@@ -57,8 +57,10 @@ pub fn run() {
     let paths = Paths::detect();
     diag::init(paths.data_root());
     // Once, before anything reads the data folder: the move from a former name of the app
-    // (SovaWatch or Claude Usage Widget). It runs before the single-instance check; a second
-    // launch at that moment finds nothing left to switch.
+    // (SovaWatch or Claude Usage Widget), or the rest of one cut short on an earlier start. It
+    // runs before the single-instance check (every step can run twice without harm; a second
+    // launch then exits there, without a notification), and before `.build()` below sets up the
+    // window-state plugin, which is when that plugin reads the window position the move copies.
     let migrated = migrate::run(&paths, &migrate::legacy_roots(), connect::find_sidecar().as_deref(), now_ms());
     let settings = settings::load(&paths.settings_file());
     // Reads only: a second launch exits in the single-instance plugin before anything is written.

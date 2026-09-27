@@ -77,12 +77,15 @@ Mikyas is the new name of SovaWatch, which was called Claude Usage Widget before
 over:
 
 1. Install Mikyas as above (it installs next to the old app; nothing is removed).
-2. Open Mikyas once. On its first start it copies your settings, history, alerts, window positions
-   and captures from the old app's folder (`%LOCALAPPDATA%\SovaWatch` or
-   `%LOCALAPPDATA%\ClaudeUsageWidget`), and if Claude Code's status line was connected, it
-   switches the status line to Mikyas' own helper — only the helper's path changes, and
+2. Open Mikyas once. On its first start it copies your settings, history, alerts, window positions,
+   captures and screen position from one old app's folder (`%LOCALAPPDATA%\SovaWatch` or
+   `%LOCALAPPDATA%\ClaudeUsageWidget`): the one whose helper your status line runs; otherwise the
+   newest one holding any of its data files; otherwise `ClaudeUsageWidget` if it exists. If
+   Claude Code's status line runs that old app's helper, it also brings the connection record
+   along and switches the status line to Mikyas' own helper — only the helper's path changes, and
    **Disconnect** still restores your original status line exactly. The old folder is left in
-   place. A notification confirms the move. Do not click **Reconnect** in the old app after this.
+   place. A notification confirms the move; if Mikyas is closed before the move finishes, its next
+   start finishes it. Do not click **Reconnect** in the old app after this.
 3. Uninstall the old app: **Windows Settings → Apps → Installed apps → SovaWatch** (or **Claude
    Usage Widget**) **→ Uninstall.** Its uninstaller leaves Mikyas' status line alone. Ticking
    "Delete the application data" there removes only the old app's folders.
