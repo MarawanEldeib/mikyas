@@ -199,7 +199,7 @@ const opus =
 const desktopOk =
   (ago: number) =>
   (t0: number): DesktopHealth => ({ state: "ok", last_sample_ms: t0 - ago });
-const connected: ConnectionStatus = { state: "connected", mode: "pipe", original: null };
+const connected: ConnectionStatus = { state: "connected", mode: "default", original: null };
 const notConfigured: ConnectionStatus = { state: "not_configured" };
 
 const NORMAL: ScenarioSpec = {
@@ -483,7 +483,8 @@ function pick<T extends string>(value: string | null, allowed: readonly T[], fal
   return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-const CAPTURE = String.raw`"%LOCALAPPDATA%\Mikyas\bin\mikyas-capture.exe"`;
+/** The installed shim as `cmdline::wrap` writes it: quoted, forward slashes (synthetic user). */
+const CAPTURE = `"C:/Users/tester/AppData/Local/Mikyas/bin/mikyas-capture.exe"`;
 const FOREIGN_CMD = "npx -y ccstatusline@latest";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -576,8 +577,9 @@ export function createMockBackend(params: URLSearchParams): Backend {
     const before = connection.state === "foreign" ? connection.command : null;
     return {
       before,
-      after: before ? `${CAPTURE} --wrap -- ${before}` : CAPTURE,
-      shell: "pwsh",
+      // The Bash forms of crates/core/src/cmdline.rs (Git Bash is Claude Code's usual shell).
+      after: before ? `${CAPTURE} --tee | ${before}` : `${CAPTURE} --default`,
+      shell: "bash",
       warnings:
         scenario === "warnings"
           ? [
@@ -625,7 +627,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
       if (args.dryRun) return p;
       connection = {
         state: "connected",
-        mode: p.before ? "pipe_grouped" : "pipe",
+        mode: p.before ? "pipe" : "default",
         original: connection.state === "foreign" ? connection.command : null,
       };
       return { ...p, selftest_ok: true };

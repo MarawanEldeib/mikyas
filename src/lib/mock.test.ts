@@ -156,17 +156,43 @@ describe("createMockBackend", () => {
     const dry = b.invoke<ConnectPreview>("connect_claude_code", { dryRun: true });
     await vi.advanceTimersByTimeAsync(1000);
     const preview = await dry;
-    expect(preview.before).not.toBeNull();
-    expect(preview.after).toContain("--wrap");
+    expect(preview.before).toBe("npx -y ccstatusline@latest");
     expect(preview.selftest_ok).toBeNull();
 
     const real = b.invoke<ConnectPreview>("connect_claude_code", { dryRun: false });
     await vi.advanceTimersByTimeAsync(1000);
     expect((await real).selftest_ok).toBe(true);
-    expect((await b.invoke<{ state: string }>("connection_status")).state).toBe("connected");
+    expect(await b.invoke("connection_status")).toEqual({ state: "connected", mode: "pipe", original: "npx -y ccstatusline@latest" });
 
     const off = b.invoke<{ state: string }>("disconnect_claude_code");
     await vi.advanceTimersByTimeAsync(1000);
     expect((await off).state).toBe("foreign");
+  });
+
+  // The forms crates/core/src/cmdline.rs writes: the shim path quoted with forward slashes, and
+  // under Bash (Claude Code's shell when Git for Windows is installed) `--tee | <original>`, or
+  // `--default` when there was no statusline.
+  it("previews the command the real Connect writes", async () => {
+    vi.useFakeTimers();
+    const shim = `"C:/Users/tester/AppData/Local/Mikyas/bin/mikyas-capture.exe"`;
+    const connect = async (q: string) => {
+      const b = createMockBackend(new URLSearchParams(q));
+      const dry = b.invoke<ConnectPreview>("connect_claude_code", { dryRun: true });
+      await vi.advanceTimersByTimeAsync(1000);
+      const real = b.invoke<ConnectPreview>("connect_claude_code", { dryRun: false });
+      await vi.advanceTimersByTimeAsync(1000);
+      await real;
+      return { preview: await dry, status: await b.invoke("connection_status") };
+    };
+
+    const wrapped = await connect("conn=foreign");
+    expect(wrapped.preview).toMatchObject({ shell: "bash", after: `${shim} --tee | npx -y ccstatusline@latest` });
+    expect(wrapped.status).toMatchObject({ mode: "pipe" });
+
+    const fresh = await connect("conn=not_configured");
+    expect(fresh.preview).toMatchObject({ shell: "bash", before: null, after: `${shim} --default` });
+    expect(fresh.status).toEqual({ state: "connected", mode: "default", original: null });
+    // Already connected without a statusline of its own: the same `--default` form.
+    expect(await createMockBackend(new URLSearchParams("conn=connected")).invoke("connection_status")).toEqual(fresh.status);
   });
 });
