@@ -191,7 +191,7 @@ const opus =
     ctx_is_estimate: false,
     entrypoint: "cli",
     last_active_ms: t0 - 2 * MIN,
-    project: "claude-usage-widget",
+    project: "sovawatch",
     concurrent: 1,
     ...over,
   });

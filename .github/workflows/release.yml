@@ -1,6 +1,6 @@
 name: Release
 
-# DISABLED on GitHub: releases are made by hand (cuw-release skill). Keep it disabled in the
+# DISABLED on GitHub: releases are made by hand (sovawatch-release skill). Keep it disabled in the
 # Actions tab; this file is kept hardened for when it is turned back on.
 #
 # Manual only (workflow_dispatch): run it from the Actions tab and pick a tag like v0.2.0 under

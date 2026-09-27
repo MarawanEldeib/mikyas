@@ -65,9 +65,8 @@ license-files = []
 
 [bans]
 multiple-versions = "warn"
-# Path dependencies (sovawatch-core) count as wildcards because the crates are not marked
-# `publish = false`; warn until they are, then switch to "deny".
-wildcards = "warn"
+# Path dependencies are allowed because every workspace crate is `publish = false`.
+wildcards = "deny"
 allow-wildcard-paths = true
 # No network client crates: the only network use is the opt-in update check via System32 curl.exe.
 deny = [

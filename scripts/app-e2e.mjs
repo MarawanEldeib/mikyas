@@ -210,10 +210,10 @@ async function main() {
     check(tree.mainWindow !== 0, "the widget window is visible");
 
     const snap = await invoke("get_snapshot");
-    const five = snap.windows.find((w) => w.state.kind === "five_hour") ?? snap.windows[0];
+    const five = snap.windows.find((w) => w.kind === "five_hour") ?? snap.windows[0];
     check(
-      five && Math.round(five.state.pct) === FIVE_HOUR_PCT,
-      `5-hour window is ${FIVE_HOUR_PCT}% (got ${five?.state.pct} from ${JSON.stringify(five?.state.source)})`,
+      five && Math.round(five.pct) === FIVE_HOUR_PCT,
+      `5-hour window is ${FIVE_HOUR_PCT}% (got ${five?.pct} from ${JSON.stringify(five?.source)})`,
     );
     check(snap.session?.display_name === MODEL_NAME, `session model is ${MODEL_NAME} (got ${snap.session?.display_name})`);
     check(snap.session?.ctx_size === CTX_SIZE, `context size is ${CTX_SIZE} (got ${snap.session?.ctx_size})`);

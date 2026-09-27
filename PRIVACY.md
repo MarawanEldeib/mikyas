@@ -53,16 +53,15 @@ listed here cannot be opened.
 | `settings.json` | your widget settings. |
 | `update-check.json` | only if you use the update check: time of the last successful check, the newest version already announced, and the newer release that check found (version and release page, so the notice survives a restart). |
 | `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
-| `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 10 kept). |
+| `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 3 kept, none older than 30 days). |
 | `bin\sovawatch-capture.exe` | the capture helper your status-line command points to. |
 | `migrated.json` | after moving from Claude Usage Widget: when the move happened and whether the status line was switched to the new helper (if not, the error message), so the move runs and is announced only once. |
 
 The installer puts the app itself (`sovawatch.exe`, `sovawatch-capture.exe`, `THIRD_PARTY_NOTICES.md`, `uninstall.exe`) in the same `%LOCALAPPDATA%\SovaWatch\` folder.
 
 Files are written atomically through a short-lived `.tmp` file next to them. If `history.jsonl`
-cannot be read, a fresh history is started in `history.jsonl.unreadable` (or, if that fails too,
-`%TEMP%\sova-history-fallback.jsonl`). Connect's self-test writes its test capture to a temporary
-folder.
+cannot be opened, the widget shows no history until it can (nothing is written anywhere else).
+Connect's self-test writes its test capture to a temporary folder.
 
 Other locations:
 
