@@ -217,10 +217,19 @@ fn run_with(
     copy_if_absent(&source.root.join(SETTINGS_FILE), &paths.settings_file(), &log);
     checkpoint(Step::SettingsCopied);
 
-    let autostart = old_autostart(&source.root.join(SETTINGS_FILE));
+    // The source's settings, or their copy when its folder is gone since a move cut short.
+    let (old_settings, copied_settings) = (source.root.join(SETTINGS_FILE), paths.settings_file());
+    let autostart = old_autostart(if old_settings.is_file() { &old_settings } else { &copied_settings });
     let record = Marker { from: source.app.display_name, at_ms: now, status_line: &status_line };
     if let Err(e) = save_json(&marker, &record) {
         log(format!("cannot write {MARKER_FILE}: {e}"));
+        // Left "under way", it would finish and announce the move on every start; without it,
+        // the copied `settings.json` stops the move.
+        if let Err(e) = fs::remove_file(&marker) {
+            if e.kind() != io::ErrorKind::NotFound {
+                log(format!("cannot remove {MARKER_FILE}: {e}"));
+            }
+        }
     }
     Outcome::Moved { from: source.app, status_line, autostart }
 }
@@ -975,6 +984,7 @@ mod tests {
                     w.reset(Some(ORIGINAL));
                     setup(&w);
                     w.run_cut_short(step);
+                    assert_eq!(w.paths.settings_file().exists(), step == Step::SettingsCopied, "{case}: copied last");
                     let outcome = w.run();
                     assert_eq!(outcome, expected, "{case}");
                     assert_eq!(w.everything(), finished, "{case}");
@@ -988,21 +998,68 @@ mod tests {
     }
 
     /// The old app was uninstalled (its folder deleted) before the next start: the move still
-    /// finishes, once, and Disconnect still restores the user's command.
+    /// finishes, once, and Disconnect still restores the user's command. "Start with Windows"
+    /// comes over when the settings were copied before the app was closed.
     #[test]
     fn a_move_cut_short_finishes_even_when_the_old_folder_is_gone() {
         for old in OLD {
+            for step in [Step::Retired, Step::SettingsCopied] {
+                let w = World::new(Some(ORIGINAL));
+                w.old_app(old, Some(ShellKind::Pwsh));
+                w.run_cut_short(step);
+                fs::remove_dir_all(w.root(old)).unwrap();
+                let outcome = w.run();
+                let autostart = step == Step::SettingsCopied;
+                let expected = Outcome::Moved { from: old.app(), status_line: StatusLineMove::Switched, autostart };
+                assert_eq!(outcome, expected, "{old:?} {step:?}");
+                assert_eq!(w.marker_from(), old.app().display_name);
+                assert_eq!(w.run(), Outcome::NotNeeded);
+                connect::disconnect(&w.paths, 2_000).unwrap();
+                assert_eq!(w.settings(), ORIGINAL);
+            }
+        }
+    }
+
+    /// `settings.json` is copied last, so a move cut short whose "under way" marker could not be
+    /// written is still started again on the next start (and then finished, once).
+    #[test]
+    fn a_move_cut_short_without_its_marker_runs_again() {
+        for old in OLD {
+            for step in [Step::Started, Step::DataCopied, Step::Switched, Step::Retired] {
+                let w = World::new(Some(ORIGINAL));
+                w.old_app(old, None);
+                w.run_cut_short(step);
+                fs::remove_file(w.paths.data_root().join(MARKER_FILE)).unwrap();
+                let expected =
+                    Outcome::Moved { from: old.app(), status_line: StatusLineMove::NotConnected, autostart: true };
+                assert_eq!(w.run(), expected, "{old:?} {step:?}");
+                assert!(w.paths.settings_file().is_file());
+                assert_eq!(w.run(), Outcome::NotNeeded, "{old:?} {step:?}");
+            }
+        }
+    }
+
+    /// When the finished marker cannot be written, the "under way" one must not stay behind:
+    /// it would finish and announce the move again on every start. The copied `settings.json`
+    /// stops it instead.
+    #[test]
+    fn a_finished_move_whose_marker_cannot_be_written_is_not_repeated() {
+        for old in OLD {
             let w = World::new(Some(ORIGINAL));
             w.old_app(old, Some(ShellKind::Pwsh));
-            w.run_cut_short(Step::Retired);
-            fs::remove_dir_all(w.root(old)).unwrap();
-            let outcome = w.run();
-            let expected = Outcome::Moved { from: old.app(), status_line: StatusLineMove::Switched, autostart: false };
-            assert_eq!(outcome, expected);
-            assert_eq!(w.marker_from(), old.app().display_name);
-            assert_eq!(w.run(), Outcome::NotNeeded);
-            connect::disconnect(&w.paths, 2_000).unwrap();
-            assert_eq!(w.settings(), ORIGINAL);
+            let marker = w.paths.data_root().join(MARKER_FILE);
+            // A folder where `write_atomic` puts its temp file makes the last write fail.
+            let blocker = w.paths.data_root().join(format!("{MARKER_FILE}.{}.tmp", std::process::id()));
+            let block = |at: Step| {
+                if at == Step::SettingsCopied {
+                    fs::create_dir_all(&blocker).unwrap();
+                }
+            };
+            let outcome = run_with(&w.paths, &w.legacy, Some(&w.sidecar), 1_000, &block);
+            assert!(matches!(outcome, Outcome::Moved { status_line: StatusLineMove::Switched, .. }), "{outcome:?}");
+            assert!(!matches!(progress(&marker), Progress::Done), "{old:?}: the finished marker was written");
+            fs::remove_dir(&blocker).unwrap();
+            assert_eq!(w.run(), Outcome::NotNeeded, "{old:?}");
         }
     }
 
