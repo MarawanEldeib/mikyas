@@ -1,12 +1,12 @@
-# Terms of Use — SovaWatch
+# Terms of Use — Mikyas
 
-_Last updated: 26 September 2026_
+_Last updated: 27 September 2026_
 
-By installing or using SovaWatch ("the app") you agree to these terms. If you do not
+By installing or using Mikyas ("the app") you agree to these terms. If you do not
 agree, do not install or use it.
 
 ## 1. What the app is
-SovaWatch is a free desktop usage widget for Claude Code and Claude Desktop. It shows your own Claude usage (5-hour and weekly limits, reset times,
+Mikyas is a free desktop usage widget for Claude Code and Claude Desktop. It shows your own Claude usage (5-hour and weekly limits, reset times,
 model and context size) using files that Claude Code and Claude Desktop already keep on your
 computer. It is provided by Eng. Marawan Eldeib ("the author").
 
@@ -32,7 +32,7 @@ app or its source code except as the LICENSE allows or as applicable law permits
 ## 5. Updates
 The app never updates itself. If you turn on update checks, it only tells you that a newer
 version exists; downloading and installing it is your choice. Only download releases from
-[the official GitHub page](https://github.com/MarawanEldeib/sovawatch/releases).
+[the official GitHub page](https://github.com/MarawanEldeib/mikyas/releases).
 
 ## 6. No warranty
 The app is provided **"as is"**, without warranty of any kind, express or implied, including
