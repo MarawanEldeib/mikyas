@@ -39,9 +39,9 @@ listed here cannot be opened.
 | `%APPDATA%\Claude\claude-code-sessions\**\local_*.json` (Desktop Code tab) | only `cliSessionId`, `model`, `lastFocusedAt`, `lastActivityAt`. The account/org folder names are not stored. |
 | `~/.claude/projects/**/*.jsonl` (Claude Code transcripts; `CLAUDE_CONFIG_DIR` is honoured) | the last 256 KiB (1 MiB if needed) and the first 64 KiB (512 KiB if needed) of recent files. Only these fields of assistant lines: `type`, `isSidechain`, `sessionId`, `entrypoint`, `timestamp`, `cwd` (folder name only, shown only if you enable "Show project name"), `message.model` and `message.usage` token counts; plus the 1M-context marker of the model identity line. **Message content is never parsed or kept.** Files under `subagents` folders are ignored. |
 | `%APPDATA%\Claude\local-agent-mode-sessions\**\.claude\projects\**\*.jsonl` (Cowork transcripts) | same as above. Other files in that tree — e.g. a session's `.claude\history.jsonl` prompt history — are not readable. |
-| `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`), and once on the first start after moving from SovaWatch or Claude Usage Widget, when only the old helper's path in `statusLine.command` is replaced with Mikyas' (a backup is kept first). |
+| `~/.claude/settings.json` | read only for its `statusLine` entry: to show it, to Connect / Disconnect, and — while **Warn if the connection breaks** is on (default) — to notice when something else rewrites it. Its folder is watched for changes to this file; the watchdog keeps only a fingerprint of the status-line command, never its text. The file is **written** only when you click Connect or Disconnect (or run `--disconnect`), and once during the move from SovaWatch or Claude Usage Widget (below), when only the old helper's path in `statusLine.command` is replaced with Mikyas' (a backup is kept first). |
 | `%LOCALAPPDATA%\Mikyas\**` | the widget's own data (below). |
-| `%LOCALAPPDATA%\SovaWatch\` or `%LOCALAPPDATA%\ClaudeUsageWidget\` | only once, on the first start after moving from SovaWatch or Claude Usage Widget (the app's former names), and only one of the two: the one whose helper your status line runs, else `SovaWatch` if it has settings, else `ClaudeUsageWidget`. From that folder, the settings, state, history, alerts, window positions, captures and connection record (`wrap.json`, re-pointed at the new helper) are copied into `%LOCALAPPDATA%\Mikyas\`. The old folder is not deleted; its `wrap.json` is renamed `wrap.json.migrated` once the status line has been switched to the new helper. |
+| `%LOCALAPPDATA%\SovaWatch\` or `%LOCALAPPDATA%\ClaudeUsageWidget\`, and that app's `%APPDATA%\io.github.marawaneldeib.sovawatch\.window-state.json` or `%APPDATA%\io.github.marawaneldeib.claude-usage-widget\.window-state.json` | only once, on the first start after moving from SovaWatch or Claude Usage Widget (the app's former names; while `%LOCALAPPDATA%\Mikyas\` has no `settings.json` or `migrated.json` yet), and only one of the two: the old folder whose helper your status line runs; otherwise the newest old folder (SovaWatch, then Claude Usage Widget) holding any of its data files (`settings.json`, `state.json`, `history.jsonl`, `alerts.json`, `positions.json`); otherwise `ClaudeUsageWidget` if it exists. From that folder, the settings, state, history, alerts, window positions and captures are copied into `%LOCALAPPDATA%\Mikyas\`, and its connection record (`wrap.json`, re-pointed at the new helper) only when your status line runs that old app's helper; that app's screen position (`.window-state.json`) is copied into `%APPDATA%\io.github.marawaneldeib.mikyas\`. Nothing already there is overwritten, and the old folders are not deleted; the old `wrap.json` is renamed `wrap.json.migrated` once the status line has been switched to the new helper. If Mikyas is closed before the move finishes, its next start finishes it from the same folder. |
 
 ## Files written
 
@@ -61,7 +61,7 @@ listed here cannot be opened.
 | `wrap.json` | after Connect: your original status-line command, so Disconnect can restore it exactly. |
 | `backups\settings-<time>.json` | a copy of `~/.claude/settings.json` before each Connect/Disconnect edit (newest 3 kept, none older than 30 days). |
 | `bin\mikyas-capture.exe` | the capture helper your status-line command points to. |
-| `migrated.json` | after moving from SovaWatch or Claude Usage Widget: which of the two it moved from, when the move happened and whether the status line was switched to the new helper (if not, the error message), so the move runs and is announced only once. |
+| `migrated.json` | after moving from SovaWatch or Claude Usage Widget: which of the two it moved from, when the move happened and whether the status line was switched to the new helper (if not, the error message), so the move runs and is announced only once. While the move is under way it holds only that name and whether the status line is to be switched, so a move cut short is finished on the next start. |
 
 The installer puts the app itself (`mikyas.exe`, `mikyas-capture.exe`, `THIRD_PARTY_NOTICES.md`, `uninstall.exe`) in the same `%LOCALAPPDATA%\Mikyas\` folder.
 
@@ -72,7 +72,8 @@ Connect's self-test writes its test capture to a temporary folder.
 Other locations:
 
 - `%APPDATA%\io.github.marawaneldeib.mikyas\.window-state.json` — the widget's screen
-  position.
+  position (on the first start after moving from SovaWatch or Claude Usage Widget, copied from
+  the old app's when there is none yet).
 - `%LOCALAPPDATA%\io.github.marawaneldeib.mikyas\EBWebView\` — the WebView2 profile
   used to render the widget UI (contains no Claude data; the UI keeps nothing in its local
   storage).

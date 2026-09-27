@@ -8,13 +8,18 @@
 //!
 //! When `%LOCALAPPDATA%\Mikyas` has no `settings.json` and no [`MARKER_FILE`] yet, ONE of them is
 //! the source ([`choose`]): the one whose helper Claude Code's status line runs right now; else
-//! the newest whose folder holds its own data ([`COPIED_FILES`]); else Claude Usage Widget's
-//! folder if it exists. From that source:
-//! 1. the widget's own files ([`COPIED_FILES`] and the captures) are copied over. Nothing already
-//!    in the new folder is overwritten, and the old folder is not deleted; its backups, logs,
-//!    helper, program files, `watchdog.json`, `migrated.json` and `update-check.json` (its release
-//!    page is on the old repository address, which `open_url` refuses) are left behind;
-//! 2. if Claude Code's status line runs the source's helper, the new helper is installed into
+//! the newest whose folder holds any of its data files ([`COPIED_FILES`]); else Claude Usage
+//! Widget's folder if it exists. Then, in this order ([`Step`]):
+//! 1. [`MARKER_FILE`] is written in its "under way" form ([`Underway`]): the source's name and
+//!    whether the status line runs the source's helper;
+//! 2. the widget's own files are copied over: [`COPIED_FILES`] except `settings.json`, the
+//!    captures, and the window position the old app's window-state plugin kept in
+//!    `%APPDATA%\<its identifier>\.window-state.json` (to Mikyas's, [`APP_IDENTIFIER`]; the
+//!    plugin reads it only when the app is built, after the move). Nothing already there is
+//!    overwritten, and the old folders are not deleted; the old app's backups, logs, helper,
+//!    program files, `watchdog.json`, `migrated.json` and `update-check.json` (its release page is
+//!    on the old repository address, which `open_url` refuses) are left behind;
+//! 3. if Claude Code's status line runs the source's helper, the new helper is installed into
 //!    `Mikyas\bin` and ONLY the helper path in `statusLine.command` is replaced
 //!    (`claude_settings::migrate_shim`: splice + verify), with a redacted backup and the same
 //!    compare-and-swap as Connect. The old connection record comes along as `wrap.json`
@@ -23,8 +28,14 @@
 //!    still-running old app then no longer reports a lost connection, and the old uninstaller's
 //!    `--disconnect` has no record to act on — it does not recognise the new helper anyway, so it
 //!    leaves the status line alone (proved against the released code of both in the tests below);
-//! 3. [`MARKER_FILE`] records the move (`from`: the old app's name), so it runs, and is
+//! 4. `settings.json` is copied, last: on its own it means Mikyas has run before;
+//! 5. [`MARKER_FILE`] records the finished move (`from`: the old app's name), so it runs, and is
 //!    announced, only once.
+//!
+//! Every step can run again without harm: copies never overwrite, a status line that already
+//! runs Mikyas's helper is left alone and an existing `wrap.json` is kept. So when the app is
+//! closed or crashes during the move, the next start finds the "under way" marker and finishes
+//! the move from the same source (even if its folder is gone by then), announcing it then.
 //!
 //! A failed switch leaves the status line on the old helper: Mikyas still recognises that command
 //! (status, Disconnect, Reconnect), and the notice asks the user to Disconnect and Connect again
@@ -32,24 +43,31 @@
 //! Nothing here runs while `MIKYAS_DATA_DIR` overrides the data folder (tests, development).
 
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use mikyas_core::claude_settings::{self, WrapRecord};
 use mikyas_core::cmdline;
 use mikyas_core::paths::{LegacyApp, LegacyRoot, Paths};
 use mikyas_core::time::Ms;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tauri_plugin_window_state::DEFAULT_FILENAME as WINDOW_STATE_FILE;
 
 use crate::connect::{self, ConnectionStatus};
 use crate::state::{save_json, write_atomic};
 
-/// Written into the new data folder once the move ran.
+/// Written into the new data folder when the move starts ([`Underway`]) and again when it is done.
 pub const MARKER_FILE: &str = "migrated.json";
 /// The old folder's connection record is renamed to this after the status line was switched.
 pub const RETIRED_WRAP_FILE: &str = "wrap.json.migrated";
+/// The old app's settings: copied last (see the module docs).
+const SETTINGS_FILE: &str = "settings.json";
 /// The old app's own files that are copied (when present and not yet in the new folder).
 /// `wrap.json` is handled separately; everything else stays behind (see the module docs).
-pub const COPIED_FILES: &[&str] = &["settings.json", "state.json", "history.jsonl", "alerts.json", "positions.json"];
+pub const COPIED_FILES: &[&str] = &["state.json", "history.jsonl", "alerts.json", "positions.json", SETTINGS_FILE];
+/// Mikyas's Tauri identifier (`tauri.conf.json`): its window-state plugin keeps the window
+/// position in `<roaming app data>\<identifier>\.window-state.json`.
+const APP_IDENTIFIER: &str = "io.github.marawaneldeib.mikyas";
 const CAS_ATTEMPTS: u32 = 3;
 /// A capture file is small; anything bigger in the old capture folder is not ours to copy.
 const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
@@ -79,6 +97,7 @@ pub enum Outcome {
     },
 }
 
+/// [`MARKER_FILE`] once the move is done.
 #[derive(Serialize)]
 struct Marker<'a> {
     from: &'a str,
@@ -86,36 +105,131 @@ struct Marker<'a> {
     status_line: &'a StatusLineMove,
 }
 
-/// Runs the move if it is due. `legacy`: the former names' data folders (empty = never move);
-/// `sidecar`: the helper shipped next to the app. Errors while copying are logged and skipped;
-/// the move never stops the app from starting.
+/// [`MARKER_FILE`] while the move is under way, so a move cut short is finished from the same
+/// source.
+#[derive(Serialize, Deserialize)]
+struct Underway {
+    /// The source's [`LegacyApp::display_name`].
+    from: String,
+    /// Always `true`; a finished move's marker has no such field.
+    underway: bool,
+    /// The status line ran the source's helper when the move started.
+    switch_due: bool,
+}
+
+/// Where the move stands, from [`MARKER_FILE`].
+enum Progress {
+    NotStarted,
+    Underway(Underway),
+    /// Also any marker that cannot be read: a move must never run twice.
+    Done,
+}
+
+fn progress(marker: &Path) -> Progress {
+    match fs::read(marker) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Progress::NotStarted,
+        Err(_) => Progress::Done,
+        Ok(bytes) => match serde_json::from_slice::<Underway>(&bytes) {
+            Ok(underway) if underway.underway => Progress::Underway(underway),
+            _ => Progress::Done,
+        },
+    }
+}
+
+/// The steps of a move, in order; [`run_with`] reports each one when it is done (tests stop
+/// there to simulate the app being closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The "under way" marker names the source.
+    Started,
+    /// Its data (all but `settings.json`), captures and window position are copied.
+    DataCopied,
+    /// The status line runs Mikyas's helper, if it ran the source's.
+    Switched,
+    /// The source's `wrap.json` is renamed after a switch.
+    Retired,
+    /// `settings.json` is copied.
+    SettingsCopied,
+}
+
+/// Runs the move if it is due, or finishes one that was cut short. `legacy`: the former names'
+/// data folders (empty = never move); `sidecar`: the helper shipped next to the app. Errors while
+/// copying are logged and skipped; the move never stops the app from starting.
 pub fn run(paths: &Paths, legacy: &[LegacyRoot], sidecar: Option<&Path>, now: Ms) -> Outcome {
+    run_with(paths, legacy, sidecar, now, &|_| {})
+}
+
+/// [`run`], calling `checkpoint` after each [`Step`].
+fn run_with(
+    paths: &Paths,
+    legacy: &[LegacyRoot],
+    sidecar: Option<&Path>,
+    now: Ms,
+    checkpoint: &dyn Fn(Step),
+) -> Outcome {
     let marker = paths.data_root().join(MARKER_FILE);
-    let any_old_folder = legacy.iter().any(|l| l.root.is_dir());
-    if !any_old_folder || paths.settings_file().exists() || marker.exists() {
-        return Outcome::NotNeeded;
-    }
-    let status = connect::status(paths);
-    let Some(source) = choose(&status, legacy) else { return Outcome::NotNeeded };
+    let (source, switch_due) = match progress(&marker) {
+        Progress::Done => return Outcome::NotNeeded,
+        // Cut short: the same source, whatever the folders and the status line look like now.
+        Progress::Underway(underway) => {
+            let Some(source) = legacy.iter().find(|l| l.app.display_name == underway.from) else {
+                return Outcome::NotNeeded;
+            };
+            (source, underway.switch_due)
+        }
+        Progress::NotStarted => {
+            if !legacy.iter().any(|l| l.root.is_dir()) || paths.settings_file().exists() {
+                return Outcome::NotNeeded;
+            }
+            let status = connect::status(paths);
+            let Some(source) = choose(&status, legacy) else { return Outcome::NotNeeded };
+            let switch_due = runs_helper_of(&status, source);
+            let name = source.app.display_name;
+            if let Err(e) = fs::create_dir_all(paths.data_root()) {
+                crate::diag::log(&format!("move from {name}: cannot create the data folder: {e}"));
+                return Outcome::NotNeeded;
+            }
+            let underway = Underway { from: name.to_owned(), underway: true, switch_due };
+            if let Err(e) = save_json(&marker, &underway) {
+                crate::diag::log(&format!("move from {name}: cannot write {MARKER_FILE}: {e}"));
+            }
+            (source, switch_due)
+        }
+    };
+    checkpoint(Step::Started);
     let log = |msg: String| crate::diag::log(&format!("move from {}: {msg}", source.app.display_name));
-    if let Err(e) = fs::create_dir_all(paths.data_root()) {
-        log(format!("cannot create the data folder: {e}"));
-        return Outcome::NotNeeded;
-    }
-    for name in COPIED_FILES {
+
+    for name in COPIED_FILES.iter().filter(|&&name| name != SETTINGS_FILE) {
         copy_if_absent(&source.root.join(name), &paths.data_root().join(name), &log);
     }
     copy_captures(&source.root.join("capture"), &paths.capture_dir(), &log);
-    let autostart = old_autostart(&source.root.join("settings.json"));
+    copy_window_state(source, &log);
+    checkpoint(Step::DataCopied);
 
-    let status_line = if runs_helper_of(&status, source) {
-        switch_status_line(paths, source, sidecar, now, &log)
-    } else {
-        StatusLineMove::NotConnected
-    };
+    let status_line =
+        if switch_due { switch_status_line(paths, source, sidecar, now) } else { StatusLineMove::NotConnected };
+    checkpoint(Step::Switched);
+    if status_line == StatusLineMove::Switched {
+        retire_old_record(source, &log);
+    }
+    checkpoint(Step::Retired);
+
+    copy_if_absent(&source.root.join(SETTINGS_FILE), &paths.settings_file(), &log);
+    checkpoint(Step::SettingsCopied);
+
+    // The source's settings, or their copy when its folder is gone since a move cut short.
+    let (old_settings, copied_settings) = (source.root.join(SETTINGS_FILE), paths.settings_file());
+    let autostart = old_autostart(if old_settings.is_file() { &old_settings } else { &copied_settings });
     let record = Marker { from: source.app.display_name, at_ms: now, status_line: &status_line };
     if let Err(e) = save_json(&marker, &record) {
         log(format!("cannot write {MARKER_FILE}: {e}"));
+        // Left "under way", it would finish and announce the move on every start; without it,
+        // the copied `settings.json` stops the move.
+        if let Err(e) = fs::remove_file(&marker) {
+            if e.kind() != io::ErrorKind::NotFound {
+                log(format!("cannot remove {MARKER_FILE}: {e}"));
+            }
+        }
     }
     Outcome::Moved { from: source.app, status_line, autostart }
 }
@@ -130,10 +244,14 @@ fn choose<'a>(status: &ConnectionStatus, legacy: &'a [LegacyRoot]) -> Option<&'a
     existing().find(has_data).or_else(|| legacy.last().filter(|l| l.root.is_dir()))
 }
 
-/// Whether the status line runs `legacy`'s installed helper (compared like Windows paths).
+/// Whether the status line runs the helper at `shim` (command form, compared like Windows paths).
+fn runs_shim(status: &ConnectionStatus, shim: &str) -> bool {
+    matches!(status, ConnectionStatus::Connected { shim_path, .. } if shim_path.eq_ignore_ascii_case(shim))
+}
+
+/// Whether the status line runs `legacy`'s installed helper.
 fn runs_helper_of(status: &ConnectionStatus, legacy: &LegacyRoot) -> bool {
-    matches!(status, ConnectionStatus::Connected { shim_path, .. }
-        if shim_path.eq_ignore_ascii_case(&legacy_shim_command_path(legacy)))
+    runs_shim(status, &legacy_shim_command_path(legacy))
 }
 
 /// The command form of an old installed helper, `<root>/bin/<its helper>`.
@@ -141,16 +259,20 @@ pub fn legacy_shim_command_path(legacy: &LegacyRoot) -> String {
     cmdline::shim_path_for_command(&legacy.installed_shim())
 }
 
-fn switch_status_line(
-    paths: &Paths,
-    source: &LegacyRoot,
-    sidecar: Option<&Path>,
-    now: Ms,
-    log: &dyn Fn(String),
-) -> StatusLineMove {
+fn switch_status_line(paths: &Paths, source: &LegacyRoot, sidecar: Option<&Path>, now: Ms) -> StatusLineMove {
     let legacy_shim = legacy_shim_command_path(source);
     let new_shim_file = connect::installed_shim(paths);
     let new_shim = cmdline::shim_path_for_command(&new_shim_file);
+    let status = connect::status(paths);
+    // A move cut short after the switch: left alone.
+    if runs_shim(&status, &new_shim) {
+        return StatusLineMove::Switched;
+    }
+    // Someone else changed it since (e.g. the old app's uninstaller restored it): nothing to
+    // switch, and no record of a connection. An unreadable file fails below instead.
+    if !matches!(status, ConnectionStatus::Error { .. }) && !runs_shim(&status, &legacy_shim) {
+        return StatusLineMove::NotConnected;
+    }
 
     // The old record, pointing at the new helper, so Disconnect restores the original exactly.
     let old_wrap = source.root.join("wrap.json");
@@ -170,18 +292,28 @@ fn switch_status_line(
         return StatusLineMove::Failed(format!("cannot install the capture helper: {e}"));
     }
     match rewrite_settings(paths, &legacy_shim, &new_shim, now) {
-        Ok(true) => {
-            if old_wrap.exists() {
-                if let Err(e) = fs::rename(&old_wrap, source.root.join(RETIRED_WRAP_FILE)) {
-                    log(format!("cannot retire the old wrap.json: {e}"));
-                }
-            }
-            StatusLineMove::Switched
-        }
+        Ok(true) => StatusLineMove::Switched,
         // The status line changed in between and no longer runs the old helper.
         Ok(false) => StatusLineMove::NotConnected,
         Err(e) => StatusLineMove::Failed(e),
     }
+}
+
+/// After the switch, the source's `wrap.json` is renamed (see the module docs).
+fn retire_old_record(source: &LegacyRoot, log: &dyn Fn(String)) {
+    let old_wrap = source.root.join("wrap.json");
+    if old_wrap.exists() {
+        if let Err(e) = fs::rename(&old_wrap, source.root.join(RETIRED_WRAP_FILE)) {
+            log(format!("cannot retire the old wrap.json: {e}"));
+        }
+    }
+}
+
+/// The source's window position, for Mikyas's window-state plugin: `<roaming app
+/// data>\<old identifier>\.window-state.json` to `<roaming app data>\<APP_IDENTIFIER>\`.
+fn copy_window_state(source: &LegacyRoot, log: &dyn Fn(String)) {
+    let (Some(old), Some(app_data)) = (source.config_dir(), source.app_data.as_deref()) else { return };
+    copy_if_absent(&old.join(WINDOW_STATE_FILE), &app_data.join(APP_IDENTIFIER).join(WINDOW_STATE_FILE), log);
 }
 
 /// Replaces the helper path in `settings.json` (backup first, compare-and-swap like Connect).
@@ -321,19 +453,66 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let local = tmp.path().join("Local");
             let paths = Paths::with_roots(tmp.path().join(".claude"), vec![], local.join("Mikyas"));
-            if let Some(s) = settings {
-                fs::create_dir_all(paths.claude_home()).unwrap();
-                fs::write(paths.claude_settings(), s).unwrap();
-            }
             let sidecar = tmp.path().join("app").join(SHIM_EXE_NAME);
-            fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
-            fs::write(&sidecar, b"new helper").unwrap();
-            let legacy = LEGACY_APPS.iter().map(|&app| LegacyRoot { app, root: local.join(app.dir_name) }).collect();
-            Self { _tmp: tmp, paths, legacy, sidecar }
+            let app_data = Some(tmp.path().join("Roaming"));
+            let legacy = LEGACY_APPS
+                .iter()
+                .map(|&app| LegacyRoot { app, root: local.join(app.dir_name), app_data: app_data.clone() })
+                .collect();
+            let w = Self { _tmp: tmp, paths, legacy, sidecar };
+            w.init(settings);
+            w
+        }
+
+        fn init(&self, settings: Option<&str>) {
+            if let Some(s) = settings {
+                fs::create_dir_all(self.paths.claude_home()).unwrap();
+                fs::write(self.paths.claude_settings(), s).unwrap();
+            }
+            fs::create_dir_all(self.sidecar.parent().unwrap()).unwrap();
+            fs::write(&self.sidecar, b"new helper").unwrap();
+        }
+
+        /// Everything in the temp home is removed and set up again, at the same paths (so two
+        /// runs can be compared byte for byte).
+        fn reset(&self, settings: Option<&str>) {
+            for entry in fs::read_dir(self._tmp.path()).unwrap().flatten() {
+                fs::remove_dir_all(entry.path()).unwrap();
+            }
+            self.init(settings);
+        }
+
+        /// Every file in the temp home: Claude Code's settings, the old and new data folders,
+        /// the roaming app-data folders and the sidecar.
+        fn everything(&self) -> Vec<(String, Vec<u8>)> {
+            tree(self._tmp.path())
         }
 
         fn root(&self, old: Old) -> &Path {
             &self.legacy[old as usize].root
+        }
+
+        /// The old app's window position (`<roaming>/<its identifier>/.window-state.json`).
+        fn old_window_state(&self, old: Old) -> PathBuf {
+            self.legacy[old as usize].config_dir().unwrap().join(".window-state.json")
+        }
+
+        /// Where Mikyas's window-state plugin reads it.
+        fn new_window_state(&self) -> PathBuf {
+            self._tmp.path().join("Roaming").join("io.github.marawaneldeib.mikyas").join(".window-state.json")
+        }
+
+        /// Runs the move but "closes the app" right after `step`: nothing after it happens.
+        fn run_cut_short(&self, step: Step) {
+            let crash = |at: Step| {
+                if at == step {
+                    std::panic::resume_unwind(Box::new("closed"));
+                }
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_with(&self.paths, &self.legacy, Some(&self.sidecar), 1_000, &crash)
+            }));
+            assert!(result.is_err(), "the move got past {step:?}: {:?}", result.ok());
         }
 
         /// The old app's folder as it left it: its data, captures, the files that must stay
@@ -360,6 +539,9 @@ mod tests {
                     fs::write(root.join(program), b"program file").unwrap();
                 }
             }
+            let window_state = self.old_window_state(old);
+            fs::create_dir_all(window_state.parent().unwrap()).unwrap();
+            fs::write(&window_state, format!("{{\"main\":{{\"x\":{},\"y\":20}}}}", old as u8)).unwrap();
             let Some(shell) = connected else { return };
             let old_paths = self.old_paths(old);
             let helper = self.legacy[old as usize].installed_shim();
@@ -772,6 +954,160 @@ mod tests {
             assert_eq!(w3.run(), Outcome::NotNeeded);
             assert!(!w3.paths.history_file().exists());
         }
+    }
+
+    const STEPS: [Step; 5] = [Step::Started, Step::DataCopied, Step::Switched, Step::Retired, Step::SettingsCopied];
+
+    /// The app can be closed (or crash) at any point of the move. The next start finishes it from
+    /// the same old folder, even when the status line already runs Mikyas's helper and the other
+    /// old app holds data too, and ends byte for byte where an uninterrupted move ends, with one
+    /// notification.
+    #[test]
+    fn a_move_cut_short_is_finished_by_the_next_start() {
+        for old in OLD {
+            for connected in [Some(ShellKind::Pwsh), None] {
+                let setup = |w: &World| {
+                    w.old_app(old.other(), None);
+                    w.old_app(old, connected);
+                };
+                let w = World::new(Some(ORIGINAL));
+                setup(&w);
+                let expected = w.run();
+                let finished = w.everything();
+                if connected.is_some() {
+                    let switched =
+                        Outcome::Moved { from: old.app(), status_line: StatusLineMove::Switched, autostart: true };
+                    assert_eq!(expected, switched);
+                }
+                for step in STEPS {
+                    let case = format!("{old:?} {connected:?}, closed after {step:?}");
+                    w.reset(Some(ORIGINAL));
+                    setup(&w);
+                    w.run_cut_short(step);
+                    assert_eq!(w.paths.settings_file().exists(), step == Step::SettingsCopied, "{case}: copied last");
+                    let outcome = w.run();
+                    assert_eq!(outcome, expected, "{case}");
+                    assert_eq!(w.everything(), finished, "{case}");
+                    // Announced once: the start after that has nothing left to do.
+                    assert!(notice(&outcome).is_some(), "{case}");
+                    assert_eq!(w.run(), Outcome::NotNeeded, "{case}");
+                    assert_eq!(w.everything(), finished, "{case}");
+                }
+            }
+        }
+    }
+
+    /// The old app was uninstalled (its folder deleted) before the next start: the move still
+    /// finishes, once, and Disconnect still restores the user's command. "Start with Windows"
+    /// comes over when the settings were copied before the app was closed.
+    #[test]
+    fn a_move_cut_short_finishes_even_when_the_old_folder_is_gone() {
+        for old in OLD {
+            for step in [Step::Retired, Step::SettingsCopied] {
+                let w = World::new(Some(ORIGINAL));
+                w.old_app(old, Some(ShellKind::Pwsh));
+                w.run_cut_short(step);
+                fs::remove_dir_all(w.root(old)).unwrap();
+                let outcome = w.run();
+                let autostart = step == Step::SettingsCopied;
+                let expected = Outcome::Moved { from: old.app(), status_line: StatusLineMove::Switched, autostart };
+                assert_eq!(outcome, expected, "{old:?} {step:?}");
+                assert_eq!(w.marker_from(), old.app().display_name);
+                assert_eq!(w.run(), Outcome::NotNeeded);
+                connect::disconnect(&w.paths, 2_000).unwrap();
+                assert_eq!(w.settings(), ORIGINAL);
+            }
+        }
+    }
+
+    /// `settings.json` is copied last, so a move cut short whose "under way" marker could not be
+    /// written is still started again on the next start (and then finished, once).
+    #[test]
+    fn a_move_cut_short_without_its_marker_runs_again() {
+        for old in OLD {
+            for step in [Step::Started, Step::DataCopied, Step::Switched, Step::Retired] {
+                let w = World::new(Some(ORIGINAL));
+                w.old_app(old, None);
+                w.run_cut_short(step);
+                fs::remove_file(w.paths.data_root().join(MARKER_FILE)).unwrap();
+                let expected =
+                    Outcome::Moved { from: old.app(), status_line: StatusLineMove::NotConnected, autostart: true };
+                assert_eq!(w.run(), expected, "{old:?} {step:?}");
+                assert!(w.paths.settings_file().is_file());
+                assert_eq!(w.run(), Outcome::NotNeeded, "{old:?} {step:?}");
+            }
+        }
+    }
+
+    /// When the finished marker cannot be written, the "under way" one must not stay behind:
+    /// it would finish and announce the move again on every start. The copied `settings.json`
+    /// stops it instead.
+    #[test]
+    fn a_finished_move_whose_marker_cannot_be_written_is_not_repeated() {
+        for old in OLD {
+            let w = World::new(Some(ORIGINAL));
+            w.old_app(old, Some(ShellKind::Pwsh));
+            let marker = w.paths.data_root().join(MARKER_FILE);
+            // A folder where `write_atomic` puts its temp file makes the last write fail.
+            let blocker = w.paths.data_root().join(format!("{MARKER_FILE}.{}.tmp", std::process::id()));
+            let block = |at: Step| {
+                if at == Step::SettingsCopied {
+                    fs::create_dir_all(&blocker).unwrap();
+                }
+            };
+            let outcome = run_with(&w.paths, &w.legacy, Some(&w.sidecar), 1_000, &block);
+            assert!(matches!(outcome, Outcome::Moved { status_line: StatusLineMove::Switched, .. }), "{outcome:?}");
+            assert!(!matches!(progress(&marker), Progress::Done), "{old:?}: the finished marker was written");
+            fs::remove_dir(&blocker).unwrap();
+            assert_eq!(w.run(), Outcome::NotNeeded, "{old:?}");
+        }
+    }
+
+    /// Mikyas's window position is written where its window-state plugin reads it.
+    #[test]
+    fn the_window_position_goes_where_the_plugin_reads_it() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], APP_IDENTIFIER);
+        assert_eq!(WINDOW_STATE_FILE, ".window-state.json");
+    }
+
+    /// The screen position the old app's window-state plugin saved (in its roaming config folder)
+    /// is copied for Mikyas's plugin: from the source only, never over one Mikyas already has.
+    #[test]
+    fn the_window_position_moves_with_the_source() {
+        for old in OLD {
+            let w = World::new(Some(ORIGINAL));
+            w.old_app(old.other(), None);
+            w.old_app(old, Some(ShellKind::Cmd));
+            let other = fs::read(w.old_window_state(old.other())).unwrap();
+            w.run();
+            assert_eq!(fs::read(w.new_window_state()).unwrap(), fs::read(w.old_window_state(old)).unwrap(), "{old:?}");
+            assert_eq!(fs::read(w.old_window_state(old.other())).unwrap(), other, "left alone");
+
+            // Mikyas already has a position: kept.
+            let w = World::new(Some(ORIGINAL));
+            w.old_app(old, None);
+            fs::create_dir_all(w.new_window_state().parent().unwrap()).unwrap();
+            fs::write(w.new_window_state(), "mine").unwrap();
+            assert!(matches!(w.run(), Outcome::Moved { .. }));
+            assert_eq!(fs::read_to_string(w.new_window_state()).unwrap(), "mine");
+
+            // The source never saved one: nothing is created.
+            let w = World::new(Some(ORIGINAL));
+            w.old_app(old, None);
+            fs::remove_file(w.old_window_state(old)).unwrap();
+            assert!(matches!(w.run(), Outcome::Moved { .. }));
+            assert!(!w.new_window_state().parent().unwrap().exists());
+        }
+        // The OS reports no roaming app-data dir: everything else still moves.
+        let mut w = World::new(Some(ORIGINAL));
+        w.old_app(Old::SovaWatch, None);
+        for l in &mut w.legacy {
+            l.app_data = None;
+        }
+        assert!(matches!(w.run(), Outcome::Moved { .. }));
+        assert!(w.paths.history_file().is_file());
+        assert!(!w.new_window_state().exists());
     }
 
     /// Connect in Mikyas after a failed switch (what the notice asks for) re-wraps the old
