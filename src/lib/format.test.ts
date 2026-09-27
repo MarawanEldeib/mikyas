@@ -164,8 +164,10 @@ describe("clock", () => {
     expect(
       burnText({ slope_pct_per_h: 5, t100_ms: sat, pct_at_reset: null, hits_limit_before_reset: true }, { type: "unknown" }, NOW, ko)?.text,
     ).toBe("At this pace 100% at 토 21:36");
-    // The Sessions view's plain time keeps the locale's convention.
-    expect(formatTime(sat, ko)).toMatch(/오후/u);
+    // The Sessions view's plain time keeps the locale's 12-hour convention. The day-period word
+    // ("오후" or "PM") depends on the runtime's ICU data, so only the clock itself is asserted.
+    expect(formatTime(sat, ko)).toMatch(/(^|\D)9:36/u);
+    expect(formatTime(sat, ko)).not.toMatch(/21:36/u);
   });
   it("keeps the full clock for Latin 12-hour and 24-hour locales", () => {
     const sat = Date.UTC(2026, 8, 26, 21, 36);
