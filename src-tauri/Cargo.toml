@@ -31,7 +31,7 @@ tauri-plugin-autostart = "2"
 [target.'cfg(windows)'.dependencies]
 # Same versions Tauri's wry uses (for the WebView2 memory-target call).
 webview2-com = "0.38"
-windows-core = "0.61"
+windows-core = "0.62"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
