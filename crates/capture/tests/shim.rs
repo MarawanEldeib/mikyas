@@ -10,10 +10,28 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-const SHIM: &str = env!("CARGO_BIN_EXE_mikyas-capture");
+/// `<target>/<profile>/mikyas-capture.exe`: where cargo hard-links the shim it built for this run.
+const UPLIFTED_SHIM: &str = env!("CARGO_BIN_EXE_mikyas-capture");
+/// The shim under test: cargo's own build of it.
+///
+/// Usually that is [`UPLIFTED_SHIM`]. But the Tauri app's build script (tauri-build's externalBin
+/// copy) writes the release sidecar from `src-tauri/binaries/` to that same path whenever it
+/// reruns, so after a `cargo test --workspace` in which it ran after this crate was linked, the
+/// file there is a release build without the test hook. tauri-build deletes the hard link before
+/// it copies, so cargo's build is still in `deps/` (MSVC executables get no hash suffix there).
+static SHIM: LazyLock<String> = LazyLock::new(|| {
+    let uplifted = Path::new(UPLIFTED_SHIM);
+    let in_deps = uplifted.with_file_name("deps").join(format!("mikyas_capture{}", std::env::consts::EXE_SUFFIX));
+    let shim = if cfg!(debug_assertions) && !has_test_hook(uplifted) && has_test_hook(&in_deps) {
+        in_deps
+    } else {
+        uplifted.to_path_buf()
+    };
+    shim.to_string_lossy().into_owned()
+});
 /// `examples/mikyas-test-child.rs`, which `cargo test` builds into `<profile>/examples/`.
 static CHILD: LazyLock<String> = LazyLock::new(|| {
-    let path = Path::new(SHIM)
+    let path = Path::new(UPLIFTED_SHIM)
         .parent()
         .expect("shim dir")
         .join("examples")
@@ -38,8 +56,27 @@ struct Outcome {
     elapsed: Duration,
 }
 
+/// Whether `exe` is a build that reads `MIKYAS_TEST_HOOK` (debug builds only, see main.rs).
+fn has_test_hook(exe: &Path) -> bool {
+    const MARKER: &[u8] = b"MIKYAS_TEST_HOOK";
+    fs::read(exe).is_ok_and(|bytes| bytes.windows(MARKER.len()).any(|w| w == MARKER))
+}
+
+/// Every test here must run the shim cargo built for this run: the hook tests only work on it,
+/// and a different binary (such as the release sidecar, see [`SHIM`]) would make the rest test
+/// something else.
+#[cfg(debug_assertions)]
+#[test]
+fn the_shim_under_test_is_the_debug_build_from_this_run() {
+    assert!(
+        has_test_hook(Path::new(&*SHIM)),
+        "{} is not a debug build of mikyas-capture (run `cargo build -p mikyas-capture`)",
+        *SHIM
+    );
+}
+
 fn shim(data: &Path) -> Command {
-    let mut cmd = Command::new(SHIM);
+    let mut cmd = Command::new(&*SHIM);
     cmd.env("MIKYAS_DATA_DIR", data);
     cmd
 }
@@ -277,7 +314,7 @@ fn argv_mode_survives_a_panic_in_its_own_capture() {
 #[cfg(windows)]
 #[test]
 fn shim_does_not_import_the_vc_runtime_dll() {
-    let bytes = fs::read(SHIM).unwrap().to_ascii_lowercase();
+    let bytes = fs::read(&*SHIM).unwrap().to_ascii_lowercase();
     let needle = b"vcruntime140";
     assert!(
         !bytes.windows(needle.len()).any(|w| w == needle),
@@ -487,7 +524,10 @@ fn diag_appends_names_but_never_values() {
     assert_eq!(log.matches("=== mikyas-capture ").count(), 2, "blocks are appended: {log}");
     assert!(log.contains("args: mode=--diag argc=1\n"), "{log}");
     assert!(!log.contains("cmdline"), "{log}");
-    assert!(!log.contains(&*SHIM.to_ascii_lowercase()) && !log.contains(SHIM), "diag logged the shim's path: {log}");
+    assert!(
+        !log.contains(&SHIM.to_ascii_lowercase()) && !log.contains(SHIM.as_str()),
+        "diag logged the shim's path: {log}"
+    );
     assert!(log.contains("parent: pid="), "{log}");
     assert!(log.contains("grandparent: "), "{log}");
     assert!(log.contains("CLAUDE_MIKYAS_DIAG_TEST"), "{log}");
@@ -567,7 +607,7 @@ fn cmd_pipe_form_preserves_bytes() {
     use std::os::windows::process::CommandExt;
 
     // Both spellings: the installer writes the shim path with forward slashes.
-    for shim_path in [SHIM.to_owned(), SHIM.replace('\\', "/")] {
+    for shim_path in [SHIM.to_string(), SHIM.replace('\\', "/")] {
         let tmp = tempfile::tempdir().unwrap();
         let input = fancy_input();
         let mut cmd = Command::new("cmd");
