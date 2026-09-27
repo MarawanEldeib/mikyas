@@ -86,13 +86,21 @@ const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 /** Established connections other than the test's own DevTools socket on `debugPort`. */
 export function unexpectedConnections(tcp, debugPort) {
   return tcp.filter(
-    (c) =>
-      !(
-        LOOPBACK.has(c.LocalAddress) &&
-        LOOPBACK.has(c.RemoteAddress) &&
-        (c.LocalPort === debugPort || c.RemotePort === debugPort)
-      ),
+    (c) => !(isLoopbackPair(c) && (c.LocalPort === debugPort || c.RemotePort === debugPort)) && !isAppOrigin(c),
   );
+}
+
+/**
+ * The app's own origin, `http://tauri.localhost` (loopback port 80). WebView2 serves it from memory,
+ * but it occasionally lets a request reach the real network stack; the socket never leaves the
+ * machine (seen on CI runners that listen on port 80). Reported by the harness, not failed.
+ */
+export function isAppOrigin(c) {
+  return isLoopbackPair(c) && c.RemotePort === 80;
+}
+
+function isLoopbackPair(c) {
+  return LOOPBACK.has(c.LocalAddress) && LOOPBACK.has(c.RemoteAddress);
 }
 
 /** Relative names of every entry below `dir` (sorted), or null when it does not exist. */

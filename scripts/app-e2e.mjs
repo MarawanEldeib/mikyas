@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 
 import { CTX_SIZE, FIVE_HOUR_PCT, MODEL_NAME, writeFixtures } from "./app-e2e/fixtures.mjs";
 import { pageKind } from "./app-e2e/page.mjs";
-import { anyAlive, inspectTree, killTree, listNames, pidsNamed, unexpectedConnections } from "./app-e2e/win.mjs";
+import { anyAlive, inspectTree, isAppOrigin, killTree, listNames, pidsNamed, unexpectedConnections } from "./app-e2e/win.mjs";
 
 const APP_NAME = "sovawatch";
 const MAX_PRIVATE_MB = 150;
@@ -243,6 +243,8 @@ async function main() {
       privateMb > 0 && privateMb < MAX_PRIVATE_MB,
       `private working set ${privateMb} MB < ${MAX_PRIVATE_MB} MB over ${idle.processes.length} processes [${perProcess}]`,
     );
+    const originSockets = [...tree.tcp, ...idle.tcp].filter(isAppOrigin);
+    if (originSockets.length) console.log(`  note loopback sockets to the app origin (tauri.localhost:80): ${originSockets.length}`);
     const foreign = unexpectedConnections([...tree.tcp, ...idle.tcp], port);
     check(foreign.length === 0, `no TCP connections besides the DevTools port${foreign.length ? `: ${JSON.stringify(foreign)}` : ""}`);
 

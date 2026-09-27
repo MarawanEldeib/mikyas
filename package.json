@@ -16,6 +16,7 @@
     "test:visual": "playwright test --project=visual",
     "test:visual:update": "playwright test --project=visual --update-snapshots",
     "test:app-e2e": "node scripts/app-e2e.mjs",
+    "test:scripts": "node --test scripts/app-e2e/helpers.test.mjs",
     "format": "prettier --write src e2e \"*.{ts,js,json}\"",
     "format:check": "prettier --check src e2e \"*.{ts,js,json}\"",
     "tauri": "tauri"

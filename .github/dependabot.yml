@@ -9,6 +9,14 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    # These must stay on the versions Tauri/wry use (their COM types must be the same crate
+    # version), so they move only together with a Tauri update.
+    ignore:
+      - dependency-name: webview2-com
+      - dependency-name: windows-core
+      # Tauri uses dirs 6; a newer major would ship a second copy for no gain.
+      - dependency-name: dirs
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]
@@ -20,6 +28,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    # TypeScript majors wait until svelte-check and the Svelte tooling support them.
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         patterns: ["*"]

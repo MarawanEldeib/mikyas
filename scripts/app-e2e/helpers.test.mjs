@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { DEV_URL, pageKind } from "./page.mjs";
-import { unexpectedConnections } from "./win.mjs";
+import { isAppOrigin, unexpectedConnections } from "./win.mjs";
 
 test("the bundled page is the app page", () => {
   assert.equal(pageKind("http://tauri.localhost/"), "app");
@@ -25,4 +25,12 @@ test("only the DevTools socket on loopback is allowed", () => {
   const devServer = { LocalAddress: "::1", LocalPort: 50001, RemoteAddress: "::1", RemotePort: 1420 };
   const remote = { LocalAddress: "10.0.0.2", LocalPort: 50002, RemoteAddress: "1.2.3.4", RemotePort: port };
   assert.deepEqual(unexpectedConnections([devtools, devServer, remote], port), [devServer, remote]);
+});
+
+test("loopback sockets to the app origin (port 80) are tolerated, port 80 elsewhere is not", () => {
+  const origin = { LocalAddress: "::1", LocalPort: 63184, RemoteAddress: "::1", RemotePort: 80 };
+  const web = { LocalAddress: "10.0.0.2", LocalPort: 50003, RemoteAddress: "93.184.216.34", RemotePort: 80 };
+  assert.equal(isAppOrigin(origin), true);
+  assert.equal(isAppOrigin(web), false);
+  assert.deepEqual(unexpectedConnections([origin, web], 9333), [web]);
 });
