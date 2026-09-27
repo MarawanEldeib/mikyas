@@ -293,7 +293,7 @@ test.describe("connect Claude Code", () => {
     await connect.click();
     await expect(page.getByText("Before", { exact: true })).toBeVisible();
     await expect(page.locator(".preview pre").first()).toHaveText("(no statusLine)");
-    await expect(page.locator(".preview pre.after")).toContainText("mikyas-capture.exe");
+    await expect(page.locator(".preview pre.after")).toHaveText(/mikyas-capture\.exe" --default$/);
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator(".preview")).toHaveCount(0);
     await connect.click();
@@ -308,7 +308,7 @@ test.describe("connect Claude Code", () => {
     await openWidget(page, { view: "settings", params: { conn: "foreign" } });
     await expect(page.locator(".cmd")).toHaveText("npx -y ccstatusline@latest");
     await page.getByRole("button", { name: "Connect Claude Code" }).click();
-    await expect(page.locator(".preview pre.after")).toContainText("--wrap -- npx -y ccstatusline@latest");
+    await expect(page.locator(".preview pre.after")).toHaveText(/mikyas-capture\.exe" --tee \| npx -y ccstatusline@latest$/);
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.getByText("wraps your statusline")).toBeVisible();
     await page.getByRole("button", { name: "Disconnect" }).click();
