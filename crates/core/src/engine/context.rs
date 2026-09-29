@@ -4,6 +4,7 @@
 //! 1. `capture.context.context_window_size` from a statusline capture of the SAME session → Statusline
 //! 2. `tail.identity_1m == Some(true)` → the learned size of `<base>[1m]`, else 1M; Identity
 //! 3. `desktop_session.model` ends with `[1m]` → the learned size of `<base>[1m]`, else 1M; DesktopModel
+//!    (the same for a same-session capture's `model.id` ending with `[1m]`, basis Statusline)
 //! 4. `overrides[base model id]` (id without `[1m]`) → Override
 //! 5. `learned[base model id]`, unless the session already held more tokens than that → Learned
 //! 6. `tail.max_ctx_tokens_seen > 200_000` → the learned size of `<base>[1m]` if it is larger than
@@ -115,6 +116,10 @@ fn resolve_size(inputs: &ContextInputs<'_>) -> (u64, CtxBasis) {
     let desktop_model = inputs.desktop_session.and_then(|d| d.model.as_deref());
     if desktop_model.is_some_and(|m| split_1m(m).1) {
         return (learned(true).unwrap_or(ONE_M_CTX), CtxBasis::DesktopModel);
+    }
+    let capture_model = inputs.capture.and_then(|c| c.model.as_ref()).and_then(|m| m.id.as_deref());
+    if capture_model.is_some_and(|m| split_1m(m.trim()).1) {
+        return (learned(true).unwrap_or(ONE_M_CTX), CtxBasis::Statusline);
     }
     if let Some(size) = base.and_then(|id| override_for(inputs.overrides, id)) {
         return (size, CtxBasis::Override);
@@ -303,7 +308,11 @@ mod tests {
     #[test]
     fn zero_statusline_size_falls_through() {
         let t = tail(1_000, 1_000, None);
-        let c = capture(None, Some(0), T);
+        let mut c = capture(None, Some(0), T);
+        // The capture's `[1m]` model id still says 1M.
+        let r = run(Some(&t), Some(&c), None, &BTreeMap::new());
+        assert_eq!((r.size, r.basis), (ONE_M_CTX, CtxBasis::Statusline));
+        c.model = None;
         let r = run(Some(&t), Some(&c), None, &BTreeMap::new());
         assert_eq!((r.size, r.basis), (DEFAULT_CTX, CtxBasis::Default));
     }
@@ -355,8 +364,9 @@ mod tests {
         let mut t = tail(100_000, 100_000, None);
         t.model_id = None;
         let o = overrides(&[("claude-opus-5-5", 400_000)]);
-        // Capture model id is "claude-opus-5-5[1m]" → base "claude-opus-5-5".
-        let c = capture(None, None, T);
+        // A capture naming the plain model gives the base id.
+        let mut c = capture(None, None, T);
+        c.model = Some(ModelInfo { id: Some("claude-opus-5-5".into()), display_name: None });
         let r = run(Some(&t), Some(&c), None, &o);
         assert_eq!((r.size, r.basis), (400_000, CtxBasis::Override));
         let r = run(Some(&t), None, Some(&desktop("claude-opus-5-5")), &o);
@@ -493,6 +503,21 @@ mod tests {
         let t = tail(15_000, 15_000, None);
         let r = run_learned(Some(&t), None, Some(&desktop("claude-opus-5-5[1m]")), &BTreeMap::new(), &l);
         assert_eq!((r.size, r.basis), (1_500_000, CtxBasis::DesktopModel));
+    }
+
+    #[test]
+    fn capture_model_with_1m_suffix_is_never_sized_by_the_plain_learned_size() {
+        // The capture names the 1M variant but reports no size: the plain model's learned 200K
+        // must not apply (it would fire context alerts far too early).
+        let t = tail(150_000, 150_000, None);
+        let c = capture(None, None, T);
+        let l = learned(&[("claude-opus-5-5", 200_000)]);
+        let o = overrides(&[("claude-opus-5-5", 300_000)]);
+        let r = run_learned(Some(&t), Some(&c), None, &o, &l);
+        assert_eq!((r.size, r.basis), (ONE_M_CTX, CtxBasis::Statusline));
+        let l = learned(&[("claude-opus-5-5", 200_000), ("claude-opus-5-5[1m]", 1_200_000)]);
+        let r = run_learned(Some(&t), Some(&c), None, &BTreeMap::new(), &l);
+        assert_eq!((r.size, r.basis), (1_200_000, CtxBasis::Statusline));
     }
 
     #[test]
