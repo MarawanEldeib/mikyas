@@ -14,23 +14,38 @@
 ; The template's own Section Uninstall deletes the Run value whenever $UpdateMode <> 1; for a
 ; reinstall it is read here first and written back after the template is done.
 ;
-; When the statusline can't be restored in a real uninstall, a message names the file and the
-; statusLine entry to remove, and offers Abort (keep the widget installed and connected), Retry
-; and Ignore (uninstall anyway; a silent uninstall ignores). A real uninstall always removes the
-; widget's copies of Claude Code's settings (backups\) and wrap.json, which hold nothing else.
+; When the statusline can't be restored in a real uninstall, a message names the file (the same
+; settings.json that `mikyas.exe --disconnect` prints) and the statusLine entry to remove, and
+; offers Abort (keep the widget installed and connected), Retry and Ignore (uninstall anyway; a
+; silent uninstall ignores). A real uninstall always removes the widget's copies of Claude
+; Code's settings (backups\) and wrap.json, which hold nothing else.
 
 Var MikyasReinstall    ; 1 = update/reinstall: keep the statusline connection and autostart
 Var MikyasAutostart    ; the "Start with Windows" command line, restored after a reinstall
 Var MikyasDisconnected ; 1 = the statusline was restored (or there was nothing to restore)
+Var MikyasDataDir      ; the widget's own data folder, see MIKYAS_PATHS
+Var MikyasSettings     ; Claude Code's settings.json, see MIKYAS_PATHS
 
 !define MIKYAS_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 !define MIKYAS_STARTUP_APPROVED_KEY "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-; The widget's own data folder (captures, history, settings, the statusline shim). It is also the
-; default install folder ($LOCALAPPDATA\${PRODUCTNAME}): the template's uninstall deletes only the
-; files it installed plus a non-recursive RMDir, so the data stays unless it is deleted below.
-!define MIKYAS_DATA_DIR "$LOCALAPPDATA\Mikyas"
+; $MikyasDataDir: the widget's own data folder (captures, history, settings, the statusline
+; shim), named after the product like the app's (mikyas_core::paths::APP_DIR_NAME, which a test
+; keeps equal to productName). It is also the default install folder: the template's uninstall
+; deletes only the files it installed plus a non-recursive RMDir, so the data stays unless it is
+; deleted below.
+; $MikyasSettings: Claude Code's settings.json, found the way Claude Code and the app find it:
+; in %CLAUDE_CONFIG_DIR% when that is set, else in %USERPROFILE%\.claude.
+!macro MIKYAS_PATHS
+  StrCpy $MikyasDataDir "$LOCALAPPDATA\${PRODUCTNAME}"
+  ReadEnvStr $MikyasSettings CLAUDE_CONFIG_DIR
+  ${If} $MikyasSettings == ""
+    StrCpy $MikyasSettings "$PROFILE\.claude"
+  ${EndIf}
+  StrCpy $MikyasSettings "$MikyasSettings\settings.json"
+!macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro MIKYAS_PATHS
   StrCpy $MikyasReinstall 0
   StrCpy $MikyasDisconnected 0
   ${If} $UpdateMode = 1
@@ -57,11 +72,11 @@ Var MikyasDisconnected ; 1 = the statusline was restored (or there was nothing t
     ${Else}
       DetailPrint "The statusline could not be restored automatically (exit code $0)."
       MessageBox MB_ABORTRETRYIGNORE|MB_ICONEXCLAMATION \
-        "The Claude Code statusline could not be restored automatically (exit code $0).$\r$\n$\r$\nIn $PROFILE\.claude\settings.json, remove the $\"statusLine$\" entry whose command runs$\r$\n${MIKYAS_DATA_DIR}\bin\mikyas-capture.exe$\r$\n(or put your own statusline command back).$\r$\n$\r$\nAbort keeps the widget installed, Retry tries again, Ignore uninstalls anyway and also deletes the widget's saved copies of settings.json in ${MIKYAS_DATA_DIR}\backups." \
+        "The Claude Code statusline could not be restored automatically (exit code $0).$\r$\n$\r$\nIn $MikyasSettings, remove the $\"statusLine$\" entry whose command runs$\r$\n$MikyasDataDir\bin\mikyas-capture.exe$\r$\n(or put your own statusline command back).$\r$\n$\r$\nAbort keeps the widget installed, Retry tries again, Ignore uninstalls anyway and also deletes the widget's saved copies of settings.json in $MikyasDataDir\backups." \
         /SD IDIGNORE IDRETRY mikyas_disconnect IDIGNORE mikyas_disconnect_ignored
       Abort "Uninstall cancelled: the Claude Code statusline still uses the widget."
       mikyas_disconnect_ignored:
-      DetailPrint "Left the statusLine in $PROFILE\.claude\settings.json; remove it by hand."
+      DetailPrint "Left the statusLine in $MikyasSettings; remove it by hand."
     ${EndIf}
     DeleteRegValue HKCU "${MIKYAS_RUN_KEY}" "${PRODUCTNAME}"
     DeleteRegValue HKCU "${MIKYAS_STARTUP_APPROVED_KEY}" "${PRODUCTNAME}"
@@ -69,6 +84,8 @@ Var MikyasDisconnected ; 1 = the statusline was restored (or there was nothing t
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  SetShellVarContext current
+  !insertmacro MIKYAS_PATHS
   ${If} $MikyasReinstall = 1
   ${AndIf} $MikyasAutostart != ""
     WriteRegStr HKCU "${MIKYAS_RUN_KEY}" "${PRODUCTNAME}" $MikyasAutostart
@@ -77,9 +94,8 @@ Var MikyasDisconnected ; 1 = the statusline was restored (or there was nothing t
   ; A real uninstall always removes the copies of Claude Code's settings and the connection
   ; record; the shim (still in use if the restore was ignored) and the history stay.
   ${If} $MikyasReinstall = 0
-    SetShellVarContext current
-    Delete "${MIKYAS_DATA_DIR}\wrap.json"
-    RMDir /r "${MIKYAS_DATA_DIR}\backups"
+    Delete "$MikyasDataDir\wrap.json"
+    RMDir /r "$MikyasDataDir\backups"
   ${EndIf}
 
   ; "Delete the application data" also removes the widget's own folder — but only once the
@@ -87,7 +103,6 @@ Var MikyasDisconnected ; 1 = the statusline was restored (or there was nothing t
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $MikyasReinstall = 0
   ${AndIf} $MikyasDisconnected = 1
-    SetShellVarContext current
-    RMDir /r "${MIKYAS_DATA_DIR}"
+    RMDir /r "$MikyasDataDir"
   ${EndIf}
 !macroend
