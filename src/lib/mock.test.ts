@@ -9,7 +9,13 @@ describe("buildSnapshot", () => {
     const s = buildSnapshot(scenario, T0, T0);
     expect(s.generated_ms).toBe(T0);
     const kinds = s.windows.map((w) => w.kind);
-    if (kinds.length) expect(kinds).toEqual(["five_hour", "seven_day"]);
+    if (kinds.length) expect(kinds.slice(0, 2)).toEqual(["five_hour", "seven_day"]);
+    if (scenario === "extra") expect(kinds.slice(2)).toEqual(["seven_day_opus", "monthly_overage"]);
+    for (const w of s.windows) {
+      expect(w.label).toBeTruthy();
+      expect(w.short).toBeTruthy();
+      expect(w.spark_span_ms).toBe(w.kind === "five_hour" ? 24 * 3_600_000 : 7 * 24 * 3_600_000);
+    }
     for (const w of s.windows) {
       expect(w.pct).toBeGreaterThanOrEqual(0);
       expect(w.pct).toBeLessThanOrEqual(100);

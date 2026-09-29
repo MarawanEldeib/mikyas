@@ -91,7 +91,7 @@ test.describe("history", () => {
     await openWidget(page);
     await page.getByRole("button", { name: "History" }).click();
     await expect(page.getByRole("region", { name: "5-hour history" })).toBeVisible();
-    await expect(page.getByRole("region", { name: "7-day history" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "weekly history" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Weekly budget used per day" }).getByRole("button")).toHaveCount(7);
   });
 

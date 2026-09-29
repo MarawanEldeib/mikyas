@@ -36,6 +36,13 @@ test.describe("states", () => {
     await expect(page.locator("#app")).toHaveScreenshot("dock-left-dark-1.png");
   });
 
+  test("extra limit rows on the card", async ({ page }) => {
+    await openWidget(page, { params: { scenario: "extra" } });
+    await settle(page, "card");
+    await page.locator(".card .body").evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await expect(page.locator("#app")).toHaveScreenshot("card-extra-dark-1.png");
+  });
+
   test("update list over the card", async ({ page }) => {
     await openWidget(page, { params: { update: "1" } });
     await page.getByRole("button", { name: "3 updates available" }).click();

@@ -4,7 +4,19 @@ import { openWidget, VIEW_ROOT, type View } from "./helpers";
 // Every view and every mock scenario renders, with no page errors and the key content shown.
 
 const VIEWS: View[] = ["pill", "card", "settings", "sessions", "history"];
-const SCENARIOS = ["normal", "high", "limit", "stale", "desktop-only", "no-session", "reset", "estimated", "warnings", "onboarding"];
+const SCENARIOS = [
+  "normal",
+  "high",
+  "limit",
+  "stale",
+  "desktop-only",
+  "no-session",
+  "reset",
+  "estimated",
+  "warnings",
+  "onboarding",
+  "extra",
+];
 
 test.describe("every view renders in every scenario", () => {
   for (const scenario of SCENARIOS) {
@@ -29,9 +41,9 @@ test.describe("card content per scenario", () => {
     await openWidget(page, { params: { scenario: "normal" } });
     const card = page.locator(VIEW_ROOT.card);
     await expect(card.getByRole("region", { name: "5-hour limit" })).toBeVisible();
-    await expect(card.getByRole("region", { name: "7-day limit" })).toBeVisible();
+    await expect(card.getByRole("region", { name: "weekly limit" })).toBeVisible();
     await expect(card.getByRole("progressbar", { name: "5-hour usage" })).toHaveAttribute("aria-valuenow", "29");
-    await expect(card.getByRole("progressbar", { name: "7-day usage" })).toHaveAttribute("aria-valuenow", "59");
+    await expect(card.getByRole("progressbar", { name: "weekly usage" })).toHaveAttribute("aria-valuenow", "59");
     await expect(card.getByRole("button", { name: /Opus 5\.5/ })).toBeVisible();
     await expect(card.getByRole("list", { name: "Data sources" })).toBeVisible();
   });
@@ -47,6 +59,27 @@ test.describe("card content per scenario", () => {
     await expect(five.getByTitle("Limit reached", { exact: true })).toBeVisible();
     await expect(five.getByText(/Limit reached — usable again at 12:47/)).toBeVisible();
     await expect(page.getByRole("progressbar", { name: "5-hour usage" })).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  test("extra: further limits get compact rows under the main two", async ({ page }) => {
+    await openWidget(page, { params: { scenario: "extra" } });
+    const card = page.locator(VIEW_ROOT.card);
+    await expect(card.getByRole("region", { name: "5-hour limit" })).toBeVisible();
+    await expect(card.getByRole("region", { name: "weekly limit" })).toBeVisible();
+    const opus = card.getByRole("group", { name: "weekly Opus limit" });
+    await expect(opus).toBeAttached();
+    await expect(opus.getByRole("progressbar", { name: "weekly Opus usage" })).toHaveAttribute("aria-valuenow", "34");
+    await expect(opus).toContainText("resets in 2d 4h");
+    // A key the app has no name for still reads sensibly.
+    const other = card.getByRole("group", { name: "monthly overage limit" });
+    await expect(other).toContainText("12%");
+    await expect(other).toContainText("reset time unknown");
+    // The rows scroll into view inside the fixed-height card.
+    await other.scrollIntoViewIfNeeded();
+    await expect(other).toBeInViewport();
+    // The compact views keep the two main windows.
+    await openWidget(page, { view: "pill", params: { scenario: "extra" } });
+    await expect(page.locator(VIEW_ROOT.pill)).not.toContainText("Opus");
   });
 
   test("stale: readings are marked old", async ({ page }) => {
@@ -108,7 +141,7 @@ test.describe("pill", () => {
   test("describes both limits for screen readers", async ({ page }) => {
     await openWidget(page, { view: "pill" });
     await expect(page.getByRole("img", { name: /^5-hour limit 29% used, resets in 3h 12m/ })).toBeVisible();
-    await expect(page.getByRole("img", { name: /^7-day limit 59% used, resets in 2d 4h/ })).toBeVisible();
+    await expect(page.getByRole("img", { name: /^weekly limit 59% used, resets in 2d 4h/ })).toBeVisible();
   });
 
   test("bar gauges", async ({ page }) => {
@@ -122,7 +155,7 @@ test.describe("edge dock", () => {
     test(`${dock}: pointing at the strip slides the card out, leaving slides it back`, async ({ page }) => {
       await openWidget(page, { view: "card", params: { dock }, waitFor: VIEW_ROOT.dock });
       const strip = page.locator(VIEW_ROOT.dock);
-      await expect(strip).toHaveAccessibleName(/^5-hour 29% used\. 7-day 59% used\. Show details$/);
+      await expect(strip).toHaveAccessibleName(/^5-hour 29% used\. weekly 59% used\. Show details$/);
       await expect(page.locator("html")).toHaveAttribute("data-dock-collapsed", "");
       await expect(strip).toHaveClass(dock === "top" ? /\bh\b/ : /\bv\b/);
       await strip.hover();
