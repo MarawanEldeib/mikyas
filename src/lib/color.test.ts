@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { formatPct } from "./format";
-import { ACCENTS, ACCENT_NAMES, clampPct, contrast, fillColor, level, over, parseRgb, textColor, type Rgb } from "./color";
+import {
+  ACCENTS,
+  ACCENT_NAMES,
+  CRIT_AT,
+  WARN_AT,
+  bandOffset,
+  clampPct,
+  contrast,
+  fillColor,
+  level,
+  over,
+  parseRgb,
+  textColor,
+  type Rgb,
+} from "./color";
+
+describe("bandOffset", () => {
+  it("switches bands where the shown number does", () => {
+    // 39.5 shows "40" (orange); the gradient must already be orange there.
+    expect(level(WARN_AT - 0.5)).toBe("warn");
+    expect(level(WARN_AT - 0.51)).toBe("ok");
+    expect(bandOffset(WARN_AT)).toBeCloseTo((WARN_AT - 0.5) / 100);
+    expect(level(CRIT_AT - 0.5)).toBe("crit");
+    expect(bandOffset(CRIT_AT)).toBeCloseTo((CRIT_AT - 0.5) / 100);
+  });
+});
 
 describe("level", () => {
   it("uses fixed bands: green < 40, orange 40–69, red >= 70", () => {

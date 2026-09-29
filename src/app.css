@@ -286,15 +286,17 @@ html.mock #app {
 }
 
 /* Window sizes at scale 1 (window.rs; the zoom above scales the stage like Rust scales the
-   window). The card loses 36px without burn lines and 30px without the session header.
+   window). The card loses 36px without burn lines and 30px without the session header, and grows
+   by 13px plus 20px per extra limit row (Card.svelte sets --extra-rows).
    src/lib/rust-sync.test.ts fails when these drift from window.rs / dock.rs. */
 html.mock[data-view="pill"] { --mock-w: 240px; --mock-h: 72px; }
-html.mock[data-view="card"] { --mock-w: 320px; --mock-h: calc(232px - var(--cut-burn, 0px) - var(--cut-session, 0px)); }
+html.mock[data-view="card"] { --mock-w: 320px; --mock-h: calc(232px - var(--cut-burn, 0px) - var(--cut-session, 0px) + var(--add-extra, 0px)); }
 html.mock[data-view="settings"] { --mock-w: 320px; --mock-h: 440px; }
 html.mock[data-view="sessions"] { --mock-w: 320px; --mock-h: 300px; }
 html.mock[data-view="history"] { --mock-w: 360px; --mock-h: 380px; }
 html.mock:has(.card[data-no-burn]) { --cut-burn: 36px; }
 html.mock:has(.card[data-no-session]) { --cut-session: 30px; }
+html.mock:has(.card[data-extra-rows]) { --add-extra: calc(13px + 20px * var(--extra-rows, 0)); }
 /* The collapsed dock strip (dock.rs); DockBar marks <html> while it is shown. */
 html.mock[data-dock-collapsed]:is([data-dock="left"], [data-dock="right"]) { --mock-w: 36px; --mock-h: 156px; }
 html.mock[data-dock-collapsed][data-dock="top"] { --mock-w: 232px; --mock-h: 34px; }

@@ -31,6 +31,14 @@
 
   // Slides the widget back into its strip when the pointer leaves (edge dock).
   startDock(app, api.setDockExpanded);
+
+  // The window grows by the extra limit rows (window.rs `card_height`); the browser mock sizes its
+  // stage the same way from this count (app.css).
+  $effect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--extra-rows", String(extra.length));
+    return () => root.style.removeProperty("--extra-rows");
+  });
 </script>
 
 <div
@@ -121,14 +129,16 @@
     flex-direction: column;
     gap: 8px;
   }
-  /* Only with extra rows: the two main sections alone fit exactly, and a sub-pixel overflow at
-     some display scales must not show a scrollbar. */
+  /* Only with extra rows: the window grows by their height (window.rs `card_height`), but a
+     screen too small for it caps the window, and then the body scrolls. Without them the two
+     main sections fit exactly, and a sub-pixel overflow at some display scales must not show a
+     scrollbar. */
   .body.scroll {
     overflow-y: auto;
     scrollbar-width: thin;
   }
-  /* Rows for further limits. The window is sized for the two main sections, so a card with
-     extra rows scrolls rather than clipping them. */
+  /* Rows for further limits: an 8 px body gap, 1 px border and 6 px padding above rows of 18 px,
+     2 px apart (window.rs CARD_EXTRA_H / CARD_EXTRA_ROW_H, guarded by rust-sync.test.ts). */
   .extra {
     display: flex;
     flex-direction: column;

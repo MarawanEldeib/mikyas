@@ -203,9 +203,18 @@ describe("labels", () => {
     expect(formatTokens(0)).toBe("0");
   });
   it("builds the model chip label", () => {
-    expect(modelLabel({ display_name: "Opus 5.5", model_id: "claude-opus-5-5", ctx_size: 1_000_000 })).toBe("Opus 5.5 · 1M");
-    expect(modelLabel({ display_name: null, model_id: "claude-sonnet-5", ctx_size: 200_000 })).toBe("sonnet-5 · 200K");
-    expect(modelLabel({ display_name: null, model_id: null, ctx_size: 200_000 })).toBe("Unknown model · 200K");
+    const known = { ctx_basis: "statusline" } as const;
+    expect(modelLabel({ ...known, display_name: "Opus 5.5", model_id: "claude-opus-5-5", ctx_size: 1_000_000 })).toBe("Opus 5.5 · 1M");
+    expect(modelLabel({ ...known, display_name: null, model_id: "claude-sonnet-5", ctx_size: 200_000 })).toBe("claude-sonnet-5 · 200K");
+    expect(modelLabel({ ...known, display_name: null, model_id: null, ctx_size: 200_000 })).toBe("Unknown model · 200K");
+  });
+  it("marks a context size nothing reported as a guess", () => {
+    const s = { display_name: "Newfam 2", model_id: "claude-newfam-2", ctx_size: 200_000 };
+    expect(modelLabel({ ...s, ctx_basis: "default" })).toBe("Newfam 2 · ~200K");
+    expect(modelLabel({ ...s, ctx_basis: "heuristic" })).toBe("Newfam 2 · ~200K");
+    for (const basis of ["statusline", "identity", "desktop_model", "override", "learned"] as const) {
+      expect(modelLabel({ ...s, ctx_basis: basis }), basis).toBe("Newfam 2 · 200K");
+    }
   });
   it("builds the context label", () => {
     expect(ctxLabel({ ctx_pct: 34.2, ctx_is_estimate: false })).toBe("ctx 34%");
@@ -222,7 +231,11 @@ describe("labels", () => {
     expect(windowShort("seven_day")).toBe("7d");
     expect(windowShort("seven_day_sonnet")).toBe("7d Sonnet");
     expect(windowShort("x")).toBe("x");
-    expect(windowLabel("seven_days_extra")).toBe("seven days extra");
+    expect(windowLabel("seven_days_extra")).toBe("weekly Extra");
+    // Any span Rust understands is named the same way (span.ts ports its parser).
+    expect(windowLabel("twenty_four_hour_opus")).toBe("24-hour Opus");
+    expect(windowShort("one_month")).toBe("1mo");
+    expect(windowLabel("monthly")).toBe("1-month");
   });
   it("prefers the names Rust sends with a window", () => {
     const w = { kind: "thirty_day", label: "30-day", short: "30d" };

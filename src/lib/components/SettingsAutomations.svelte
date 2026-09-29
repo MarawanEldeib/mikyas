@@ -1,24 +1,13 @@
 <script lang="ts">
-  import { windowLabel } from "../format";
   import { app } from "../stores.svelte";
-  import type { TrayNumber } from "../types";
+  import { trayOptions } from "../trayOptions";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
-  // Window names as the card and toasts use them ("5-hour", "weekly"), capitalised as options.
-  const option = (kind: string) => {
-    const name = windowLabel(kind);
-    return name.charAt(0).toUpperCase() + name.slice(1);
-  };
-  const TRAY_NUMBERS: { value: TrayNumber; label: string }[] = [
-    { value: "worst", label: "Highest limit" },
-    { value: "five_hour", label: option("five_hour") },
-    { value: "seven_day", label: option("seven_day") },
-    { value: "off", label: "Off (dot)" },
-  ];
-
   const uid = $props.id();
   const s = $derived(app.settings);
+  // Every limit Claude reports can be picked (from the data); the saved choice stays listed.
+  const trayNumbers = $derived(trayOptions(app.snapshot?.windows ?? [], s?.tray_number ?? "worst"));
 </script>
 
 {#if s}
@@ -34,14 +23,14 @@
     <div class="row">
       <span class="label">
         Heads-up before a limit reopens
-        <span class="sub">10 min before a 5-hour reset, 1 h before a weekly one</span>
+        <span class="sub">Shortly before a capped limit resets</span>
       </span>
       <Toggle label="Heads-up before a limit reopens" checked={s.reset_heads_up} onchange={(v) => app.patch({ reset_heads_up: v })} />
     </div>
     <div class="row">
       <span class="label">
         Weekly recap
-        <span class="sub">A summary when the weekly limit resets</span>
+        <span class="sub">A summary when the longest limit resets</span>
       </span>
       <Toggle label="Weekly recap" checked={s.weekly_recap} onchange={(v) => app.patch({ weekly_recap: v })} />
     </div>
@@ -87,8 +76,8 @@
     </div>
     <div class="row">
       <label class="label" for="{uid}-tray">Tray icon number</label>
-      <select id="{uid}-tray" value={s.tray_number} onchange={(e) => app.patch({ tray_number: e.currentTarget.value as TrayNumber })}>
-        {#each TRAY_NUMBERS as t (t.value)}
+      <select id="{uid}-tray" value={s.tray_number} onchange={(e) => app.patch({ tray_number: e.currentTarget.value })}>
+        {#each trayNumbers as t (t.value)}
           <option value={t.value}>{t.label}</option>
         {/each}
       </select>

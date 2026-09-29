@@ -11,7 +11,7 @@
 </script>
 
 <script lang="ts">
-  import { CRIT_AT, WARN_AT, fillColor, textColor } from "../color";
+  import { CRIT_AT, WARN_AT, bandOffset, fillColor, textColor } from "../color";
   import { formatClock, formatPct } from "../format";
   import {
     GRID_PCTS,
@@ -79,10 +79,11 @@
       <!-- Usage bands (green < 40, orange < 70, red) along the y axis, like the card. -->
       <linearGradient id="band{uid}" gradientUnits="userSpaceOnUse" x1="0" y1={base} x2="0" y2={plotY(100, box)}>
         <stop offset="0" style:stop-color="var(--ok-fill)" />
-        <stop offset={WARN_AT / 100} style:stop-color="var(--ok-fill)" />
-        <stop offset={WARN_AT / 100} style:stop-color="var(--warn-fill)" />
-        <stop offset={CRIT_AT / 100} style:stop-color="var(--warn-fill)" />
-        <stop offset={CRIT_AT / 100} style:stop-color="var(--crit-fill)" />
+        <!-- Bands switch where the shown (rounded) number does, like the lines and the tray. -->
+        <stop offset={bandOffset(WARN_AT)} style:stop-color="var(--ok-fill)" />
+        <stop offset={bandOffset(WARN_AT)} style:stop-color="var(--warn-fill)" />
+        <stop offset={bandOffset(CRIT_AT)} style:stop-color="var(--warn-fill)" />
+        <stop offset={bandOffset(CRIT_AT)} style:stop-color="var(--crit-fill)" />
         <stop offset="1" style:stop-color="var(--crit-fill)" />
       </linearGradient>
     </defs>

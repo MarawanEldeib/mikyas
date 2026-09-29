@@ -5,7 +5,7 @@
   import { desktopHealthLine } from "../sourceHealth";
   import { RELEASES_PREFIX } from "../update";
   import { app, errorText } from "../stores.svelte";
-  import { DEFAULT_THRESHOLDS, thresholdPair } from "../thresholds";
+  import { DEFAULT_THRESHOLDS } from "../thresholds";
   import type { EffectName } from "../types";
   import ConnectPanel from "./ConnectPanel.svelte";
   import HotkeyField from "./HotkeyField.svelte";
@@ -18,6 +18,7 @@
   import SettingsSystem from "./SettingsSystem.svelte";
   import StatusBanner from "./StatusBanner.svelte";
   import Stepper from "./Stepper.svelte";
+  import ThresholdList from "./ThresholdList.svelte";
   import Toggle from "./Toggle.svelte";
 
   const s = $derived(app.settings);
@@ -32,9 +33,6 @@
     { value: "blur", label: "Blur" },
     { value: "none", label: "None (solid)" },
   ];
-
-  // The saved list may be shorter than the two steppers (Rust keeps it as set); fill in for display.
-  const t = $derived(thresholdPair(s?.thresholds, DEFAULT_THRESHOLDS));
 
   const failed = (e: unknown) => (app.error = errorText(e));
 
@@ -90,28 +88,12 @@
     {#if s}
       <h2 class="section">Alerts</h2>
       <div class="group">
-        <div class="row">
-          <span class="label">First alert at</span>
-          <Stepper
-            label="First alert threshold"
-            value={t[0]}
-            min={10}
-            max={t[1] - 1}
-            suffix="%"
-            onchange={(v) => app.patch({ thresholds: [v, t[1]] })}
-          />
-        </div>
-        <div class="row">
-          <span class="label">Second alert at</span>
-          <Stepper
-            label="Second alert threshold"
-            value={t[1]}
-            min={t[0] + 1}
-            max={100}
-            suffix="%"
-            onchange={(v) => app.patch({ thresholds: [t[0], v] })}
-          />
-        </div>
+        <ThresholdList
+          list={s.thresholds}
+          defaults={DEFAULT_THRESHOLDS}
+          what="usage"
+          onchange={(next) => app.patch({ thresholds: next })}
+        />
         <div class="row">
           <span class="label">Notify when a limit resets</span>
           <Toggle label="Notify when a limit resets" checked={s.notify_reset} onchange={(v) => app.patch({ notify_reset: v })} />

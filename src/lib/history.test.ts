@@ -259,6 +259,11 @@ describe("dayBars", () => {
     expect(dayBars([], 7, NOW)).toEqual([]);
   });
 
+  it("names the window the days belong to", () => {
+    const bars = dayBars(days, 7, NOW, { locale: "en-US" }, "30-day");
+    expect(bars[6].full).toBe("Thu, Sep 24: 21% of the 30-day limit used (peak 54%)");
+  });
+
   it("scales bars to a round maximum", () => {
     expect(barScale([])).toBe(10);
     expect(barScale([2, 3])).toBe(10);

@@ -1,12 +1,10 @@
 <script lang="ts">
   import { app } from "../stores.svelte";
-  import { DEFAULT_CTX_THRESHOLDS, thresholdPair } from "../thresholds";
-  import Stepper from "./Stepper.svelte";
+  import { DEFAULT_CTX_THRESHOLDS } from "../thresholds";
+  import ThresholdList from "./ThresholdList.svelte";
   import Toggle from "./Toggle.svelte";
 
   const s = $derived(app.settings);
-  // The saved list may be shorter than the two steppers (Rust keeps it as set); fill in for display.
-  const t = $derived(thresholdPair(s?.ctx_thresholds, DEFAULT_CTX_THRESHOLDS));
 </script>
 
 {#if s}
@@ -18,28 +16,12 @@
     </div>
     <fieldset class="sub" disabled={!s.ctx_alerts}>
       <legend class="sr">Context alert thresholds</legend>
-      <div class="row">
-        <span class="label">First alert at</span>
-        <Stepper
-          label="First context alert threshold"
-          value={t[0]}
-          min={10}
-          max={t[1] - 1}
-          suffix="%"
-          onchange={(v) => app.patch({ ctx_thresholds: [v, t[1]] })}
-        />
-      </div>
-      <div class="row">
-        <span class="label">Second alert at</span>
-        <Stepper
-          label="Second context alert threshold"
-          value={t[1]}
-          min={t[0] + 1}
-          max={100}
-          suffix="%"
-          onchange={(v) => app.patch({ ctx_thresholds: [t[0], v] })}
-        />
-      </div>
+      <ThresholdList
+        list={s.ctx_thresholds}
+        defaults={DEFAULT_CTX_THRESHOLDS}
+        what="context"
+        onchange={(next) => app.patch({ ctx_thresholds: next })}
+      />
     </fieldset>
   </div>
 {/if}
@@ -66,14 +48,13 @@
     margin: 0;
     padding: 6px 12px;
   }
-  .row + .row,
   .group > * + * {
     border-top: 1px solid var(--divider);
   }
   .label {
     min-width: 0;
   }
-  /* The thresholds as a native group: `disabled` turns off both steppers at once. */
+  /* The thresholds as a native group: `disabled` turns off every control in it at once. */
   .sub {
     min-width: 0;
     margin: 0;
@@ -83,7 +64,7 @@
   .sub:disabled {
     color: var(--fg-2);
   }
-  .sub:disabled :global(.stepper) {
+  .sub:disabled :global(:is(.stepper, .btn, .icon-btn)) {
     opacity: 0.5;
   }
   .sr {

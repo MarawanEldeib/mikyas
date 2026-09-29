@@ -2,7 +2,7 @@
   import { clampPct, fillColor } from "../color";
   import { formatAge, formatPct, formatTime, formatTokens, modelLabel } from "../format";
   import { app } from "../stores.svelte";
-  import { SURFACE } from "../surface";
+  import { surfaceOf } from "../surface";
   import type { SessionView } from "../types";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -17,7 +17,7 @@
   }
 
   function describe(s: SessionView, active: boolean): string {
-    const surface = SURFACE[s.entrypoint];
+    const surface = surfaceOf(s);
     const used = s.ctx_tokens === null ? "" : `${formatTokens(s.ctx_tokens)} of `;
     const ctx =
       s.ctx_pct === null
@@ -56,7 +56,7 @@
     <ul class="list" data-no-drag aria-label="Recent Claude Code sessions">
       {#each sessions as s (s.key)}
         {@const active = s.key === activeKey}
-        {@const surface = SURFACE[s.entrypoint]}
+        {@const surface = surfaceOf(s)}
         {@const ctx = s.ctx_pct === null ? null : clampPct(s.ctx_pct)}
         {@const where = showProject && s.project ? s.project : surface.short}
         <li class="item" class:active aria-current={active ? "true" : undefined} title={describe(s, active)}>

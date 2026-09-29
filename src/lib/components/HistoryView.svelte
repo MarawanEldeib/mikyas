@@ -11,7 +11,7 @@
   import { api } from "../ipc";
   import { app, errorText } from "../stores.svelte";
   import type { HistoryData } from "../types";
-  import { allWindows } from "../windows";
+  import { allWindows, barWindow } from "../windows";
   import { untrack } from "svelte";
   import HistoryChart from "./HistoryChart.svelte";
   import Icon from "./Icon.svelte";
@@ -77,8 +77,10 @@
   const spec = $derived(ranges.find((r) => r.key === range) ?? ranges[ranges.length - 1]);
   const domain = $derived(data ? rangeDomain(data, spec.span) : null);
   const charts = $derived(allWindows(data?.windows ?? []));
-  const weekly = $derived(data?.windows.find((w) => w.kind === "seven_day") ?? null);
-  const bars = $derived(weekly ? dayBars(weekly.days, spec.bars, app.now) : []);
+  // Per-day bars for the longest main window (today the weekly one), whatever its key.
+  const budget = $derived(barWindow(data?.windows ?? []));
+  const budgetName = $derived(budget ? windowLabel(budget) : "");
+  const bars = $derived(budget ? dayBars(budget.days, spec.bars, app.now, {}, budgetName) : []);
   const scale = $derived(barScale(bars.map((b) => b.value)));
   const lead = $derived(charts[0] ?? null);
   const summary = $derived(lead && domain ? windowSummary(lead, domain) : null);
@@ -154,7 +156,7 @@
             <span
               class="scale"
               class:picked={detail}
-              title={detail ? undefined : `Bar heights are scaled: a full bar is ${scale}% of the weekly limit`}
+              title={detail ? undefined : `Bar heights are scaled: a full bar is ${scale}% of the ${budgetName} limit`}
               >{detail ?? `full bar = ${scale}%`}</span
             >
           </div>

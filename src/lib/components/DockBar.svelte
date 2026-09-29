@@ -5,7 +5,7 @@
   import { api } from "../ipc";
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
-  import { MAIN_KINDS, mainWindows, mutedColor } from "../windows";
+  import { PLACEHOLDER_KINDS, mainWindows, mutedColor } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import Icon from "./Icon.svelte";
 
@@ -33,7 +33,7 @@
     const shown = mainWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now));
     if (shown.length === 0) {
       // No data yet: keep the strip's shape with empty meters.
-      return MAIN_KINDS.map((kind) => ({
+      return PLACEHOLDER_KINDS.map((kind) => ({
         key: kind,
         short: windowShort(kind),
         name: windowLabel(kind),
