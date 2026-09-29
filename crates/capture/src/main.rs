@@ -29,8 +29,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mikyas_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
-use mikyas_core::level::{UsageLevel, display_pct};
 use mikyas_core::engine::types::WindowKind;
+use mikyas_core::level::{UsageLevel, display_pct};
 use mikyas_core::paths::Paths;
 use mikyas_core::time::{self, Ms};
 
