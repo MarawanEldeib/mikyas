@@ -46,7 +46,8 @@ describe("mainKinds", () => {
   it("takes the shortest and longest unscoped windows from the data", () => {
     expect(mainKinds(["five_hour", "seven_day", "seven_day_opus"])).toEqual(["five_hour", "seven_day"]);
     expect(mainKinds(["five_hour", "weekly", "seven_day_newmodel"])).toEqual(["five_hour", "weekly"]);
-    expect(mainKinds(["session_x", "4_hour", "thirty_day", "seven_day"])).toEqual(["4_hour", "thirty_day"]);
+    expect(mainKinds(["session_x", "4_hour", "thirty_day", "seven_day"])).toEqual(["4_hour", "seven_day"]);
+    expect(mainKinds(["session_x", "4_hour", "thirty_day"])).toEqual(["4_hour", "thirty_day"]);
     expect(mainKinds(["thirty_day"])).toEqual(["thirty_day"]);
   });
   it("prefers the built-in keys on ties and falls back sensibly", () => {

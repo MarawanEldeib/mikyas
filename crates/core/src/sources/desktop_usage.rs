@@ -49,6 +49,11 @@ const MAX_KEY_LEN: usize = 32;
 pub const ALIAS_MATCH_PCT: f32 = 1.0;
 /// ...and were measured at most this far apart.
 pub const ALIAS_MATCH_MS: Ms = 20 * MINUTE_MS;
+/// A learned alias is dropped again when its Desktop value and the statusline value of the
+/// window it points to, measured at most [`ALIAS_MATCH_MS`] apart, differ by more than this: one
+/// coincidental match must not lock a key to the wrong window forever. It is relearned from the
+/// next unambiguous match.
+pub const ALIAS_UNLEARN_PCT: f32 = 10.0;
 /// Longest Desktop key the generic decode reads (`fh`, `sd`, `so` are 2).
 const MAX_DECODED_KEY_LEN: usize = 4;
 
@@ -116,6 +121,20 @@ pub fn learn_aliases(aliases: &mut BTreeMap<String, String>, usage: &DesktopUsag
     let cli_kinds: BTreeSet<&WindowKind> = cli.iter().map(|o| &o.kind).collect();
     let mut changed = false;
     for (kind, raw) in &usage.raw_keys {
+        if aliases.get(raw).is_some_and(|target| target == kind.key()) {
+            // In use: keep it only while the values still agree.
+            let Some(last) = usage.series.get(kind).and_then(|s| s.last()) else { continue };
+            let contradicted = cli.iter().any(|o| {
+                &o.kind == kind
+                    && o.observed_at_ms.abs_diff(last.t_ms) <= ALIAS_MATCH_MS.unsigned_abs()
+                    && (o.pct - last.pct).abs() > ALIAS_UNLEARN_PCT
+            });
+            if contradicted {
+                aliases.remove(raw);
+                changed = true;
+            }
+            continue;
+        }
         if cli_kinds.contains(kind) || raw.contains('_') || aliases.contains_key(raw) {
             continue;
         }
@@ -1486,6 +1505,21 @@ mod tests {
         let usage =
             parse_with(doc.as_bytes(), MAX_PLAUSIBLE_MS, &DesktopKeys { aliases, known: BTreeSet::new() }).unwrap();
         assert!(usage.series.contains_key(&WindowKind::from_key("seven_day_quill")));
+
+        // Still agreeing: kept. Clearly contradicted by a nearby capture: unlearned.
+        let quill = WindowKind::from_key("seven_day_quill");
+        assert_eq!(usage.raw_keys.get(&quill).map(String::as_str), Some("sq"));
+        let near = [capture(t + 5 * MINUTE_MS, &[("seven_day_quill", 63.0 + ALIAS_UNLEARN_PCT)])];
+        let mut kept = usage_aliases(&usage);
+        assert!(!learn_aliases(&mut kept, &usage, &near));
+        let far = [capture(t + 5 * MINUTE_MS, &[("seven_day_quill", 90.0)])];
+        let mut dropped = usage_aliases(&usage);
+        assert!(learn_aliases(&mut dropped, &usage, &far));
+        assert!(dropped.is_empty(), "a contradicted alias is forgotten and can be relearned");
+    }
+
+    fn usage_aliases(_usage: &DesktopUsage) -> BTreeMap<String, String> {
+        BTreeMap::from([("sq".to_owned(), "seven_day_quill".to_owned())])
     }
 
     #[test]

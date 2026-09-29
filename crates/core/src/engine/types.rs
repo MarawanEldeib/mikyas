@@ -159,11 +159,19 @@ pub fn main_kinds<'a>(kinds: impl IntoIterator<Item = &'a WindowKind>) -> Vec<Wi
         return first;
     }
     let builtin = |k: &WindowKind| matches!(k, WindowKind::FiveHour | WindowKind::SevenDay);
-    let shortest = pool.iter().min_by(|a, b| (a.1, !builtin(a.0), a.0).cmp(&(b.1, !builtin(b.0), b.0))).map(|p| p.0);
-    let longest = pool
-        .iter()
-        .min_by(|a, b| (std::cmp::Reverse(a.1), !builtin(a.0), a.0).cmp(&(std::cmp::Reverse(b.1), !builtin(b.0), b.0)))
-        .map(|p| p.0);
+    // Today's pair keeps its slots while it is reported, so a newly added longer or shorter
+    // window (a 30-day cap, say) shows as an extra row instead of displacing it. Without them the
+    // slots go to the shortest and the longest unscoped window, whatever they are called.
+    let has = |want: &WindowKind| pool.iter().find(|p| p.0 == want).map(|p| p.0);
+    let shortest = has(&WindowKind::FiveHour)
+        .or_else(|| pool.iter().min_by(|a, b| (a.1, !builtin(a.0), a.0).cmp(&(b.1, !builtin(b.0), b.0))).map(|p| p.0));
+    let longest = has(&WindowKind::SevenDay).filter(|k| Some(*k) != shortest).or_else(|| {
+        pool.iter()
+            .min_by(|a, b| {
+                (std::cmp::Reverse(a.1), !builtin(a.0), a.0).cmp(&(std::cmp::Reverse(b.1), !builtin(b.0), b.0))
+            })
+            .map(|p| p.0)
+    });
     let mut out: Vec<WindowKind> = shortest.into_iter().cloned().collect();
     if let Some(l) = longest.filter(|l| Some(*l) != shortest) {
         out.push(l.clone());
@@ -746,7 +754,10 @@ mod tests {
         assert_eq!(main(&["five_hour", "seven_day", "seven_day_opus"]), [k("five_hour"), k("seven_day")]);
         // Renamed or replaced keys still fill both slots; scoped ones do not take a main slot.
         assert_eq!(main(&["five_hour", "weekly", "seven_day_newmodel"]), [k("five_hour"), k("weekly")]);
-        assert_eq!(main(&["session_x", "4_hour", "thirty_day", "seven_day"]), [k("4_hour"), k("thirty_day")]);
+        // Today's pair keeps its slot while reported: a new 30-day cap becomes an extra row.
+        assert_eq!(main(&["session_x", "4_hour", "thirty_day", "seven_day"]), [k("4_hour"), k("seven_day")]);
+        assert_eq!(main(&["five_hour", "seven_day", "thirty_day", "2_hour"]), [k("five_hour"), k("seven_day")]);
+        assert_eq!(main(&["session_x", "4_hour", "thirty_day"]), [k("4_hour"), k("thirty_day")]);
         assert_eq!(main(&["thirty_day"]), [k("thirty_day")]);
         // Built-in keys win ties.
         assert_eq!(main(&["1_week", "seven_day", "5_hour", "five_hour"]), [k("five_hour"), k("seven_day")]);

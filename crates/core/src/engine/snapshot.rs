@@ -1,7 +1,7 @@
 //! Assembles a [`Snapshot`] from already-loaded source data. Pure: no file system access (the
 //! [`History`] is an in-memory copy), `now_ms` passed in.
 //!
-//! Per window kind present in any source (FiveHour, SevenDay, then others in key order):
+//! Per window kind present in any source (the main windows of `main_kinds` first, then the others):
 //! 1. `reset_estimate::estimate_reset` over the Desktop-sourced samples of that kind (Desktop
 //!    file series ∪ Desktop rows of the history, samples more than [`FUTURE_SLACK_MS`] in the
 //!    future dropped) with the last exact reset (`last_exact_resets`). A second estimate uses that

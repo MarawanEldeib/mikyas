@@ -168,7 +168,9 @@ export function mainKinds(kinds: readonly string[]): string[] {
   const builtin = (k: string) => (k === "five_hour" || k === "seven_day" ? 0 : 1);
   const cmp = (a: readonly [string, number], b: readonly [string, number], dir: 1 | -1) =>
     dir * (a[1] - b[1]) || builtin(a[0]) - builtin(b[0]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
-  const shortest = [...pool].sort((a, b) => cmp(a, b, 1))[0][0];
-  const longest = [...pool].sort((a, b) => cmp(a, b, -1))[0][0];
+  // Today's pair keeps its slots while reported (mirrors main_kinds in types.rs).
+  const has = (k: string) => pool.some((p) => p[0] === k);
+  const shortest = has("five_hour") ? "five_hour" : [...pool].sort((a, b) => cmp(a, b, 1))[0][0];
+  const longest = has("seven_day") && shortest !== "seven_day" ? "seven_day" : [...pool].sort((a, b) => cmp(a, b, -1))[0][0];
   return longest === shortest ? [shortest] : [shortest, longest];
 }
