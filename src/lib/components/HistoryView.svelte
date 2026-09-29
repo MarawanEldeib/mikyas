@@ -11,7 +11,7 @@
   import { api } from "../ipc";
   import { app, errorText } from "../stores.svelte";
   import type { HistoryData } from "../types";
-  import { mainWindows } from "../windows";
+  import { allWindows } from "../windows";
   import { untrack } from "svelte";
   import HistoryChart from "./HistoryChart.svelte";
   import Icon from "./Icon.svelte";
@@ -76,7 +76,7 @@
   // A range the history cannot fill falls back to the longest one it can.
   const spec = $derived(ranges.find((r) => r.key === range) ?? ranges[ranges.length - 1]);
   const domain = $derived(data ? rangeDomain(data, spec.span) : null);
-  const charts = $derived(mainWindows(data?.windows ?? []));
+  const charts = $derived(allWindows(data?.windows ?? []));
   const weekly = $derived(data?.windows.find((w) => w.kind === "seven_day") ?? null);
   const bars = $derived(weekly ? dayBars(weekly.days, spec.bars, app.now) : []);
   const scale = $derived(barScale(bars.map((b) => b.value)));
@@ -138,7 +138,7 @@
           window={w}
           {domain}
           range={spec.key}
-          label={windowLabel(w.kind)}
+          label={windowLabel(w)}
           rangeName={spec.name}
           current={current(w.kind)}
           now={app.now}
@@ -190,7 +190,7 @@
       {/if}
 
       {#if summary && lead}
-        {@const label = windowLabel(lead.kind)}
+        {@const label = windowLabel(lead)}
         <p class="summary" title="{summaryText(label, summary)} · {spec.name}">
           {#if summary.peak === null}
             <span>No {label} data</span>

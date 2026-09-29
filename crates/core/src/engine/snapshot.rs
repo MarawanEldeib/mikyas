@@ -10,7 +10,8 @@
 //! 2. `merge::merge_window_with` of the CLI observations and the newest Desktop observation, with
 //!    both estimates.
 //! 3. `burn::compute` over the history samples (∪ the Desktop series) of that kind.
-//! 4. `History::spark`: 96 buckets over 24 h (five_hour) or 7 d (weekly kinds). The range end is
+//! 4. `History::spark`: 96 buckets over [`spark_span`] (24 h for windows of a day or less, else
+//!    7 d; from `WindowKind::duration_ms`, so new keys need no code). The range end is
 //!    aligned up to the bucket step so the buckets do not shift on every recompute (which would
 //!    make every snapshot look changed).
 //! 5. `worked_since`: the newest transcript assistant activity (any session) is at least
@@ -63,9 +64,9 @@ use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, SECOND_MS};
 pub use crate::time::FUTURE_SLACK_MS;
 /// Sparkline resolution.
 pub const SPARK_BUCKETS: usize = 96;
-/// Sparkline span of the five-hour window.
+/// Sparkline span of short windows (a day or less, e.g. five_hour).
 pub const SPARK_SPAN_FIVE_HOUR_MS: Ms = DAY_MS;
-/// Sparkline span of weekly windows.
+/// Sparkline span of weekly windows and windows of another or unknown length.
 pub const SPARK_SPAN_WEEKLY_MS: Ms = 7 * DAY_MS;
 /// Captures written within this long count as "Claude Code is running" for `NoPlanLimits`.
 pub const NO_PLAN_LIMITS_RECENT_MS: Ms = HOUR_MS;
@@ -231,9 +232,14 @@ pub fn learn_model_names(map: &mut BTreeMap<String, String>, captures: &[Capture
     changed
 }
 
+/// How far back the sparkline of `kind` reaches (serialised as `spark_span_ms`).
+pub fn spark_span(kind: &WindowKind) -> Ms {
+    if kind.is_short_window() { SPARK_SPAN_FIVE_HOUR_MS } else { SPARK_SPAN_WEEKLY_MS }
+}
+
 /// Sparkline range `(from, to)` for a kind: `to` is `now` rounded up to the bucket step.
 pub fn spark_range(kind: &WindowKind, now_ms: Ms) -> (Ms, Ms) {
-    let span = if *kind == WindowKind::FiveHour { SPARK_SPAN_FIVE_HOUR_MS } else { SPARK_SPAN_WEEKLY_MS };
+    let span = spark_span(kind);
     let step = span / SPARK_BUCKETS as Ms;
     let to = (now_ms.div_euclid(step) + 1).saturating_mul(step);
     (to - span, to)
@@ -683,6 +689,10 @@ mod tests {
         let (from, to) = spark_range(&WindowKind::SevenDay, base);
         assert_eq!(to - from, 7 * DAY_MS);
         assert!(to > base);
+        // Spans follow the window's length, not its name.
+        assert_eq!(spark_span(&WindowKind::from_key("five_hour_opus")), DAY_MS);
+        assert_eq!(spark_span(&WindowKind::from_key("seven_day_opus")), 7 * DAY_MS);
+        assert_eq!(spark_span(&WindowKind::from_key("spend_limit")), 7 * DAY_MS);
     }
 
     #[test]

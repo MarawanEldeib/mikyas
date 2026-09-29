@@ -3,11 +3,12 @@
 // lazily by ipc.ts only when not running inside Tauri. All data here is synthetic.
 
 import { ACCENTS } from "./color";
-import { DAY, HOUR, MIN, SEC } from "./format";
+import { DAY, HOUR, MIN, SEC, windowLabel, windowShort } from "./format";
 import type { Backend, EventName, Unlisten } from "./ipc";
 import { parseCardRows } from "./layout";
 import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
 import { DEFAULT_CTX_THRESHOLDS, DEFAULT_THRESHOLDS } from "./thresholds";
+import { MAIN_KINDS } from "./windows";
 import type {
   Burn,
   CommandName,
@@ -39,6 +40,7 @@ export const SCENARIOS = [
   "estimated",
   "warnings",
   "onboarding",
+  "extra",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -152,7 +154,8 @@ export function mockSpark(spec: SparkSpec): SparkPoint[] {
 }
 
 interface WinSpec {
-  kind: "five_hour" | "seven_day";
+  /** Any key: windows beyond five_hour/seven_day show as compact card rows. */
+  kind: string;
   pct: number;
   /** Reset offset from load time; null = unknown. */
   resetIn: number | null;
@@ -402,6 +405,15 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
     warnings: [{ type: "account_mismatch" }, { type: "no_plan_limits" }],
     hotkeyError: "Ctrl+Alt+U is already used by another app",
   },
+  // More limits than the main two: a weekly Opus limit and a key the app has no name for.
+  extra: {
+    ...NORMAL,
+    windows: [
+      ...NORMAL.windows,
+      { kind: "seven_day_opus", pct: 34, resetIn: 2 * DAY + 4 * HOUR + 20 * MIN, source: "cli", observedAgo: 2 * MIN, slope: 0.3 },
+      { kind: "monthly_overage", pct: 12, resetIn: null, source: "cli", observedAgo: 2 * MIN },
+    ],
+  },
   onboarding: {
     windows: [],
     session: () => null,
@@ -412,6 +424,10 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
     connection: notConfigured,
   },
 };
+
+function isMainKind(kind: string): kind is (typeof MAIN_KINDS)[number] {
+  return (MAIN_KINDS as readonly string[]).includes(kind);
+}
 
 function burnFor(w: WinSpec, pct: number, now: number, resetAt: number | null): Burn | null {
   if (!w.slope || w.stale || pct >= 99.5) return null;
@@ -440,7 +456,10 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
         : w.estimate
           ? { type: "estimated", at_ms: resetAt, plus_minus_ms: w.estimate.pm, confidence: w.estimate.confidence }
           : { type: "exact", at_ms: resetAt };
-    const period = w.kind === "five_hour" ? 5 * HOUR : 7 * DAY;
+    // Like Rust's `duration_ms`/`spark_span`: five-hour windows are short, everything else weekly.
+    const short = w.kind === "five_hour" || w.kind.startsWith("five_hour_");
+    const period = short ? 5 * HOUR : 7 * DAY;
+    const span = short ? DAY : 7 * DAY;
     return {
       kind: w.kind,
       pct: w.source === "desktop" ? Math.round(pct) : Math.round(pct * 10) / 10,
@@ -453,7 +472,7 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
       burn: burnFor(w, pct, now, resetAt),
       spark: mockSpark({
         now,
-        span: w.kind === "five_hour" ? DAY : 7 * DAY,
+        span,
         period,
         resetAt: resetAt ?? t0 + period / 2,
         current: pct,
@@ -461,6 +480,9 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
         seed: hashSeed(`${scenario}:${i}`),
       }),
       worked_since: false,
+      label: windowLabel(w.kind),
+      short: windowShort(w.kind),
+      spark_span_ms: span,
     };
   });
   const session = spec.session(t0);
@@ -660,13 +682,16 @@ export function createMockBackend(params: URLSearchParams): Backend {
       await sleep(mode === "slow" ? 60 * SEC : 120);
       if (mode === "error") throw new Error("history.jsonl could not be read (mock error)");
       return mockHistory({
-        windows: spec.windows.map((w) => ({
-          kind: w.kind,
-          pct: snapshot.windows.find((live) => live.kind === w.kind)?.pct ?? w.pct,
-          resetIn: w.resetIn,
-          integers: w.source === "desktop",
-          silentFor: w.stale ? w.observedAgo : undefined,
-        })),
+        // The history mock models the two main windows only.
+        windows: spec.windows
+          .flatMap((w) => (isMainKind(w.kind) ? [{ kind: w.kind, w }] : []))
+          .map(({ kind, w }) => ({
+            kind,
+            pct: snapshot.windows.find((live) => live.kind === w.kind)?.pct ?? w.pct,
+            resetIn: w.resetIn,
+            integers: w.source === "desktop",
+            silentFor: w.stale ? w.observedAgo : undefined,
+          })),
         t0,
         now: Date.now(),
         days: Number(args.days ?? MOCK_HISTORY_DAYS),

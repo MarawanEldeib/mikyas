@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use mikyas_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
 use mikyas_core::level::{UsageLevel, display_pct};
+use mikyas_core::engine::types::WindowKind;
 use mikyas_core::paths::Paths;
 use mikyas_core::time::{self, Ms};
 
@@ -527,10 +528,11 @@ fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
         if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {
             parts.push(format!("ctx {}", colored_pct(pct)));
         }
-        for (key, label) in [("five_hour", "5h"), ("seven_day", "7d")] {
-            if let Some(window) = rec.rate_limits.get(key) {
+        for kind in [WindowKind::FiveHour, WindowKind::SevenDay] {
+            if let Some(window) = rec.rate_limits.get(kind.key()) {
                 parts.push(format!(
-                    "{label} {} {DIM}{}{RESET}",
+                    "{} {} {DIM}{}{RESET}",
+                    kind.short_label(),
                     colored_pct(window.used_percentage),
                     countdown(window.resets_at, now_ms)
                 ));

@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::time::{FIVE_HOURS_MS, Ms, SEVEN_DAYS_MS};
+use crate::time::{DAY_MS, HOUR_MS, Ms, SEVEN_DAYS_MS};
 
 /// A drop of at least this many points between two measurements of one window means the window
 /// reset. Desktop reports integers that can lag the CLI's one-decimal values a little (80.2, then
@@ -48,17 +48,43 @@ impl WindowKind {
         }
     }
 
-    /// Nominal window length, if known.
+    /// Nominal window length, if known: read from the key's leading span (`five_hour` = 5 h,
+    /// `seven_day_opus` = 7 days, `thirty_day` = 30 days, `2_week` = 14 days, ...), so keys
+    /// Anthropic adds later get the right forecast, alerts and sparkline without a code change.
     pub fn duration_ms(&self) -> Option<Ms> {
-        match self {
-            WindowKind::FiveHour => Some(FIVE_HOURS_MS),
-            WindowKind::SevenDay => Some(SEVEN_DAYS_MS),
-            WindowKind::Other(k) if k.starts_with("seven_day") => Some(SEVEN_DAYS_MS),
-            WindowKind::Other(_) => None,
+        span_of(self.key()).map(|s| s.ms)
+    }
+
+    /// True for windows of a day or less (the 5-hour kind): short alias, heads-up lead and
+    /// sparkline span. Longer and unknown-length windows use the weekly rules.
+    pub fn is_short_window(&self) -> bool {
+        self.duration_ms().is_some_and(|d| d <= DAY_MS)
+    }
+
+    /// True for the two main windows the compact views (pill, dock, tray) show.
+    pub fn is_main(&self) -> bool {
+        matches!(self, WindowKind::FiveHour | WindowKind::SevenDay)
+    }
+
+    /// Human name: `5-hour`, `weekly`, `weekly Opus`, `30-day`, or the key with spaces for
+    /// keys without a known span. The one source of window names (UI, toasts, shim).
+    pub fn label(&self) -> String {
+        let key = self.key();
+        match span_of(key) {
+            Some(span) => with_suffix(span.name(), span.rest),
+            None => key.replace('_', " ").trim().to_owned(),
         }
     }
 
-    /// Compact label used in history rows and the UI: `5h`, `7d`, or the raw key.
+    /// Compact name: `5h`, `7d`, `7d Opus`, or [`Self::label`] for keys without a known span.
+    pub fn short_label(&self) -> String {
+        match span_of(self.key()) {
+            Some(span) => with_suffix(format!("{}{}", span.n, span.unit.letter()), span.rest),
+            None => self.label(),
+        }
+    }
+
+    /// Compact label used in history rows (persisted): `5h`, `7d`, or the raw key.
     pub fn short(&self) -> &str {
         match self {
             WindowKind::FiveHour => "5h",
@@ -88,6 +114,94 @@ impl WindowKind {
             "7d" => WindowKind::SevenDay,
             other => WindowKind::from_key(other),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpanUnit {
+    Hour,
+    Day,
+    Week,
+}
+
+impl SpanUnit {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "hour" | "hours" | "h" => Some(SpanUnit::Hour),
+            "day" | "days" | "d" => Some(SpanUnit::Day),
+            "week" | "weeks" | "w" => Some(SpanUnit::Week),
+            _ => None,
+        }
+    }
+    fn ms(self) -> Ms {
+        match self {
+            SpanUnit::Hour => HOUR_MS,
+            SpanUnit::Day => DAY_MS,
+            SpanUnit::Week => 7 * DAY_MS,
+        }
+    }
+    fn word(self) -> &'static str {
+        match self {
+            SpanUnit::Hour => "hour",
+            SpanUnit::Day => "day",
+            SpanUnit::Week => "week",
+        }
+    }
+    fn letter(self) -> char {
+        match self {
+            SpanUnit::Hour => 'h',
+            SpanUnit::Day => 'd',
+            SpanUnit::Week => 'w',
+        }
+    }
+}
+
+/// The leading `<number>_<unit>` of a window key, and what follows it (`opus` in
+/// `seven_day_opus`).
+struct Span<'a> {
+    n: u32,
+    unit: SpanUnit,
+    ms: Ms,
+    rest: &'a str,
+}
+
+impl Span<'_> {
+    /// `5-hour`, `weekly` (seven days / one week), `30-day`.
+    fn name(&self) -> String {
+        if self.ms == SEVEN_DAYS_MS { "weekly".to_owned() } else { format!("{}-{}", self.n, self.unit.word()) }
+    }
+}
+
+const NUMBER_WORDS: [&str; 15] = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    "thirteen", "fourteen",
+];
+
+fn parse_count(s: &str) -> Option<u32> {
+    let n = match NUMBER_WORDS.iter().position(|w| *w == s) {
+        Some(i) => i as u32,
+        None if s == "thirty" => 30,
+        None if !s.is_empty() && s.len() <= 3 && s.bytes().all(|b| b.is_ascii_digit()) => s.parse().ok()?,
+        None => return None,
+    };
+    (n > 0).then_some(n)
+}
+
+fn span_of(key: &str) -> Option<Span<'_>> {
+    let mut parts = key.splitn(3, '_');
+    let n = parse_count(parts.next()?)?;
+    let unit = SpanUnit::parse(parts.next()?)?;
+    let rest = parts.next().unwrap_or("");
+    Some(Span { n, unit, ms: Ms::from(n) * unit.ms(), rest })
+}
+
+/// `base` followed by `rest` in words, its first letter capitalised (`weekly Opus`).
+fn with_suffix(base: String, rest: &str) -> String {
+    let words = rest.split('_').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => format!("{base} {}{}", first.to_uppercase(), chars.as_str()),
+        None => base,
     }
 }
 
@@ -221,7 +335,10 @@ pub struct SparkPoint {
     pub pct: Option<f32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Serialised with three derived fields for the UI: `label` ([`WindowKind::label`]), `short`
+/// ([`WindowKind::short_label`]) and `spark_span_ms` (the range `spark` covers). They are computed
+/// from `kind` on the way out, so they can never disagree with it; reading them back ignores them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WindowView {
     #[serde(flatten)]
     pub state: WindowState,
@@ -231,6 +348,33 @@ pub struct WindowView {
     /// probably higher (the UI marks it "▲").
     #[serde(default)]
     pub worked_since: bool,
+}
+
+impl Serialize for WindowView {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Out<'a> {
+            #[serde(flatten)]
+            state: &'a WindowState,
+            burn: &'a Option<Burn>,
+            spark: &'a [SparkPoint],
+            worked_since: bool,
+            label: String,
+            short: String,
+            spark_span_ms: Ms,
+        }
+        let kind = &self.state.kind;
+        Out {
+            state: &self.state,
+            burn: &self.burn,
+            spark: &self.spark,
+            worked_since: self.worked_since,
+            label: kind.label(),
+            short: kind.short_label(),
+            spark_span_ms: crate::engine::snapshot::spark_span(kind),
+        }
+        .serialize(s)
+    }
 }
 
 /// Which Claude surface a session belongs to.
@@ -384,6 +528,49 @@ mod tests {
     }
 
     #[test]
+    fn durations_come_from_the_key() {
+        let k = |s: &str| WindowKind::from_key(s);
+        assert_eq!(k("five_hour").duration_ms(), Some(5 * HOUR_MS));
+        assert_eq!(k("fh").duration_ms(), Some(5 * HOUR_MS));
+        assert_eq!(k("seven_day").duration_ms(), Some(SEVEN_DAYS_MS));
+        assert_eq!(k("so").duration_ms(), Some(SEVEN_DAYS_MS));
+        assert_eq!(k("seven_day_sonnet").duration_ms(), Some(SEVEN_DAYS_MS));
+        assert_eq!(k("five_hour_opus").duration_ms(), Some(5 * HOUR_MS));
+        assert_eq!(k("thirty_day").duration_ms(), Some(30 * DAY_MS));
+        assert_eq!(k("2_week").duration_ms(), Some(14 * DAY_MS));
+        assert_eq!(k("1_day").duration_ms(), Some(DAY_MS));
+        for unknown in ["spend_limit", "x", "", "zero_day", "seven", "_day", "1000_day", "day_seven"] {
+            assert_eq!(k(unknown).duration_ms(), None, "{unknown}");
+        }
+        assert!(k("five_hour").is_short_window());
+        assert!(k("1_day").is_short_window());
+        assert!(!k("seven_day_opus").is_short_window());
+        assert!(!k("spend_limit").is_short_window());
+    }
+
+    #[test]
+    fn labels_are_derived_from_the_key() {
+        let k = |s: &str| WindowKind::from_key(s);
+        let cases = [
+            ("five_hour", "5-hour", "5h"),
+            ("seven_day", "weekly", "7d"),
+            ("seven_day_opus", "weekly Opus", "7d Opus"),
+            ("sn", "weekly Sonnet", "7d Sonnet"),
+            ("five_hour_opus_plus", "5-hour Opus plus", "5h Opus plus"),
+            ("thirty_day", "30-day", "30d"),
+            ("1_week", "weekly", "1w"),
+            ("spend_limit", "spend limit", "spend limit"),
+            ("x", "x", "x"),
+        ];
+        for (key, label, short) in cases {
+            assert_eq!(k(key).label(), label, "{key}");
+            assert_eq!(k(key).short_label(), short, "{key}");
+        }
+        assert!(WindowKind::FiveHour.is_main() && WindowKind::SevenDay.is_main());
+        assert!(!k("seven_day_opus").is_main());
+    }
+
+    #[test]
     fn reset_drop_is_two_points_inclusive() {
         assert!(is_reset_drop(80.0, 78.0));
         assert!(!is_reset_drop(80.2, 79.0));
@@ -420,6 +607,9 @@ mod tests {
         assert_eq!(v["kind"], "five_hour");
         assert_eq!(v["phase"], "active");
         assert_eq!(v["worked_since"], false);
+        assert_eq!(v["label"], "5-hour");
+        assert_eq!(v["short"], "5h");
+        assert_eq!(v["spark_span_ms"], DAY_MS);
         assert!(v.get("state").is_none());
         // Older serialised views (no marker) still load.
         let mut old = v.clone();

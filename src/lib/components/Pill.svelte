@@ -49,7 +49,7 @@
       {#each shown as w, i (w.kind)}
         <div class="brow" role="img" aria-label={describeWindow(w, app.now)}>
           <span class="label"
-            >{windowShort(w.kind)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span
+            >{windowShort(w)}{#if w.stale}<span class="stale-tag">· stale</span>{/if}</span
           >
           <span class="track"><span class="bfill" style:width="{clampPct(w.pct)}%" style:background={mutedColor(w)}></span></span>
           <span class="bpct" class:crit={w.limit_reached} class:muted={w.stale}>
@@ -69,7 +69,7 @@
         <Ring pct={w.pct} size={36} stale={w.stale} locked={w.limit_reached} />
         <div class="text">
           <span class="label"
-            >{windowShort(w.kind)}{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{#if w.stale}<span
+            >{windowShort(w)}{#if showWorkedSince(w)}<span class="worked" title={WORKED_SINCE_TIP}>▲</span>{/if}{#if w.stale}<span
                 class="stale-tag"
                 data-under-controls={i === shown.length - 1 ? "" : undefined}>· stale</span
               >{/if}</span

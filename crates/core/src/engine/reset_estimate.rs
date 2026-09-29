@@ -20,7 +20,8 @@
 //!   The window started in `(lo, hi]` with `hi = s[i].t` and
 //!   `lo = max(s[i-1].t, s[i].t - duration, last_exact_reset_ms if past)`.
 //!   Estimate `at = (lo + hi) / 2 + duration`, `plus_minus = (hi - lo) / 2`.
-//!   Confidence: FiveHour → High if plus_minus ≤ 10 min, Medium if ≤ 45 min, else Low;
+//!   Confidence: FiveHour (and other windows of a day or less) → High if plus_minus ≤ 10 min,
+//!   Medium if ≤ 45 min, else Low;
 //!   weekly → Low always. For weekly, add 1 day to `plus_minus`.
 //!   A start bounded below only by a sample at 0 is at most Medium: Desktop's integer 0 hides
 //!   usage below one point, so at light usage the window may already have been running then.
@@ -54,9 +55,10 @@ use crate::engine::types::{Confidence, ResetInfo, Sample, WindowKind, is_reset_d
 use crate::time::{DAY_MS, MINUTE_MS, Ms};
 
 pub use crate::engine::types::RESET_DROP_PCT;
-/// FiveHour estimates with `plus_minus` up to this are [`Confidence::High`].
+/// FiveHour (and other short-window) estimates with `plus_minus` up to this are [`Confidence::High`].
 pub const HIGH_CONFIDENCE_MS: Ms = 10 * MINUTE_MS;
-/// FiveHour estimates with `plus_minus` up to this are [`Confidence::Medium`]; beyond, `Low`.
+/// FiveHour (and other short-window) estimates with `plus_minus` up to this are
+/// [`Confidence::Medium`]; beyond, `Low`.
 pub const MEDIUM_CONFIDENCE_MS: Ms = 45 * MINUTE_MS;
 /// Added to every weekly `plus_minus`: weekly resets do not follow a clean 7-day cycle.
 pub const WEEKLY_EXTRA_MS: Ms = DAY_MS;
@@ -73,7 +75,8 @@ pub fn estimate_reset(kind: &WindowKind, samples: &[Sample], last_exact_reset_ms
     let Some(duration) = kind.duration_ms().filter(|d| *d > 0) else {
         return ResetInfo::Unknown;
     };
-    let weekly = *kind != WindowKind::FiveHour;
+    // Windows of a day or less (five_hour and other keys that long) follow the five-hour rules.
+    let weekly = !kind.is_short_window();
     // Any exact reset left at this point is in the past.
     let past_reset = last_exact_reset_ms;
 
@@ -203,6 +206,18 @@ mod tests {
 
     fn week(samples: &[(Ms, f32)], exact: Option<Ms>, now: Ms) -> ResetInfo {
         estimate_reset(&WindowKind::SevenDay, &series(samples), exact, now)
+    }
+
+    #[test]
+    fn short_keys_are_estimated_like_the_five_hour_window() {
+        let s = series(&[(T, 30.0), (T + m(15), 10.0), (T + m(30), 12.0)]);
+        let fh_opus = WindowKind::from_key("five_hour_opus");
+        let expected = estimate_reset(&WindowKind::FiveHour, &s, None, T + m(40));
+        assert!(matches!(expected, ResetInfo::Estimated { confidence: Confidence::High, .. }));
+        assert_eq!(estimate_reset(&fh_opus, &s, None, T + m(40)), expected);
+        // A window that is over is unknown, not rolled forward like a weekly one.
+        let past = T + HOUR_MS;
+        assert_eq!(estimate_reset(&fh_opus, &s, Some(past), T + 2 * HOUR_MS), ResetInfo::Unknown);
     }
 
     #[test]

@@ -31,18 +31,7 @@ pub enum Alert {
 
 /// "5-hour", "weekly", "weekly Opus", …
 pub fn window_name(kind: &WindowKind) -> String {
-    match kind {
-        WindowKind::FiveHour => "5-hour".into(),
-        WindowKind::SevenDay => "weekly".into(),
-        WindowKind::Other(k) => match k.strip_prefix("seven_day_") {
-            Some(model) => {
-                let mut c = model.chars();
-                let cap: String = c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default();
-                format!("weekly {cap}")
-            }
-            None => k.replace('_', " "),
-        },
-    }
+    kind.label()
 }
 
 /// "1h 12m", "2d 3h", "8m", "<1m"; a zero minor unit is left out ("12h", "2d"), as in the UI.

@@ -6,12 +6,13 @@
   import { notices } from "../notices";
   import { app } from "../stores.svelte";
   import type { CardRows } from "../types";
-  import { mainWindows } from "../windows";
+  import { extraWindows, mainWindows } from "../windows";
   import ConnectionBanner from "./ConnectionBanner.svelte";
   import IconButton from "./IconButton.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SourceBadges from "./SourceBadges.svelte";
   import StatusBanner from "./StatusBanner.svelte";
+  import WindowRow from "./WindowRow.svelte";
   import WindowSection from "./WindowSection.svelte";
 
   const snap = $derived(app.snapshot);
@@ -21,6 +22,8 @@
   const shown = $derived.by(() => {
     return mainWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now));
   });
+  // Any other limit Claude reports (e.g. weekly Opus): a compact row each, under the main two.
+  const extra = $derived(extraWindows(snap?.windows ?? []).map((w) => liveWindow(w, app.now)));
   const noLimits = $derived(snap?.warnings.some((w) => w.type === "no_plan_limits") ?? false);
   const ALL_ROWS: CardRows = { sparklines: true, burn: true, session: true, sources: true };
   // Hidden rows shrink the window (window.rs card_height); the data attributes size the mock stage.
@@ -30,17 +33,37 @@
   startDock(app, api.setDockExpanded);
 </script>
 
-<div class="card" data-no-burn={rows.burn ? undefined : ""} data-no-session={rows.session ? undefined : ""}>
+<div
+  class="card"
+  data-no-burn={rows.burn ? undefined : ""}
+  data-no-session={rows.session ? undefined : ""}
+  data-extra-rows={extra.length || undefined}
+>
   {#if rows.session && (shown.length || snap?.session)}
     <SessionHeader session={snap?.session ?? null} now={app.now} showProject={app.settings?.show_project ?? true} />
   {/if}
 
-  <div class="body">
+  <!-- With extra limit rows the body can scroll, so it takes focus (arrow keys scroll it). -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div
+    class="body"
+    class:scroll={extra.length > 0}
+    role={extra.length ? "region" : undefined}
+    aria-label={extra.length ? "Usage limits" : undefined}
+    tabindex={extra.length ? 0 : undefined}
+  >
     {#if shown.length}
       {#each shown as w, i (w.kind)}
         {#if i > 0}<div class="rule" aria-hidden="true"></div>{/if}
         <WindowSection window={w} now={app.now} sparkline={rows.sparklines} burn={rows.burn} underControls={i === 0 && !rows.session} />
       {/each}
+      {#if extra.length}
+        <div class="extra">
+          {#each extra as w (w.kind)}
+            <WindowRow window={w} now={app.now} />
+          {/each}
+        </div>
+      {/if}
     {:else}
       <div class="empty">
         {#if noLimits}
@@ -97,6 +120,21 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  /* Only with extra rows: the two main sections alone fit exactly, and a sub-pixel overflow at
+     some display scales must not show a scrollbar. */
+  .body.scroll {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  /* Rows for further limits. The window is sized for the two main sections, so a card with
+     extra rows scrolls rather than clipping them. */
+  .extra {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 6px;
+    border-top: 1px solid var(--divider);
   }
   .rule {
     height: 1px;

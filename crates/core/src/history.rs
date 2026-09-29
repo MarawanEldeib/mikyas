@@ -20,7 +20,7 @@ use crate::engine::types::{
     Phase, RESET_DROP_PCT, ResetInfo, Sample, Source, SparkPoint, WindowKind, WindowState, is_reset_drop,
 };
 use crate::sources::desktop_usage::DesktopUsage;
-use crate::time::{DAY_MS, FIVE_HOURS_MS, HOUR_MS, MINUTE_MS, Ms};
+use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
 
 /// How long rows are kept (whole days). The History view's longest range follows it: the app
 /// derives `history_view::MAX_DAYS` from it and sends that to the UI.
@@ -280,13 +280,13 @@ impl History {
     /// - Rows are walked in order, rows before `from_ms` seeding the state. A row starts a new
     ///   window instance when its pct is at least [`MIXED_SOURCE_DROP_PCT`] below the previous
     ///   row, when the latest exact reset time known (`r` of a row with `e: false`) passed since
-    ///   the previous row, or (five_hour only) when it comes more than five hours after the
-    ///   previous row: that window has ended by then. A reset time superseded before it passed
-    ///   (re-estimated or moved) is not one.
+    ///   the previous row, or (windows of a day or less, e.g. five_hour) when it comes more than
+    ///   the window's length after the previous row: that window has ended by then. A reset time
+    ///   superseded before it passed (re-estimated or moved) is not one.
     /// - `resets_ms`: exact reset times that passed within `[from_ms, min(to_ms, now_ms)]`, plus
-    ///   one in-range mark per new instance no exact reset explains: five hours after the previous
-    ///   row for a gap (none if that row was at 0: no window was running), else the row showing
-    ///   the drop; sorted, and a mark within [`RESET_DEDUP_MS`] of the previous kept one is
+    ///   one in-range mark per new instance no exact reset explains: the window's length after
+    ///   the previous row for a gap (none if that row was at 0: no window was running), else the
+    ///   row showing the drop; sorted, and a mark within [`RESET_DEDUP_MS`] of the previous kept one is
     ///   dropped.
     /// - Days: `peak_pct` is the highest row that day, `samples` the number of rows.
     ///   `consumed_pct` adds, for each row of the day, its rise over the instance's high-water mark
@@ -310,15 +310,17 @@ impl History {
         let mut known_reset: Option<Ms> = None;
         let mut prev: Option<&HistoryRow> = None;
         let mut high = 0.0_f32;
-        let five_hour = *kind == WindowKind::FiveHour;
+        // Windows of a day or less (five_hour, ...) start with the first message after the last one
+        // ended, so a gap longer than the window ends it; longer windows keep their own schedule.
+        let gap_ends = kind.duration_ms().filter(|_| kind.is_short_window());
 
         for row in self.rows.iter().filter(|r| r.t <= range.to_ms && r.is_kind(kind)) {
             let exact_reset = prev.zip(known_reset).is_some_and(|(p, r)| p.t < r && r <= row.t);
             let dropped = prev.is_some_and(|p| is_reset_drop(p.p, row.p));
-            let expired = prev.filter(|p| five_hour && row.t.saturating_sub(p.t) > FIVE_HOURS_MS);
+            let expired = prev.zip(gap_ends).filter(|(p, d)| row.t.saturating_sub(p.t) > *d);
             if !exact_reset {
                 let mark = match expired {
-                    Some(p) => (p.p > 0.0).then(|| p.t.saturating_add(FIVE_HOURS_MS).min(row.t)),
+                    Some((p, d)) => (p.p > 0.0).then(|| p.t.saturating_add(d).min(row.t)),
                     None => dropped.then_some(row.t),
                 };
                 marks.extend(mark.filter(|&t| in_range(t)));
@@ -1095,6 +1097,22 @@ mod tests {
         let v = h.view(&WindowKind::FiveHour, &range(H0, H0 + DAY_MS, H0 + 3 * HOUR_MS, &days));
         assert_eq!(v.resets_ms, vec![H0 + HOUR_MS]);
         assert_eq!(day_values(&v), vec![(3.0, 1.5)]);
+    }
+
+    #[test]
+    fn view_infers_gap_resets_of_other_short_windows_from_their_length() {
+        let days = [H0];
+        let r = range(H0, H0 + DAY_MS, H0 + DAY_MS, &days);
+        let kind = WindowKind::from_key("five_hour_opus");
+        let (_dir, h) = with_rows(vec![row(H0, "five_hour_opus", 40.0), row(H0 + 8 * HOUR_MS, "five_hour_opus", 60.0)]);
+        assert_eq!(h.view(&kind, &r).resets_ms, vec![H0 + 5 * HOUR_MS]);
+        let kind = WindowKind::from_key("2_hour");
+        let (_dir, h) = with_rows(vec![row(H0, "2_hour", 40.0), row(H0 + 3 * HOUR_MS, "2_hour", 60.0)]);
+        assert_eq!(h.view(&kind, &r).resets_ms, vec![H0 + 2 * HOUR_MS]);
+        // Longer windows keep their own schedule: a gap alone is no reset.
+        let kind = WindowKind::from_key("seven_day_opus");
+        let (_dir, h) = with_rows(vec![row(H0, "seven_day_opus", 40.0), row(H0 + 8 * HOUR_MS, "seven_day_opus", 60.0)]);
+        assert!(h.view(&kind, &r).resets_ms.is_empty());
     }
 
     #[test]

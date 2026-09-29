@@ -44,6 +44,9 @@ describe("describeWindow", () => {
   it("reads usage, then the reset", () => {
     expect(describeWindow(win(), NOW)).toBe("5-hour limit 42% used, resets in 3h 12m");
   });
+  it("uses the name Rust sends with the window", () => {
+    expect(describeWindow(win({ kind: "thirty_day", label: "30-day" }), NOW)).toMatch(/^30-day limit 42% used/);
+  });
   it("never reads 'resets in reset' or 'resets in —'", () => {
     const awaiting = describeWindow(win({ pct: 0, phase: "reset_awaiting_data" }), NOW);
     expect(awaiting).toBe("5-hour limit 0% used, reset now, waiting for new data");

@@ -196,6 +196,18 @@ test.describe("fixed a11y issues stay fixed", () => {
     });
   }
 
+  test("card with extra limit rows: the scrolling body takes focus, no serious finding", async ({ page }) => {
+    await openWidget(page, { params: { scenario: "extra" } });
+    expect(await seriousViolations(page)).toEqual([]);
+    const body = page.getByRole("region", { name: "Usage limits" });
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Tab");
+      if (await body.evaluate((el) => el === document.activeElement)) break;
+    }
+    await expect(body).toBeFocused();
+    expect(await focusVisible(page)).toBe(true);
+  });
+
   test("update list: the scrolling release list takes keyboard focus and shows a ring", async ({ page }) => {
     await openUpdateList(page);
     const list = page.getByRole("list", { name: "Release notes" });
