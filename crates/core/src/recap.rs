@@ -1,11 +1,17 @@
-//! Weekly recap: one summary when the weekly window resets.
+//! Weekly recap: one summary when the long usage window resets.
 //!
-//! Trigger: a weekly (`SevenDay`) window instance ends — its exact reset time passed, or the pct
-//! dropped by >= 2 points (the same reset rule as `History::view`). The recap covers the ended
-//! window [start, end), where start is the previous window's end (weekly resets are sometimes days
-//! apart), at most 7 days before `end`: `used_pct` = the highest weekly % seen in it, `busiest_day` = the local day
-//! with the largest weekly `consumed_pct` (from `History::view` day buckets), `five_hour_resets` =
-//! five_hour resets inside it, `peak_five_hour_pct` = the highest 5-hour % in it.
+//! Which windows: [`RecapKinds`] — the longest main window (`engine::types::main_kinds`, today
+//! `seven_day`) is recapped, the shortest (today `five_hour`) supplies the reset count and peak;
+//! a renamed or longer cycle (`1_week`, `thirty_day`) works the same way. [`RecapState::evaluate`]
+//! uses the built-in pair; the app passes the pair of the windows present.
+//!
+//! Trigger: a long window instance ends — its exact reset time passed, or the pct dropped by >= 2
+//! points (the same reset rule as `History::view`). The recap covers the ended window
+//! [start, end), where start is the previous window's end (weekly resets are sometimes days
+//! apart), at most one window length before `end`: `used_pct` = the highest % seen in it,
+//! `busiest_day` = the local day with the largest `consumed_pct` (from `History::view` day
+//! buckets), `short_resets` = resets of the short window inside it, `peak_short_pct` = the highest
+//! short-window % in it.
 //! Fires once per ended window (persisted `last_recapped_end_ms`); if the app was closed at the
 //! reset, the next start within `CATCH_UP_MS` (24 h) after it still shows it once; older → skip.
 //! No recap for a window with fewer than `MIN_SAMPLES` weekly history rows (not enough data).
@@ -18,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::alerts::WEEKLY_INSTANCE_ALIAS_MS;
-use crate::engine::types::{WindowKind, is_reset_drop};
+use crate::engine::types::{WindowKind, is_reset_drop, main_kinds};
 use crate::history::{History, HistoryRow, ViewRange};
 use crate::time::{DAY_MS, MINUTE_MS, Ms, SEVEN_DAYS_MS};
 
@@ -27,14 +33,48 @@ pub const MIN_SAMPLES: usize = 6;
 /// With an unchanged history, the weekly rows are walked again at most this often.
 pub const RECHECK_MS: Ms = MINUTE_MS;
 
+/// The windows a recap is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecapKinds {
+    /// The recapped (long) window.
+    pub long: WindowKind,
+    /// The short window whose resets and peak are counted, if one exists besides `long`.
+    pub short: Option<WindowKind>,
+}
+
+impl Default for RecapKinds {
+    /// The built-in pair, for callers that do not know the windows present.
+    fn default() -> Self {
+        Self { long: WindowKind::SevenDay, short: Some(WindowKind::FiveHour) }
+    }
+}
+
+impl RecapKinds {
+    /// From the windows present: the longest main window, if it is longer than a day (a recap
+    /// every few hours would be noise), and the shortest one as `short`.
+    pub fn from_windows<'a>(kinds: impl IntoIterator<Item = &'a WindowKind>) -> Option<Self> {
+        let main = main_kinds(kinds);
+        let long = main.last().filter(|k| k.duration_ms().is_some_and(|d| d > DAY_MS))?.clone();
+        let short = main.first().filter(|k| **k != long).cloned();
+        Some(Self { long, short })
+    }
+
+    /// The long window's length (7 days when unknown).
+    pub fn long_ms(&self) -> Ms {
+        self.long.duration_ms().unwrap_or(SEVEN_DAYS_MS)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeeklyRecap {
+    /// The windows it is about (for naming them).
+    pub kinds: RecapKinds,
     pub window_end_ms: Ms,
     pub used_pct: f32,
-    /// Local midnight of the busiest day and that day's weekly consumed %.
+    /// Local midnight of the busiest day and that day's consumed %.
     pub busiest_day: Option<(Ms, f32)>,
-    pub five_hour_resets: u32,
-    pub peak_five_hour_pct: f32,
+    pub short_resets: u32,
+    pub peak_short_pct: f32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -61,10 +101,22 @@ impl PartialEq for RecapState {
 }
 
 impl RecapState {
-    /// `day_starts`: local midnights covering at least the last 8 days (the caller computes them
-    /// in local time). An end within [`WEEKLY_INSTANCE_ALIAS_MS`] of the last recapped one is the
-    /// same reset seen twice (e.g. the exact time, then the drop), so it does not repeat.
+    /// [`Self::evaluate_for`] with the built-in pair of windows.
     pub fn evaluate(&mut self, history: &History, day_starts: &[Ms], now_ms: Ms) -> Option<WeeklyRecap> {
+        self.evaluate_for(history, day_starts, &RecapKinds::default(), now_ms)
+    }
+
+    /// `day_starts`: local midnights covering at least the long window plus a day (the caller
+    /// computes them in local time). An end within [`WEEKLY_INSTANCE_ALIAS_MS`] of the last
+    /// recapped one is the same reset seen twice (e.g. the exact time, then the drop), so it does
+    /// not repeat.
+    pub fn evaluate_for(
+        &mut self,
+        history: &History,
+        day_starts: &[Ms],
+        kinds: &RecapKinds,
+        now_ms: Ms,
+    ) -> Option<WeeklyRecap> {
         let rows = history.rows();
         let seen = Checked { rows: rows.len(), last_t: rows.last().map(|r| r.t), at_ms: now_ms };
         let unchanged = self.checked.is_some_and(|c| {
@@ -74,7 +126,7 @@ impl RecapState {
             return None;
         }
         self.checked = Some(seen);
-        let week = last_ended_week(rows, now_ms)?;
+        let week = last_ended_week(rows, &kinds.long, kinds.long_ms(), now_ms)?;
         let end = week.end_ms;
         let new = self.last_recapped_end_ms.is_none_or(|last| end.saturating_sub(last) > WEEKLY_INSTANCE_ALIAS_MS);
         if !new || now_ms.saturating_sub(end) > CATCH_UP_MS {
@@ -92,7 +144,7 @@ impl RecapState {
         if let Some(b) = bounds.first_mut() {
             *b = (*b).max(start);
         }
-        let weekly = history.view(&WindowKind::SevenDay, &ViewRange { day_starts: &bounds, ..range });
+        let weekly = history.view(&kinds.long, &ViewRange { day_starts: &bounds, ..range });
         let busiest_day = weekly.days.iter().zip(&midnights).filter(|(d, _)| d.consumed_pct > 0.0).fold(
             None::<(Ms, f32)>,
             |best, (d, &midnight)| match best {
@@ -100,26 +152,34 @@ impl RecapState {
                 _ => Some((midnight, d.consumed_pct)),
             },
         );
-        let five_hour = history.view(&WindowKind::FiveHour, &range);
-        let peak_five_hour_pct = history
-            .samples(&WindowKind::FiveHour, start)
-            .iter()
-            .take_while(|s| s.t_ms < end)
-            .fold(0.0_f32, |max, s| max.max(s.pct));
+        let (short_resets, peak_short_pct) = match &kinds.short {
+            Some(short) => {
+                let view = history.view(short, &range);
+                let peak = history
+                    .samples(short, start)
+                    .iter()
+                    .take_while(|s| s.t_ms < end)
+                    .fold(0.0_f32, |max, s| max.max(s.pct));
+                (u32::try_from(view.resets_ms.len()).unwrap_or(u32::MAX), peak)
+            }
+            None => (0, 0.0),
+        };
         Some(WeeklyRecap {
+            kinds: kinds.clone(),
             window_end_ms: end,
             used_pct: week.used_pct,
             busiest_day,
-            five_hour_resets: u32::try_from(five_hour.resets_ms.len()).unwrap_or(u32::MAX),
-            peak_five_hour_pct,
+            short_resets,
+            peak_short_pct,
         })
     }
 }
 
-/// The newest weekly window with at least [`MIN_SAMPLES`] rows that ended by `now_ms`.
+/// The newest long window with at least [`MIN_SAMPLES`] rows that ended by `now_ms`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EndedWeek {
-    /// The previous window's end, or 7 days before `end_ms` if that is later (or unknown).
+    /// The previous window's end, or one window length before `end_ms` if that is later (or
+    /// unknown).
     start_ms: Ms,
     end_ms: Ms,
     /// Highest % of the window's rows within [`start_ms`, `end_ms`).
@@ -134,11 +194,10 @@ struct EndedWeek {
 /// An exact reset time that passed with no row after it ends the current window too. A window
 /// with too few rows is passed over, so a Desktop drop just before the exact reset time (a
 /// one-row "window" between them) does not hide the week that ended with the drop.
-fn last_ended_week(rows: &[HistoryRow], now_ms: Ms) -> Option<EndedWeek> {
-    let weekly: Vec<&HistoryRow> =
-        rows.iter().take_while(|r| r.t <= now_ms).filter(|r| r.is_kind(&WindowKind::SevenDay)).collect();
+fn last_ended_week(rows: &[HistoryRow], kind: &WindowKind, length_ms: Ms, now_ms: Ms) -> Option<EndedWeek> {
+    let weekly: Vec<&HistoryRow> = rows.iter().take_while(|r| r.t <= now_ms).filter(|r| r.is_kind(kind)).collect();
     let summarize = |window: &[&HistoryRow], prev_end: Option<Ms>, end_ms: Ms| {
-        let start_ms = end_ms.saturating_sub(SEVEN_DAYS_MS).max(prev_end.unwrap_or(Ms::MIN));
+        let start_ms = end_ms.saturating_sub(length_ms).max(prev_end.unwrap_or(Ms::MIN));
         let inside = window.iter().filter(|r| r.t >= start_ms && r.t < end_ms);
         let (samples, used_pct) = inside.fold((0, 0.0_f32), |(n, max), r| (n + 1, max.max(r.p)));
         EndedWeek { start_ms, end_ms, used_pct, samples }
@@ -247,13 +306,14 @@ mod tests {
         assert_eq!(
             recap,
             Some(WeeklyRecap {
+                kinds: RecapKinds::default(),
                 window_end_ms: END,
                 used_pct: 82.0,
                 busiest_day: Some((day(1), 35.0)),
                 // A drop on day 1, a five-hour gap into day 2; the previous week's window does
                 // not count.
-                five_hour_resets: 2,
-                peak_five_hour_pct: 100.0,
+                short_resets: 2,
+                peak_short_pct: 100.0,
             })
         );
         assert_eq!(s.last_recapped_end_ms, Some(END));
@@ -310,7 +370,7 @@ mod tests {
         let recap = s.evaluate(&h, &day_starts(), drop_at + 5 * MINUTE_MS).expect("recap");
         assert_eq!((recap.window_end_ms, recap.used_pct), (drop_at, 70.0));
         assert_eq!(recap.busiest_day, Some((day(3), 25.0)));
-        assert_eq!((recap.five_hour_resets, recap.peak_five_hour_pct), (0, 0.0));
+        assert_eq!((recap.short_resets, recap.peak_short_pct), (0, 0.0));
         // The same reset seen again a little later (an exact time, a second drop) is not a new week.
         let mut s = RecapState { last_recapped_end_ms: Some(drop_at - 2 * HOUR_MS), ..RecapState::default() };
         assert_eq!(s.evaluate(&h, &day_starts(), drop_at + 5 * MINUTE_MS), None);
@@ -339,7 +399,7 @@ mod tests {
         let recap = RecapState::default().evaluate(&h, &day_starts(), end + MINUTE_MS).expect("recap");
         assert_eq!((recap.window_end_ms, recap.used_pct), (end, 18.0));
         assert_eq!(recap.busiest_day, Some((day(3), 7.0)), "day 1 (60%) was the previous window");
-        assert_eq!((recap.five_hour_resets, recap.peak_five_hour_pct), (0, 0.0));
+        assert_eq!((recap.short_resets, recap.peak_short_pct), (0, 0.0));
     }
 
     #[test]
@@ -446,5 +506,46 @@ mod tests {
         let back: RecapState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
         assert_eq!(serde_json::from_str::<RecapState>("{}").unwrap(), RecapState::default());
+    }
+
+    #[test]
+    fn recap_kinds_come_from_the_windows_present() {
+        let k = |s: &str| WindowKind::from_key(s);
+        let of = |keys: &[&str]| RecapKinds::from_windows(&keys.iter().map(|s| k(s)).collect::<Vec<_>>());
+        assert_eq!(of(&["five_hour", "seven_day", "seven_day_opus"]), Some(RecapKinds::default()));
+        assert_eq!(of(&["4_hour", "thirty_day"]), Some(RecapKinds { long: k("thirty_day"), short: Some(k("4_hour")) }));
+        assert_eq!(of(&["weekly"]), Some(RecapKinds { long: k("weekly"), short: None }));
+        assert_eq!(of(&["five_hour"]), None, "a window of a day or less is not recapped");
+        assert_eq!(of(&["spend_limit"]), None);
+    }
+
+    #[test]
+    fn a_renamed_long_window_is_recapped_over_its_own_length() {
+        // The same week under another key: a recap names it and counts over its length.
+        let rows: Vec<Row> = week()
+            .into_iter()
+            .map(|(t, w, p, r)| {
+                (
+                    t,
+                    if w == "7d" {
+                        "1_week"
+                    } else if w == "5h" {
+                        "4_hour"
+                    } else {
+                        w
+                    },
+                    p,
+                    r,
+                )
+            })
+            .collect();
+        let (_d, h) = history(&rows);
+        let kinds = RecapKinds { long: WindowKind::from_key("1_week"), short: Some(WindowKind::from_key("4_hour")) };
+        let recap = RecapState::default().evaluate_for(&h, &day_starts(), &kinds, END + HOUR_MS).expect("recap");
+        assert_eq!((recap.window_end_ms, recap.used_pct), (END, 82.0));
+        assert_eq!(recap.kinds, kinds);
+        assert_eq!(recap.peak_short_pct, 100.0);
+        // Nothing about the built-in keys in that history.
+        assert_eq!(RecapState::default().evaluate(&h, &day_starts(), END + HOUR_MS), None);
     }
 }

@@ -18,17 +18,22 @@
 //! true, `message.model` present and not `"<synthetic>"`, `message.usage` present. The largest
 //! count seen only covers lines with the last line's `message.model`.
 //!
-//! 1M detection: the transcript head (first [`HEAD_BYTES`], or [`HEAD_MAX_BYTES`] when those hold
-//! no identity) may contain an `attachment` line whose identity model id ends with `[1m]`, e.g.
+//! Long-context detection: the transcript head (first [`HEAD_BYTES`], or [`HEAD_MAX_BYTES`] when
+//! those hold no identity) may contain an `attachment` line whose identity model id ends with a
+//! context tag (`[1m]` today, any `[…]` later, see `model_names::split_ctx_tag`), e.g.
 //! `{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}`
-//! — search tolerantly for any string value matching `claude-…[1m]` inside lines with
-//! `"type":"attachment"`; the last such line in the head counts. `message.model` never has the
-//! suffix, and the head is written once, so the marker only counts while the last line's model is
-//! the identity's model (after `/model` switches to another one it no longer applies).
+//! — search tolerantly for any model-id-like string value containing `claude` and ending in a tag
+//! inside lines with `"type":"attachment"` (or any tagged `modelId`/`model_id` value); the last
+//! such line in the head counts. `message.model` never has the tag, and the head is written once,
+//! so the marker only counts while the last line's model is the identity's model — compared by
+//! `model_names::canonical_model_id`, so Bedrock/Vertex/gateway spellings of one model match
+//! (after `/model` switches to another one it no longer applies).
 //!
 //! Turns ([`TurnInfo`], see `crate::turns`): walking back from the end, the first non-sidechain
-//! assistant line decides whether the tail ends with a finished turn (`stop_reason == "end_turn"`
-//! and not `<synthetic>`). Its start is the last human user line before it in file order: a
+//! assistant line decides whether the tail ends with a finished turn: it has a `stop_reason` that
+//! is not one of the "still working" reasons [`CONTINUE_STOP_REASONS`] (`end_turn`,
+//! `stop_sequence`, `max_tokens`, `refusal` and reasons added later all finish a turn), and is not
+//! `<synthetic>`. Its start is the last human user line before it in file order: a
 //! `type: "user"` line, not sidechain, whose `message.content` is a string or holds a block whose
 //! `type` is not `tool_result`. For those lines only `type`, `isSidechain`, `timestamp`,
 //! `message.stop_reason` and the content block types are read.
@@ -43,7 +48,7 @@ use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::engine::types::Entrypoint;
-use crate::model_names::split_1m;
+use crate::model_names::{canonical_model_id, ctx_tag_text, same_model, split_ctx_tag};
 use crate::saferead::SafeReader;
 use crate::sources::SourceError;
 use crate::sources::fsutil::{has_extension, lenient, walk_files};
@@ -68,12 +73,19 @@ pub const LISTING_SLACK_MS: Ms = DAY_MS;
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 /// Object keys whose string value is the session's identity model id.
 const IDENTITY_KEYS: &[&[u8]] = &[b"modelId", b"model_id"];
+/// `stop_reason`s of an assistant line that is not the end of a turn (Claude continues).
+pub const CONTINUE_STOP_REASONS: &[&str] = &["tool_use", "pause_turn"];
+/// Longest `entrypoint` value kept for display.
+const MAX_ENTRYPOINT_LEN: usize = 32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptTail {
     pub path: PathBuf,
     pub session_id: String,
     pub entrypoint: Entrypoint,
+    /// The transcript's own `entrypoint` value (`[a-z0-9_-]`, at most 32 chars), kept so a surface
+    /// [`Entrypoint`] does not know yet can still be named.
+    pub entrypoint_raw: Option<String>,
     /// `message.model` of the last qualifying line (never has `[1m]`). [`scan_tail`] always sets
     /// it (a line without a model does not qualify); it stays an `Option` for tails built
     /// elsewhere (the app's tests, the engine's fallbacks), and readers treat `None` as unknown.
@@ -82,10 +94,12 @@ pub struct TranscriptTail {
     pub ctx_tokens: u64,
     /// Largest context-token count among qualifying lines of `model_id` in the scanned tail.
     pub max_ctx_tokens_seen: u64,
-    /// `Some(true)` if the head's identity attachment says `[1m]` for `model_id`'s model,
-    /// `Some(false)` if an identity was found without it or for another model, `None` if no
-    /// identity line was found.
+    /// `Some(true)` if the head's identity attachment has a context tag (`[1m]`, `[2m]`, …) for
+    /// `model_id`'s model, `Some(false)` if an identity was found without it or for another model,
+    /// `None` if no identity line was found.
     pub identity_1m: Option<bool>,
+    /// The identity's context tag in lower case (`[1m]`) when `identity_1m` is `Some(true)`.
+    pub identity_tag: Option<String>,
     /// `timestamp` of the last qualifying line.
     pub last_assistant_ms: Ms,
     /// Last path component of `cwd` (folder name only), if present.
@@ -172,8 +186,9 @@ pub fn scan_tail(
             scanned_len: len.min(HEAD_MAX_BYTES),
         });
     }
-    let identity_1m =
-        identity.as_ref().and_then(|found| found.model_id.as_deref()).map(|id| identity_is_1m_for(id, &last.model));
+    let identity_id = identity.as_ref().and_then(|found| found.model_id.as_deref());
+    let identity_1m = identity_id.map(|id| identity_is_1m_for(id, &last.model));
+    let identity_tag = identity_id.filter(|_| identity_1m == Some(true)).and_then(|id| ctx_tag_text(id.trim()));
 
     let session_id = last
         .session_id
@@ -186,10 +201,12 @@ pub fn scan_tail(
         path: path.to_path_buf(),
         session_id,
         entrypoint: last.entrypoint.as_deref().map_or(Entrypoint::Unknown, Entrypoint::from_transcript),
+        entrypoint_raw: last.entrypoint.as_deref().and_then(clean_entrypoint),
         model_id: Some(last.model),
         ctx_tokens: last.ctx_tokens,
         max_ctx_tokens_seen: max_ctx_tokens.max(last.ctx_tokens),
         identity_1m,
+        identity_tag,
         last_assistant_ms,
         project: last.cwd.as_deref().and_then(project_name),
         turn,
@@ -501,7 +518,8 @@ impl TurnScan {
         match (line.kind.as_deref(), self.decided) {
             (Some("assistant"), None) => {
                 let finished = message.is_some_and(|m| {
-                    m.stop_reason.as_deref() == Some("end_turn") && m.model.as_deref() != Some(SYNTHETIC_MODEL)
+                    m.stop_reason.as_deref().is_some_and(is_finish_reason)
+                        && m.model.as_deref() != Some(SYNTHETIC_MODEL)
                 });
                 let end = if finished { ts } else { None };
                 self.decided = Some(end);
@@ -662,24 +680,29 @@ fn scan_head(head: &[u8]) -> Option<String> {
     found.map(|id| String::from_utf8_lossy(id).into_owned())
 }
 
-/// True if the identity model id has `[1m]` and names the same model as `model` (a
-/// `message.model`, never suffixed): equal once a trailing `-YYYYMMDD` is ignored, or an alias
-/// such as `opus` that is one of the parts of `model`.
-fn identity_is_1m_for(identity: &str, model: &str) -> bool {
-    let (base, one_m) = split_1m(identity.trim());
-    let (base, model) = (without_date(base), without_date(model.trim()));
-    let is_alias = !base.is_empty() && base.bytes().all(|b| b.is_ascii_alphabetic());
-    one_m
-        && (base.eq_ignore_ascii_case(model)
-            || (is_alias && model.split('-').skip(1).any(|part| part.eq_ignore_ascii_case(base))))
+/// True if a `stop_reason` ends the turn (anything but [`CONTINUE_STOP_REASONS`]).
+fn is_finish_reason(reason: &str) -> bool {
+    !reason.is_empty() && !CONTINUE_STOP_REASONS.contains(&reason)
 }
 
-/// `id` without a trailing `-YYYYMMDD` snapshot date.
-fn without_date(id: &str) -> &str {
-    match id.rsplit_once('-') {
-        Some((rest, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => rest,
-        _ => id,
-    }
+/// The `entrypoint` value if it is short and made of `[A-Za-z0-9_-]` (lower-cased).
+fn clean_entrypoint(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let ok = (1..=MAX_ENTRYPOINT_LEN).contains(&raw.len())
+        && raw.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+    ok.then(|| raw.to_ascii_lowercase())
+}
+
+/// True if the identity model id has a context tag and names the same model as `model` (a
+/// `message.model`, never tagged): the same canonical id (dates, provider prefixes and suffixes
+/// ignored), or an alias such as `opus` that is one of the words of `model`.
+fn identity_is_1m_for(identity: &str, model: &str) -> bool {
+    let (base, tag) = split_ctx_tag(identity.trim());
+    let alias = base.trim();
+    let is_alias = !alias.is_empty() && alias.bytes().all(|b| b.is_ascii_alphabetic());
+    tag.is_some()
+        && (same_model(base, model)
+            || (is_alias && canonical_model_id(model).split('-').skip(1).any(|part| part.eq_ignore_ascii_case(alias))))
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -722,7 +745,7 @@ fn scan_attachment_line(line: &[u8]) -> AttachmentScan<'_> {
                 if is_identity {
                     out.identity.get_or_insert(text);
                 }
-                if ends_with_1m(text) && (is_identity || (text.starts_with(b"claude-") && is_model_id_like(text))) {
+                if has_ctx_tag(text) && (is_identity || (mentions_claude(text) && is_model_id_like(text))) {
                     out.one_m.get_or_insert(text);
                 }
                 i = next;
@@ -769,15 +792,21 @@ fn skip_whitespace(line: &[u8], mut i: usize) -> usize {
     i
 }
 
-fn ends_with_1m(text: &[u8]) -> bool {
-    text.len() >= 4 && text[text.len() - 4..].eq_ignore_ascii_case(b"[1m]")
+/// Ends with a context tag (`[1m]`, `[2m]`, `[500k]`, …).
+fn has_ctx_tag(text: &[u8]) -> bool {
+    std::str::from_utf8(text).is_ok_and(|s| split_ctx_tag(s).1.is_some())
+}
+
+/// Contains `claude` (any case): provider spellings such as `us.anthropic.claude-…` count.
+fn mentions_claude(text: &[u8]) -> bool {
+    text.windows(6).any(|w| w.eq_ignore_ascii_case(b"claude"))
 }
 
 fn is_model_id_like(text: &[u8]) -> bool {
     text.len() <= 128
         && text
             .iter()
-            .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'[' | b']' | b'@' | b':'))
+            .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'[' | b']' | b'@' | b':' | b'/'))
 }
 
 #[cfg(test)]
@@ -911,10 +940,12 @@ mod tests {
                 path: path.clone(),
                 session_id: SID.into(),
                 entrypoint: Entrypoint::Cli,
+                entrypoint_raw: Some("cli".into()),
                 model_id: Some("claude-opus-5-5".into()),
                 ctx_tokens: 3 + 1_200 + 423_933,
                 max_ctx_tokens_seen: 3 + 1_200 + 423_933,
                 identity_1m: Some(true),
+                identity_tag: Some("[1m]".into()),
                 last_assistant_ms: T_NOON + 5 * 60_000,
                 project: Some("proj".into()),
                 turn: TurnInfo::default(),
@@ -1036,12 +1067,32 @@ mod tests {
             ("cli", Entrypoint::Cli),
             ("claude-desktop", Entrypoint::Desktop),
             ("local-agent", Entrypoint::Cowork),
+            ("sdk-ts", Entrypoint::Cli),
+            ("claude-desktop-beta", Entrypoint::Desktop),
             ("something-new", Entrypoint::Unknown),
         ] {
             let v = with(assistant("claude-opus-5-5", 1, 1, 1), "/entrypoint", json!(raw));
             let path = e.write(&format!("p/{raw}.jsonl"), &lines(&[v]));
-            assert_eq!(e.scan(&path).unwrap().entrypoint, expected, "{raw}");
+            let tail = e.scan(&path).unwrap();
+            assert_eq!(tail.entrypoint, expected, "{raw}");
+            assert_eq!(tail.entrypoint_raw.as_deref(), Some(raw), "the raw value is kept for display");
         }
+        // Odd values are not kept.
+        for raw in ["has space", "x".repeat(40).as_str(), ""] {
+            let v = with(assistant("claude-opus-5-5", 1, 1, 1), "/entrypoint", json!(raw));
+            let path = e.write("p/odd.jsonl", &lines(&[v]));
+            assert_eq!(e.scan(&path).unwrap().entrypoint_raw, None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn sidechain_only_transcripts_are_not_sessions() {
+        // Wherever a subagent transcript is written (not only under `subagents`), its lines carry
+        // `isSidechain`, so it never becomes a session.
+        let e = env();
+        let side = with(assistant("claude-haiku-4-5", 1, 1, 1), "/isSidechain", json!(true));
+        let path = e.write("p/flat-subagent.jsonl", &lines(&[user("task"), side]));
+        assert_eq!(e.scan(&path), None);
     }
 
     #[test]
@@ -1346,6 +1397,13 @@ mod tests {
             ("claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929", Some(true)),
             ("opus[1m]", "claude-opus-5-5", Some(true)),
             ("opus[1m]", "claude-sonnet-5", Some(false)),
+            // Provider spellings of the same model (Bedrock, Vertex, a gateway).
+            ("us.anthropic.claude-opus-5-5-v1:0[1m]", "claude-opus-5-5", Some(true)),
+            ("claude-opus-5-5@20260101[1m]", "claude-opus-5-5-20260101", Some(true)),
+            ("gateway/claude-opus-5-5[1m]", "us.anthropic.claude-opus-5-5-20260101-v1:0", Some(true)),
+            ("us.anthropic.claude-opus-5-5-v1:0[1m]", "claude-sonnet-5", Some(false)),
+            // Other context tags are long-context markers too.
+            ("claude-opus-5-5[2m]", "claude-opus-5-5", Some(true)),
         ];
         for (i, (identity, model, expected)) in cases.into_iter().enumerate() {
             let before = assistant("claude-opus-5-5", 1, 1, 1);
@@ -1512,6 +1570,13 @@ mod tests {
         // Aliases in modelId count too; free text in modelId does not.
         let s = scan(r#"{"type":"attachment","identity":{"modelId":"opus[1M]"}}"#);
         assert_eq!(s.one_m, Some(b"opus[1M]".as_slice()));
+        // Provider spellings and new tags, under any key or an identity key with a '/'.
+        let s = scan(r#"{"type":"attachment","a":{"model":"us.anthropic.claude-opus-5-5-v1:0[1m]"}}"#);
+        assert_eq!(s.one_m, Some(b"us.anthropic.claude-opus-5-5-v1:0[1m]".as_slice()));
+        let s = scan(r#"{"type":"attachment","identity":{"modelId":"org/claude-opus-5-5[2m]"}}"#);
+        assert_eq!(s.one_m, Some(b"org/claude-opus-5-5[2m]".as_slice()));
+        // A tagged string that names no Claude model under a non-identity key does not count.
+        assert_eq!(scan(r#"{"type":"attachment","a":{"x":"something[1m]"}}"#).one_m, None);
         assert_eq!(
             scan(r#"{"type":"attachment","modelId":"not a model [1m]"}"#),
             AttachmentScan { is_attachment: true, ..AttachmentScan::default() }
@@ -1717,8 +1782,23 @@ mod tests {
         assert_eq!(turn_of(&e, "running", &running), TurnInfo::default());
         let synthetic = [done(-5), prompt(0), with(done(10), "/message/model", json!("<synthetic>"))];
         assert_eq!(turn_of(&e, "synthetic", &synthetic), TurnInfo::default());
-        let stopped = [prompt(0), with(done(10), "/message/stop_reason", json!("max_tokens"))];
-        assert_eq!(turn_of(&e, "stopped", &stopped), TurnInfo::default());
+        let paused = [prompt(0), with(done(10), "/message/stop_reason", json!("pause_turn"))];
+        assert_eq!(turn_of(&e, "paused", &paused), TurnInfo::default());
+        // A streamed line without a stop reason yet is still running.
+        let streaming = [prompt(0), with(done(10), "/message/stop_reason", json!(null))];
+        assert_eq!(turn_of(&e, "streaming", &streaming), TurnInfo::default());
+    }
+
+    #[test]
+    fn any_other_stop_reason_finishes_the_turn() {
+        let e = env();
+        // Only the "still working" reasons keep a turn open; everything else, including reasons
+        // added later, ends it.
+        for reason in ["end_turn", "stop_sequence", "max_tokens", "refusal", "some_future_reason"] {
+            let values =
+                [prompt(0), working(10), tool_result(20), with(done(30), "/message/stop_reason", json!(reason))];
+            assert_eq!(turn_of(&e, reason, &values), finished(0, 30, false), "{reason}");
+        }
     }
 
     #[test]

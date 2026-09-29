@@ -38,8 +38,8 @@ const ORG: &str = "11111111-1111-4111-8111-111111111111";
 const PROJECT_DIR: &str = "C--Users-tester-proj";
 
 /// The app's default settings that matter to the pipeline.
-pub const THRESHOLDS: [u8; 2] = [80, 95];
-pub const CTX_THRESHOLDS: [u8; 2] = [80, 90];
+pub const THRESHOLDS: &[u8] = mikyas_core::alerts::DEFAULT_THRESHOLDS;
+pub const CTX_THRESHOLDS: &[u8] = mikyas_core::ctx_alerts::DEFAULT_CTX_THRESHOLDS;
 pub const STALE_AFTER_MS: Ms = 20 * MINUTE_MS;
 pub const FINISHED_MIN_MS: Ms = 3 * MINUTE_MS;
 /// Local days the weekly recap looks at (as the app).
@@ -304,7 +304,7 @@ impl Widget {
         if self.alerts != alerts_before {
             save_json(&self.paths.alerts_file(), &self.alerts);
         }
-        let ctx = self.persisted.ctx_alerts.evaluate(&snap.sessions, &CTX_THRESHOLDS, now);
+        let ctx = self.persisted.ctx_alerts.evaluate(&snap.sessions, CTX_THRESHOLDS, now);
         let pace =
             self.persisted.pace_alerts.evaluate(&snap.windows, PaceSettings { forecast: true, heads_up: true }, now);
         let first_day = (now - (RECAP_DAYS - 1) * DAY_MS).div_euclid(DAY_MS) * DAY_MS;
@@ -372,7 +372,12 @@ impl Widget {
     }
 
     fn poll_desktop(&mut self, now: Ms) {
-        match desktop_usage::load(&self.reader, &self.paths, now.saturating_add(snapshot::FUTURE_SLACK_MS)) {
+        match desktop_usage::load(
+            &self.reader,
+            &self.paths,
+            now.saturating_add(snapshot::FUTURE_SLACK_MS),
+            &Default::default(),
+        ) {
             Ok(Some(usage)) => {
                 self.desktop_health = usage.health();
                 self.persisted.desktop_watermark_ms =

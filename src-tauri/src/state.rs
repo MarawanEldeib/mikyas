@@ -33,6 +33,11 @@ pub struct PersistedState {
     pub learned_models: BTreeMap<String, String>,
     /// Context-window sizes Claude Code's status line reported, by model id (`[1m]` kept).
     pub learned_ctx_sizes: BTreeMap<String, u64>,
+    /// When each model id was last reported (the newest `context::MAX_LEARNED` learned names and
+    /// sizes are kept).
+    pub learned_seen: BTreeMap<String, Ms>,
+    /// Claude Desktop usage keys learned to be statusline windows (`sf` → `seven_day_fable`).
+    pub desktop_aliases: BTreeMap<String, String>,
     /// Last time captures were pruned and the history compacted.
     pub last_maintenance_ms: Ms,
     /// Context-alert thresholds already announced, by session key (so restarts do not re-fire).

@@ -1,11 +1,11 @@
 //! Context-window alerts: one toast when a session's context % crosses a threshold, so the user
-//! can `/compact` or start a new session in time. Pure state machine over `Snapshot::sessions`;
+//! can compact or start a new session in time. Pure state machine over `Snapshot::sessions`;
 //! the app persists [`CtxAlertState`] in `state.json` so a restart never re-fires.
 //!
 //! Per session (keyed by the opaque [`SessionView::key`]):
 //! - Sessions with `ctx_pct: None` (or an empty key) are ignored, and so is a % estimated over
-//!   the 200K default size (`ctx_basis: Default` with `ctx_is_estimate`): a 1M session not yet
-//!   recognised as one would look five times fuller than it is.
+//!   the default size (`ctx_basis: Default` with `ctx_is_estimate`): a long-context session not
+//!   yet recognised as one would look several times fuller than it is.
 //! - Re-arm: once `ctx_pct` falls at least [`REARM_DROP_PCT`] points below the LOWEST fired
 //!   threshold (e.g. after `/compact`), the session's fired set is cleared.
 //! - Thresholds: for the highest threshold `t` with `pct >= t` that has not fired yet, emit ONE
@@ -29,6 +29,9 @@ use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms};
 
 /// A drop of at least this many points below the lowest fired threshold re-arms a session.
 pub const REARM_DROP_PCT: f32 = 10.0;
+/// Default context-alert thresholds (%): the one source for the app's settings and the UI (see
+/// `alerts::DEFAULT_THRESHOLDS`). Users may keep any list, including none.
+pub const DEFAULT_CTX_THRESHOLDS: &[u8] = &[80, 90];
 /// Sessions absent from the list for longer than this are forgotten.
 pub const FORGET_AFTER_MS: Ms = DAY_MS;
 /// `last_seen_ms` granularity (keeps `state.json` from being rewritten on every tick).
@@ -136,6 +139,7 @@ mod tests {
             ctx_basis: CtxBasis::Statusline,
             ctx_is_estimate: false,
             entrypoint: Entrypoint::Cli,
+            entrypoint_raw: None,
             last_active_ms: NOW,
             project: None,
             concurrent: 1,

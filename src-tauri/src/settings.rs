@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use mikyas_core::engine::context::{MAX_CTX_TOKENS, MIN_CTX_TOKENS};
+use mikyas_core::engine::types::WindowKind;
 use mikyas_core::time::{MINUTE_MS, Ms, now_ms};
 
 use crate::diag::log;
@@ -79,16 +80,59 @@ pub enum CloseAction {
     Quit,
 }
 
-/// Which live % the tray icon shows (`Off` = the coloured dot icons).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TrayNumber {
-    /// The highest of the 5-hour and weekly %.
-    #[default]
-    Worst,
-    FiveHour,
-    SevenDay,
-    Off,
+/// Which live % the tray icon shows, stored as a string so any limit Claude reports can be
+/// picked: `"worst"` (the highest of all limits), `"off"` (the coloured dot icons), or a window
+/// key (`"five_hour"`, `"seven_day"`, `"seven_day_opus"`, a key added later). A key that is not
+/// present right now shows the worst value instead. Values that cannot be a key become `"worst"`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TrayNumber(String);
+
+impl Default for TrayNumber {
+    fn default() -> Self {
+        Self::worst()
+    }
+}
+
+impl TrayNumber {
+    const WORST: &'static str = "worst";
+    const OFF: &'static str = "off";
+    /// Longest window key accepted (as the capture's limit).
+    const MAX_LEN: usize = 64;
+
+    pub fn worst() -> Self {
+        Self(Self::WORST.to_owned())
+    }
+
+    pub fn off() -> Self {
+        Self(Self::OFF.to_owned())
+    }
+
+    /// A window key or one of the two words (trimmed; lower case for the words).
+    #[cfg(test)]
+    pub fn new(value: &str) -> Self {
+        Self(value.to_owned()).sanitized()
+    }
+
+    pub fn is_off(&self) -> bool {
+        self.0 == Self::OFF
+    }
+
+    /// The chosen window, unless the choice is "worst" or "off".
+    pub fn window(&self) -> Option<WindowKind> {
+        (self.0 != Self::WORST && self.0 != Self::OFF).then(|| WindowKind::from_key(&self.0))
+    }
+
+    fn sanitized(self) -> Self {
+        let v = self.0.trim();
+        let lower = v.to_ascii_lowercase();
+        if lower == Self::WORST || lower == Self::OFF {
+            return Self(lower);
+        }
+        let key_like = (1..=Self::MAX_LEN).contains(&v.len())
+            && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if key_like { Self(v.to_owned()) } else { Self::worst() }
+    }
 }
 
 /// Which optional rows the card shows.
@@ -126,7 +170,7 @@ pub struct Settings {
     pub start_with_windows: bool,
     /// Toast when the active session's context crosses a threshold.
     pub ctx_alerts: bool,
-    /// Ascending context-% thresholds, e.g. [80, 90].
+    /// Ascending context-% thresholds (default [`DEFAULT_CTX_THRESHOLDS`]; empty = no alerts).
     pub ctx_thresholds: Vec<u8>,
     /// Global shortcut that shows/hides the widget ("" = none).
     pub toggle_hotkey: String,
@@ -164,11 +208,11 @@ pub struct Settings {
 /// Settings the app keeps for itself: `apply_patch` ignores them.
 const INTERNAL_KEYS: &[&str] = &["hide_hint_shown"];
 
-/// Default usage-alert thresholds (%). Lists are kept as the user sets them (empty = no alerts);
-/// the UI mirrors these for its display fallback (`src/lib/thresholds.ts`, guarded by rust-sync.test.ts).
-pub const DEFAULT_THRESHOLDS: [u8; 2] = [80, 95];
-/// Default context-alert thresholds (%).
-pub const DEFAULT_CTX_THRESHOLDS: [u8; 2] = [80, 90];
+/// Default alert thresholds (%), from core (the one source; the UI mirrors them in
+/// `src/lib/thresholds.ts`, guarded by rust-sync.test.ts). Lists are kept as the user sets them:
+/// any number of thresholds, empty = no alerts.
+pub use mikyas_core::alerts::DEFAULT_THRESHOLDS;
+pub use mikyas_core::ctx_alerts::DEFAULT_CTX_THRESHOLDS;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -205,7 +249,7 @@ impl Default for Settings {
             finished_min_minutes: 3,
             connection_watchdog: true,
             per_display_position: true,
-            tray_number: TrayNumber::Worst,
+            tray_number: TrayNumber::worst(),
             hide_hint_shown: false,
         }
     }
@@ -230,11 +274,15 @@ impl Settings {
         self.thresholds.dedup();
         self.stale_min = self.stale_min.clamp(1, 24 * 60);
         self.hotkey = self.hotkey.trim().to_owned();
-        // 0 removes an override; any other size is kept, within 1K..=100M tokens.
-        self.ctx_overrides.retain(|k, v| !k.trim().is_empty() && *v > 0);
-        for v in self.ctx_overrides.values_mut() {
-            *v = (*v).clamp(MIN_CTX_TOKENS, MAX_CTX_TOKENS);
-        }
+        // 0 removes an override; any other size is kept, within 1K..=100M tokens. Keys are stored
+        // trimmed (core matches them case-insensitively and by canonical spelling).
+        self.ctx_overrides = std::mem::take(&mut self.ctx_overrides)
+            .into_iter()
+            .map(|(k, v)| (k.trim().to_owned(), v))
+            .filter(|(k, v)| !k.is_empty() && *v > 0)
+            .map(|(k, v)| (k, v.clamp(MIN_CTX_TOKENS, MAX_CTX_TOKENS)))
+            .collect();
+        self.tray_number = std::mem::take(&mut self.tray_number).sanitized();
         self.finished_min_minutes = self.finished_min_minutes.clamp(1, 60);
         self
     }
@@ -375,9 +423,21 @@ mod tests {
         let s = apply_patch(&s, &serde_json::json!({"finished_min_minutes": 999})).unwrap();
         assert_eq!(s.finished_min_minutes, 60);
         let s = apply_patch(&s, &serde_json::json!({"tray_number": "five_hour", "pace_alerts": false})).unwrap();
-        assert_eq!(s.tray_number, TrayNumber::FiveHour);
+        assert_eq!(s.tray_number, TrayNumber::new("five_hour"));
+        // Any window key can be chosen, including ones added later.
+        let s = apply_patch(&s, &serde_json::json!({"tray_number": "seven_day_newmodel"})).unwrap();
+        assert_eq!(s.tray_number.window(), Some(WindowKind::from_key("seven_day_newmodel")));
+        // Values that cannot name a window fall back to worst.
+        for bad in ["", "   ", "not a key!", "x".repeat(65).as_str()] {
+            let s = apply_patch(&s, &serde_json::json!({ "tray_number": bad })).unwrap();
+            assert_eq!(s.tray_number, TrayNumber::worst(), "{bad:?}");
+        }
+        assert_eq!(
+            apply_patch(&s, &serde_json::json!({"tray_number": " OFF "})).unwrap().tray_number,
+            TrayNumber::off()
+        );
         assert!(!s.pace_alerts);
-        assert!(apply_patch(&s, &serde_json::json!({"tray_number": "best"})).is_err());
+        assert!(apply_patch(&s, &serde_json::json!({"tray_number": 5})).is_err());
         assert!(apply_patch(&s, &serde_json::json!({"finished_min_minutes": -1})).is_err());
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("settings.json");
@@ -386,7 +446,7 @@ mod tests {
         assert!(old.pace_alerts && old.reset_heads_up && old.weekly_recap && old.finished_alerts);
         assert!(old.connection_watchdog && old.per_display_position);
         assert_eq!(old.finished_min_minutes, 3);
-        assert_eq!(old.tray_number, TrayNumber::Worst);
+        assert_eq!(old.tray_number, TrayNumber::worst());
     }
 
     #[test]
@@ -508,6 +568,14 @@ mod tests {
                 ("claude-f", 100_000_000)
             ]
         );
+        // Keys are stored trimmed, tags and provider spellings as typed.
+        let next = apply_patch(
+            &Settings::default(),
+            &serde_json::json!({"ctx_overrides": {" claude-x ": 300_000, "claude-x[2m]": 2_000_000, "us.anthropic.claude-y-v1:0": 9_000}}),
+        )
+        .unwrap();
+        let keys: Vec<&str> = next.ctx_overrides.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["claude-x", "claude-x[2m]", "us.anthropic.claude-y-v1:0"]);
     }
 
     #[test]

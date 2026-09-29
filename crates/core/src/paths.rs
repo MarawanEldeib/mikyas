@@ -239,23 +239,60 @@ fn valid_override(path: &Path) -> bool {
     local && path.is_absolute() && !path.components().any(dots)
 }
 
+/// Files and folders Claude Desktop keeps in its data folder (Anthropic's names, used as-is): a
+/// folder holding one of them is a Desktop root.
+const DESKTOP_MARKERS: [&str; 3] = ["plan-usage-history.json", "claude-code-sessions", "local-agent-mode-sessions"];
+
 /// `<config_dir>/Claude` on every OS (`%APPDATA%\Claude`, `~/Library/Application Support/Claude`,
-/// `~/.config/Claude`), plus MSIX-virtualised copies on Windows.
+/// `~/.config/Claude`), plus MSIX-virtualised copies on Windows (see [`desktop_roots_in`]).
 fn detect_desktop_roots() -> Vec<PathBuf> {
+    let config = dirs::config_dir();
+    let packages = if cfg!(windows) { dirs::data_local_dir().map(|l| l.join("Packages")) } else { None };
+    desktop_roots_in(config.as_deref(), packages.as_deref())
+}
+
+/// Desktop roots, found by name pattern so beta, preview or renamed channels are found too
+/// (only directory names are listed, and marker files only checked for existence):
+/// - `<config>/Claude` (always, first), then any other `<config>` folder whose name contains
+///   `claude` or `anthropic` (any case) and that holds a [`DESKTOP_MARKERS`] entry;
+/// - in `packages` (Windows `%LOCALAPPDATA%\Packages`), every package whose name starts with
+///   `claude` or contains `anthropic` (any case): its `LocalCache\Roaming\<folder>` for each
+///   folder whose name contains `claude`, or `…\Roaming\Claude` when none is listed.
+fn desktop_roots_in(config: Option<&Path>, packages: Option<&Path>) -> Vec<PathBuf> {
+    let names = |dir: &Path| -> Vec<(String, PathBuf)> {
+        let mut out: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries.flatten().map(|e| (e.file_name().to_string_lossy().to_lowercase(), e.path())).collect()
+            })
+            .unwrap_or_default();
+        out.sort();
+        out
+    };
+    let has_marker = |dir: &Path| DESKTOP_MARKERS.iter().any(|m| dir.join(m).exists());
     let mut roots = Vec::new();
-    if let Some(cfg) = dirs::config_dir() {
-        roots.push(cfg.join("Claude"));
+    if let Some(cfg) = config {
+        let main = cfg.join("Claude");
+        roots.push(main.clone());
+        for (name, path) in names(cfg) {
+            let related = name.contains("claude") || name.contains("anthropic");
+            if related && path != main && name != "claude" && has_marker(&path) {
+                roots.push(path);
+            }
+        }
     }
-    #[cfg(windows)]
-    if let Some(local) = dirs::data_local_dir() {
-        if let Ok(entries) = std::fs::read_dir(local.join("Packages")) {
-            let mut msix: Vec<PathBuf> = entries
-                .flatten()
-                .filter(|e| e.file_name().to_string_lossy().starts_with("Claude_"))
-                .map(|e| e.path().join("LocalCache").join("Roaming").join("Claude"))
-                .collect();
-            msix.sort();
-            roots.extend(msix);
+    if let Some(packages) = packages {
+        for (name, package) in names(packages) {
+            if !(name.starts_with("claude") || name.contains("anthropic")) {
+                continue;
+            }
+            let roaming = package.join("LocalCache").join("Roaming");
+            let inner: Vec<PathBuf> =
+                names(&roaming).into_iter().filter(|(n, _)| n.contains("claude")).map(|(_, p)| p).collect();
+            if inner.is_empty() {
+                roots.push(roaming.join("Claude"));
+            } else {
+                roots.extend(inner);
+            }
         }
     }
     roots
@@ -264,6 +301,39 @@ fn detect_desktop_roots() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_roots_are_found_by_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let pkgs = tmp.path().join("Packages");
+        let mk = |p: PathBuf| std::fs::create_dir_all(p).unwrap();
+        // Config folders: the main one, a preview channel with data, an unrelated app, a related
+        // name without Desktop data.
+        mk(cfg.join("Claude"));
+        mk(cfg.join("Claude-Preview").join("claude-code-sessions"));
+        mk(cfg.join("OtherApp").join("claude-code-sessions"));
+        mk(cfg.join("Claude Helper"));
+        // Packages: the release, a beta family, an Anthropic-named one, an unrelated one.
+        mk(pkgs.join("Claude_pzs8sxrjxfjjc").join("LocalCache").join("Roaming").join("Claude"));
+        mk(pkgs.join("ClaudeBeta_abcdefgh").join("LocalCache").join("Roaming").join("Claude-Beta"));
+        mk(pkgs.join("Anthropic.Something_12345").join("LocalCache"));
+        mk(pkgs.join("Other_12345").join("LocalCache").join("Roaming").join("Claude"));
+        let roots = desktop_roots_in(Some(&cfg), Some(&pkgs));
+        let rel: Vec<String> =
+            roots.iter().map(|p| p.strip_prefix(tmp.path()).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(
+            rel,
+            [
+                "cfg/Claude",
+                "cfg/Claude-Preview",
+                "Packages/Anthropic.Something_12345/LocalCache/Roaming/Claude",
+                "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude",
+                "Packages/ClaudeBeta_abcdefgh/LocalCache/Roaming/Claude-Beta",
+            ]
+        );
+        assert_eq!(desktop_roots_in(None, None), Vec::<PathBuf>::new());
+    }
 
     #[test]
     fn layout_is_derived_from_roots() {

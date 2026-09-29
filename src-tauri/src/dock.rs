@@ -199,7 +199,10 @@ pub fn place(window: &WebviewWindow, side: Side, settings: &Settings, view: View
     let last = state.as_ref().and_then(|s| *lock(&s.last_placement));
     let strip = current_strip(last, side, area, strip_size(side, settings.ui_scale, dpi), visible);
     let target = if expanded {
-        expanded_rect(side, area, physical(view_size(view, settings), dpi), strip, visible, cursor)
+        let extra = crate::window::current_extra_rows(window.app_handle());
+        let (w, h) = physical(view_size(view, settings, extra), dpi);
+        // Never taller or wider than the screen: a card with many limit rows scrolls instead.
+        expanded_rect(side, area, (w.min(area.2.max(1)), h.min(area.3.max(1))), strip, visible, cursor)
     } else {
         strip
     };

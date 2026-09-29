@@ -29,7 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mikyas_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
-use mikyas_core::engine::types::WindowKind;
+use mikyas_core::engine::types::{WindowKind, main_kinds};
 use mikyas_core::level::{UsageLevel, display_pct};
 use mikyas_core::paths::Paths;
 use mikyas_core::time::{self, Ms};
@@ -512,7 +512,10 @@ fn close_stdout() {}
 // --default line
 // ---------------------------------------------------------------------------------------------
 
-/// `<model> · ctx 34% · 5h 22% 3h12m · 7d 61% 2d4h`, omitting whatever is unknown.
+/// `<model> · ctx 34% · 5h 22% 3h12m · 7d 61% 2d4h`, omitting whatever is unknown. The windows
+/// come from the data: the shortest and the longest (`main_kinds`) always, any other only while it
+/// is at the orange band or above (e.g. a model-specific weekly limit about to block), ordered by
+/// length (unknown lengths last).
 fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
     let mut parts = Vec::new();
     if let Some(rec) = rec {
@@ -528,15 +531,20 @@ fn render_line(rec: Option<&CaptureRecord>, now_ms: Ms) -> String {
         if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {
             parts.push(format!("ctx {}", colored_pct(pct)));
         }
-        for kind in [WindowKind::FiveHour, WindowKind::SevenDay] {
-            if let Some(window) = rec.rate_limits.get(kind.key()) {
-                parts.push(format!(
-                    "{} {} {DIM}{}{RESET}",
-                    kind.short_label(),
-                    colored_pct(window.used_percentage),
-                    countdown(window.resets_at, now_ms)
-                ));
-            }
+        let windows: Vec<(WindowKind, &capture::RateLimit)> =
+            rec.rate_limits.iter().map(|(k, w)| (WindowKind::from_key(k), w)).collect();
+        let main = main_kinds(windows.iter().map(|(k, _)| k));
+        let mut shown: Vec<&(WindowKind, &capture::RateLimit)> = windows
+            .iter()
+            .filter(|(k, w)| main.contains(k) || UsageLevel::for_pct(w.used_percentage) != UsageLevel::Ok)
+            .collect();
+        shown.sort_by(|(a, _), (b, _)| {
+            let len = |k: &WindowKind| k.duration_ms().map_or((1, 0), |d| (0, d));
+            len(a).cmp(&len(b)).then_with(|| a.key().cmp(b.key()))
+        });
+        for (kind, window) in shown {
+            let reset = window.resets_at.map(|r| format!(" {DIM}{}{RESET}", countdown(r, now_ms))).unwrap_or_default();
+            parts.push(format!("{} {}{reset}", kind.short_label(), colored_pct(window.used_percentage)));
         }
     }
     if parts.is_empty() {
@@ -871,13 +879,14 @@ mod tests {
         let mut rate_limits = BTreeMap::new();
         rate_limits.insert(
             "five_hour".to_owned(),
-            RateLimit { used_percentage: 22.4, resets_at: NOW_S + 3 * 3600 + 12 * 60 + 5 },
+            RateLimit { used_percentage: 22.4, resets_at: Some(NOW_S + 3 * 3600 + 12 * 60 + 5) },
         );
         rate_limits.insert(
             "seven_day".to_owned(),
-            RateLimit { used_percentage: 61.0, resets_at: NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60 },
+            RateLimit { used_percentage: 61.0, resets_at: Some(NOW_S + 2 * 86_400 + 4 * 3600 + 59 * 60) },
         );
-        rate_limits.insert("seven_day_opus".to_owned(), RateLimit { used_percentage: 99.0, resets_at: NOW_S + 60 });
+        rate_limits
+            .insert("seven_day_opus".to_owned(), RateLimit { used_percentage: 99.0, resets_at: Some(NOW_S + 60) });
         CaptureRecord {
             v: capture::CAPTURE_VERSION,
             session_id: "00000000-0000-4000-8000-000000000001".to_owned(),
@@ -955,8 +964,26 @@ mod tests {
             line,
             format!(
                 "{PINK}Opus 5.5{RESET} · ctx {GREEN}34%{RESET} · 5h {GREEN}22%{RESET} {DIM}3h12m{RESET} · \
-                 7d {ORANGE}61%{RESET} {DIM}2d4h{RESET}\n"
+                 7d {ORANGE}61%{RESET} {DIM}2d4h{RESET} · 7d Opus {RED}99%{RESET} {DIM}1m{RESET}\n"
             )
+        );
+    }
+
+    #[test]
+    fn windows_on_the_line_come_from_the_data() {
+        let mut rec = record();
+        rec.model = None;
+        rec.context = None;
+        rec.rate_limits.clear();
+        let limit = |pct: f32, reset: Option<i64>| RateLimit { used_percentage: pct, resets_at: reset };
+        // Renamed main keys, a longer cycle, a quiet extra limit and one without a reset time.
+        rec.rate_limits.insert("4_hour".into(), limit(10.0, Some(NOW_S + 3600)));
+        rec.rate_limits.insert("thirty_day".into(), limit(20.0, None));
+        rec.rate_limits.insert("seven_day_newmodel".into(), limit(12.0, Some(NOW_S + 60)));
+        rec.rate_limits.insert("mystery".into(), limit(80.0, None));
+        assert_eq!(
+            render_line(Some(&rec), NOW_S * 1000),
+            format!("4h {GREEN}10%{RESET} {DIM}1h0m{RESET} · 30d {GREEN}20%{RESET} · mystery {RED}80%{RESET}\n")
         );
     }
 
@@ -968,7 +995,9 @@ mod tests {
         rec.rate_limits.remove("five_hour");
         assert_eq!(
             render_line(Some(&rec), NOW_S * 1000),
-            format!("{PINK}claude-x{RESET} · 7d {ORANGE}61%{RESET} {DIM}2d4h{RESET}\n")
+            format!(
+                "{PINK}claude-x{RESET} · 7d {ORANGE}61%{RESET} {DIM}2d4h{RESET} · 7d Opus {RED}99%{RESET} {DIM}1m{RESET}\n"
+            )
         );
 
         rec.model = Some(ModelInfo { id: None, display_name: Some("\x1b]0;evil\x07Opus".to_owned()) });

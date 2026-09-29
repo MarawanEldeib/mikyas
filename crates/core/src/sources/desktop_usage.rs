@@ -7,7 +7,12 @@
 //! ```
 //! - `t`: epoch ms. Samples arrive ~every 15 min while Desktop runs (gaps of hours/days happen).
 //! - `u.fh`: 5-hour %, `u.sd`: 7-day %. Integers 0..=100 today (100 does occur); accept floats.
-//!   Optional `so`/`sn` (per-model weekly) and any unknown keys map via `WindowKind::from_key`.
+//!   Optional `so`/`sn` (per-model weekly). Keys are resolved by [`DesktopKeys::resolve`]: a key
+//!   learned from the data first ([`learn_aliases`]: a Desktop key and a statusline window that
+//!   report the same % at the same time are one limit), then the known short keys
+//!   (`WindowKind::from_key`), then a generic decode against the statusline keys seen so far
+//!   (first letter = the span's initial, the rest = the unit letter or the start of a scope), so
+//!   a key Desktop adds later gets a length (forecast, reset estimate) before it is learned.
 //! - No reset times.
 //! - `org` identifies the account's organization. PRIVACY: it must never be stored, logged,
 //!   serialised or shown. Compare orgs only in memory to keep samples of the org that owns the
@@ -17,7 +22,7 @@
 //! each sample's `t`, `org` (borrowed from the input) and the numeric `u` values.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -25,11 +30,12 @@ use serde::Deserialize;
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
+use crate::capture::CaptureRecord;
 use crate::engine::types::{DesktopHealth, Observation, Sample, Source, WindowKind};
 use crate::paths::Paths;
 use crate::saferead::SafeReader;
-use crate::sources::SourceError;
-use crate::time::{MAX_PLAUSIBLE_MS, Ms, json_time_to_ms, system_time_ms};
+use crate::sources::{SourceError, statusline};
+use crate::time::{MAX_PLAUSIBLE_MS, MINUTE_MS, Ms, json_time_to_ms, system_time_ms};
 
 pub const SUPPORTED_VERSION: u32 = 2;
 /// The file grows ~100 samples/day; refuse anything absurd.
@@ -39,6 +45,103 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// strings from the file never become window names shown in the UI.
 const MAX_KEY_LEN: usize = 32;
 
+/// A Desktop key and a statusline window are one limit when their values are this close...
+pub const ALIAS_MATCH_PCT: f32 = 1.0;
+/// ...and were measured at most this far apart.
+pub const ALIAS_MATCH_MS: Ms = 20 * MINUTE_MS;
+/// Longest Desktop key the generic decode reads (`fh`, `sd`, `so` are 2).
+const MAX_DECODED_KEY_LEN: usize = 4;
+
+/// How Desktop's short `u` keys map to window kinds (see the module docs).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DesktopKeys {
+    /// Learned: Desktop key → statusline window key (persisted by the app).
+    pub aliases: BTreeMap<String, String>,
+    /// Statusline window keys seen so far (the generic decode's vocabulary). `five_hour` and
+    /// `seven_day` are always included.
+    pub known: BTreeSet<String>,
+}
+
+impl DesktopKeys {
+    /// The window kind of a Desktop `u` key.
+    pub fn resolve(&self, key: &str) -> WindowKind {
+        if let Some(long) = self.aliases.get(key) {
+            return WindowKind::from_key(long);
+        }
+        let fixed = WindowKind::from_key(key);
+        if fixed.key() != key || key.contains('_') {
+            return fixed;
+        }
+        self.decode(key).unwrap_or(fixed)
+    }
+
+    /// Generic decode of a short key such as `sf` (see the module docs).
+    fn decode(&self, key: &str) -> Option<WindowKind> {
+        let valid = (2..=MAX_DECODED_KEY_LEN).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_lowercase());
+        if !valid {
+            return None;
+        }
+        let known: BTreeSet<WindowKind> = self
+            .known
+            .iter()
+            .map(|k| WindowKind::from_key(k))
+            .chain([WindowKind::FiveHour, WindowKind::SevenDay])
+            .collect();
+        let (first, rest) = key.split_at(1);
+        let mut bases = known.iter().filter(|k| k.is_unscoped() && k.key().starts_with(first));
+        let base = bases.next()?;
+        if bases.next().is_some() {
+            return None; // two spans share the initial: not guessable
+        }
+        if base.unit_letter() == Some(rest) {
+            return Some(base.clone());
+        }
+        let mut scoped = known.iter().filter(|k| {
+            k.span_and_scope()
+                .is_some_and(|(span, scope)| span == base.key() && !scope.is_empty() && scope.starts_with(rest))
+        });
+        match (scoped.next(), scoped.next()) {
+            (Some(one), None) => Some(one.clone()),
+            _ => Some(WindowKind::from_key(&format!("{}_{rest}", base.key()))),
+        }
+    }
+}
+
+/// Learns Desktop keys that still map to no statusline window: when a Desktop series' newest
+/// value and exactly one statusline window that no Desktop series covers report the same % (within
+/// [`ALIAS_MATCH_PCT`], at least 1 %) at most [`ALIAS_MATCH_MS`] apart — and their lengths, when
+/// both are known, agree — the Desktop key is that window from now on. True if `aliases` changed.
+pub fn learn_aliases(aliases: &mut BTreeMap<String, String>, usage: &DesktopUsage, captures: &[CaptureRecord]) -> bool {
+    let cli = statusline::observations(captures);
+    let cli_kinds: BTreeSet<&WindowKind> = cli.iter().map(|o| &o.kind).collect();
+    let mut changed = false;
+    for (kind, raw) in &usage.raw_keys {
+        if cli_kinds.contains(kind) || raw.contains('_') || aliases.contains_key(raw) {
+            continue;
+        }
+        let Some(last) = usage.series.get(kind).and_then(|s| s.last()) else { continue };
+        if last.pct < 1.0 {
+            continue;
+        }
+        let lengths_agree = |other: &WindowKind| match (kind.duration_ms(), other.duration_ms()) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
+        let matches: BTreeSet<&WindowKind> = cli
+            .iter()
+            .filter(|o| !usage.series.contains_key(&o.kind) && lengths_agree(&o.kind))
+            .filter(|o| o.observed_at_ms.abs_diff(last.t_ms) <= ALIAS_MATCH_MS.unsigned_abs())
+            .filter(|o| (o.pct - last.pct).abs() <= ALIAS_MATCH_PCT)
+            .map(|o| &o.kind)
+            .collect();
+        if let [only] = matches.into_iter().collect::<Vec<_>>()[..] {
+            aliases.insert(raw.clone(), only.key().to_owned());
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Parsed usage history of the account that owns the newest sample. Holds no account identifier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopUsage {
@@ -47,6 +150,8 @@ pub struct DesktopUsage {
     /// Per window, samples sorted by `t_ms` ascending, duplicates (same t) removed, pct clamped
     /// to 0..=100, non-numeric values skipped.
     pub series: BTreeMap<WindowKind, Vec<Sample>>,
+    /// The Desktop `u` key each series came from (what [`learn_aliases`] learns about).
+    pub raw_keys: BTreeMap<WindowKind, String>,
     /// `t` of the newest kept sample; `None` if the file holds no usable sample.
     pub last_sample_ms: Option<Ms>,
 }
@@ -78,6 +183,11 @@ pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
     parse_until(bytes, MAX_PLAUSIBLE_MS)
 }
 
+/// [`parse_with`] with only the built-in key knowledge.
+pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
+    parse_with(bytes, max_t_ms, &DesktopKeys::default())
+}
+
 /// Parses the file. An older `version` than 2 → `Err(SourceError::SchemaChanged(v))`. A newer one
 /// is read best-effort with the same rules (unknown fields and keys are ignored); it is only
 /// `SchemaChanged` when it has no `samples` array, or a non-empty one in which no sample has both a
@@ -93,8 +203,8 @@ pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
 ///
 /// A `u` counts as valid when it holds at least one numeric value under a plausible key. Of
 /// several samples with the same `t`, the one written last wins. Error messages never quote the
-/// document, so they cannot leak the org.
-pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
+/// document, so they cannot leak the org. `keys` resolves the `u` keys ([`DesktopKeys::resolve`]).
+pub fn parse_with(bytes: &[u8], max_t_ms: Ms, keys: &DesktopKeys) -> Result<DesktopUsage, SourceError> {
     // A UTF-8 BOM (added by some Windows editors) is not JSON whitespace to serde_json.
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let doc: Doc<'_> = serde_json::from_slice(bytes).map_err(json_error)?;
@@ -124,18 +234,22 @@ pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceErr
         raw.iter().filter(|s| s.org.is_some() || s.usage.is_some()).max_by_key(|s| s.t_ms).map(|s| s.org.as_deref());
 
     let mut series: BTreeMap<WindowKind, Vec<Sample>> = BTreeMap::new();
+    let mut raw_keys: BTreeMap<WindowKind, String> = BTreeMap::new();
+    let mut resolved: BTreeMap<&str, WindowKind> = BTreeMap::new();
     let mut last_sample_ms = None;
     for sample in raw.iter().filter(|s| Some(s.org.as_deref()) == owner) {
         let Some(usage) = &sample.usage else { continue };
         last_sample_ms = last_sample_ms.max(Some(sample.t_ms));
         for (key, pct) in usage {
-            series.entry(WindowKind::from_key(key)).or_default().push(Sample { t_ms: sample.t_ms, pct: *pct });
+            let kind = resolved.entry(key.as_ref()).or_insert_with(|| keys.resolve(key)).clone();
+            raw_keys.entry(kind.clone()).or_insert_with(|| key.to_string());
+            series.entry(kind).or_default().push(Sample { t_ms: sample.t_ms, pct: *pct });
         }
     }
     for samples in series.values_mut() {
         sort_dedup(samples);
     }
-    Ok(DesktopUsage { version, series, last_sample_ms })
+    Ok(DesktopUsage { version, series, raw_keys, last_sample_ms })
 }
 
 /// The newest sample of each series as a Desktop observation (`resets_at_ms: None`).
@@ -165,13 +279,18 @@ pub fn latest_observations(usage: &DesktopUsage) -> Vec<Observation> {
 /// between listing and reading counts as absent. A SchemaChanged file modified after the chosen
 /// file's newest sample (after its mtime if it has none) is the one the running Desktop writes,
 /// the chosen one a stale copy in another root: its error is returned instead.
-pub fn load(reader: &SafeReader, paths: &Paths, max_t_ms: Ms) -> Result<Option<DesktopUsage>, SourceError> {
+pub fn load(
+    reader: &SafeReader,
+    paths: &Paths,
+    max_t_ms: Ms,
+    keys: &DesktopKeys,
+) -> Result<Option<DesktopUsage>, SourceError> {
     let mut best: Option<(DesktopUsage, PathBuf)> = None;
     let mut error: Option<SourceError> = None;
     // Newest mtime among the SchemaChanged files, with that file's version.
     let mut newer_schema: Option<(Ms, u32)> = None;
     for path in paths.desktop_usage_files() {
-        match read_file(reader, &path, max_t_ms) {
+        match read_file(reader, &path, max_t_ms, keys) {
             Ok(usage) => {
                 if best.as_ref().is_none_or(|(b, _)| usage.last_sample_ms > b.last_sample_ms) {
                     best = Some((usage, path));
@@ -212,9 +331,9 @@ pub fn load(reader: &SafeReader, paths: &Paths, max_t_ms: Ms) -> Result<Option<D
     }
 }
 
-fn read_file(reader: &SafeReader, path: &Path, max_t_ms: Ms) -> Result<DesktopUsage, SourceError> {
+fn read_file(reader: &SafeReader, path: &Path, max_t_ms: Ms, keys: &DesktopKeys) -> Result<DesktopUsage, SourceError> {
     let bytes = reader.read(path, MAX_FILE_BYTES)?;
-    parse_until(&bytes, max_t_ms)
+    parse_with(&bytes, max_t_ms, keys)
 }
 
 /// The file's mtime in epoch ms, if the file system reports one.
@@ -1166,7 +1285,7 @@ mod tests {
             self.load_until(MAX_PLAUSIBLE_MS)
         }
         fn load_until(&self, max_t_ms: Ms) -> Result<Option<DesktopUsage>, SourceError> {
-            load(&SafeReader::new(&self.paths), &self.paths, max_t_ms)
+            load(&SafeReader::new(&self.paths), &self.paths, max_t_ms, &DesktopKeys::default())
         }
     }
 
@@ -1298,5 +1417,96 @@ mod tests {
         ] {
             let _ = parse(doc.as_bytes());
         }
+    }
+
+    fn keys(known: &[&str], aliases: &[(&str, &str)]) -> DesktopKeys {
+        DesktopKeys {
+            aliases: aliases.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            known: known.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn desktop_keys_resolve_from_the_data() {
+        let k = |s: &str| WindowKind::from_key(s);
+        let none = keys(&[], &[]);
+        // Seeds and statusline-shaped keys.
+        assert_eq!(none.resolve("fh"), WindowKind::FiveHour);
+        assert_eq!(none.resolve("sd"), WindowKind::SevenDay);
+        assert_eq!(none.resolve("so"), k("seven_day_opus"));
+        assert_eq!(none.resolve("seven_day_x"), k("seven_day_x"));
+        // A new key: first letter = span, the rest the start of a known scope.
+        let known = keys(&["five_hour", "seven_day", "seven_day_fable"], &[]);
+        assert_eq!(known.resolve("sf"), k("seven_day_fable"));
+        // Nothing known for the rest: the span is still known (length, forecast, reset estimate).
+        assert_eq!(none.resolve("sf"), k("seven_day_f"));
+        assert_eq!(none.resolve("sf").duration_ms(), Some(crate::time::SEVEN_DAYS_MS));
+        assert_eq!(none.resolve("fx"), k("five_hour_x"));
+        // No span with that initial, ambiguous initials, or not a short key: kept as is.
+        assert_eq!(none.resolve("xh"), k("xh"));
+        assert_eq!(keys(&["six_hour"], &[]).resolve("sq"), k("sq"), "six_hour and seven_day share 's'");
+        assert_eq!(none.resolve("toolong"), k("toolong"));
+        // A learned alias wins over everything.
+        let learned = keys(&[], &[("sf", "seven_day_fable"), ("fh", "five_hour_x")]);
+        assert_eq!(learned.resolve("sf"), k("seven_day_fable"));
+        assert_eq!(learned.resolve("fh"), k("five_hour_x"));
+    }
+
+    fn capture(changed: Ms, limits: &[(&str, f32)]) -> CaptureRecord {
+        CaptureRecord {
+            v: 1,
+            session_id: "00000000-0000-4000-8000-000000000001".into(),
+            written_at_ms: changed,
+            changed_at_ms: changed,
+            fingerprint: 0,
+            model: None,
+            context: None,
+            rate_limits: limits
+                .iter()
+                .map(|(k, p)| {
+                    (k.to_string(), crate::capture::RateLimit { used_percentage: *p, resets_at: Some(1_790_600_000) })
+                })
+                .collect(),
+            api_ms: None,
+        }
+    }
+
+    #[test]
+    fn aliases_are_learned_from_matching_values() {
+        let t = 1_790_208_000_000;
+        let doc = format!(r#"{{"version":2,"samples":[{{"t":{t},"u":{{"fh":20,"sd":40,"sq":63,"zz":5}}}}]}}"#);
+        let usage = parse(doc.as_bytes()).unwrap();
+        assert_eq!(usage.raw_keys.get(&WindowKind::from_key("seven_day_q")).map(String::as_str), Some("sq"));
+        let caps = [capture(t + 5 * MINUTE_MS, &[("five_hour", 20.0), ("seven_day", 40.0), ("seven_day_quill", 62.4)])];
+        let mut aliases = BTreeMap::new();
+        assert!(learn_aliases(&mut aliases, &usage, &caps));
+        assert_eq!(aliases, BTreeMap::from([("sq".to_owned(), "seven_day_quill".to_owned())]));
+        assert!(!learn_aliases(&mut aliases, &usage, &caps), "learned once");
+        // Once learned, the key parses as that window and merges with it.
+        let usage =
+            parse_with(doc.as_bytes(), MAX_PLAUSIBLE_MS, &DesktopKeys { aliases, known: BTreeSet::new() }).unwrap();
+        assert!(usage.series.contains_key(&WindowKind::from_key("seven_day_quill")));
+    }
+
+    #[test]
+    fn aliases_are_not_guessed() {
+        let t = 1_790_208_000_000;
+        let doc = format!(r#"{{"version":2,"samples":[{{"t":{t},"u":{{"fh":20,"sq":63,"zq":0}}}}]}}"#);
+        let usage = parse(doc.as_bytes()).unwrap();
+        let mut aliases = BTreeMap::new();
+        // Two candidates with the same value: ambiguous.
+        let two = [capture(t, &[("seven_day_a", 63.0), ("seven_day_b", 63.0)])];
+        assert!(!learn_aliases(&mut aliases, &usage, &two));
+        // Too far apart in time, or in value, or of another length.
+        let late = [capture(t + 2 * ALIAS_MATCH_MS, &[("seven_day_a", 63.0)])];
+        let off = [capture(t, &[("seven_day_a", 66.0)])];
+        let short = [capture(t, &[("five_hour_a", 63.0)])];
+        for caps in [&late[..], &off[..], &short[..]] {
+            assert!(!learn_aliases(&mut aliases, &usage, caps));
+        }
+        // 0 % matches too easily to mean anything.
+        let zero = [capture(t, &[("mystery", 0.0)])];
+        assert!(!learn_aliases(&mut aliases, &usage, &zero));
+        assert!(aliases.is_empty());
     }
 }

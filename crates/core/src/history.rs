@@ -522,7 +522,7 @@ mod tests {
             .map(|(k, v)| (k, v.into_iter().map(|(t_ms, pct)| Sample { t_ms, pct }).collect()))
             .collect();
         let last_sample_ms = series.values().flatten().map(|s| s.t_ms).max();
-        DesktopUsage { version: 2, series, last_sample_ms }
+        DesktopUsage { version: 2, series, raw_keys: Default::default(), last_sample_ms }
     }
 
     // ---- open ----

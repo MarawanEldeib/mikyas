@@ -1,7 +1,9 @@
 //! Tray icon with the live % drawn into it.
 //!
-//! - `settings.tray_number` picks the value: `worst` (highest of 5-hour and weekly), `five_hour`,
-//!   `seven_day`, or `off` (the coloured dot icons in `tray.rs`).
+//! - `settings.tray_number` picks the value: `worst` (the highest of every limit Claude reports,
+//!   so a model-specific or new limit that binds shows too), any window key (`five_hour`,
+//!   `seven_day_opus`, ...; one not present right now falls back to `worst`), or `off` (the
+//!   coloured dot icons in `tray.rs`).
 //! - Digits are drawn as strokes (seven-segment shapes, 4×4 supersampled) at 16/20/24/32 px for
 //!   DPI 100–200 %, coloured by level (the shared usage bands, [`Level::for_pct`]) in shades
 //!   readable on a light or dark taskbar (registry `SystemUsesLightTheme`). 100 % is a lock, not
@@ -9,7 +11,7 @@
 //! - [`tray_values`] is the one reading of the snapshot behind the dot's level, the tooltip and
 //!   the number, so all three apply the same reset, limit-reached and clamp rules.
 
-use mikyas_core::engine::types::{Phase, Snapshot, WindowKind};
+use mikyas_core::engine::types::{Phase, Snapshot, WindowKind, main_kinds};
 use mikyas_core::level::{UsageLevel, display_pct};
 use tauri::image::Image;
 
@@ -35,10 +37,12 @@ impl Level {
     }
 }
 
-/// One five-hour or weekly window as the tray shows it.
+/// One usage window as the tray shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrayValue {
     pub kind: WindowKind,
+    /// One of the main windows (`main_kinds` of the snapshot's windows).
+    pub main: bool,
     /// Rounded %, 0–100: 0 while a reset awaits data, 100 once the limit is reached.
     pub pct: u8,
     pub stale: bool,
@@ -51,15 +55,27 @@ impl TrayValue {
     }
 }
 
-/// The snapshot's five-hour and weekly windows with the tray's rules applied.
+/// Every window of the snapshot with the tray's rules applied, main ones first.
 pub fn tray_values(snapshot: &Snapshot) -> impl Iterator<Item = TrayValue> + '_ {
-    snapshot.windows.iter().filter(|w| w.state.kind.is_main()).map(|w| {
-        let awaiting = w.state.phase == Phase::ResetAwaitingData;
-        let pct = if awaiting { 0.0 } else { w.state.pct };
-        let reached = w.state.limit_reached && !awaiting;
-        let rounded = display_pct(pct);
-        TrayValue { kind: w.state.kind.clone(), pct: if reached { 100 } else { rounded }, stale: w.state.stale }
-    })
+    let main = main_kinds(snapshot.windows.iter().map(|w| &w.state.kind));
+    let mut values: Vec<TrayValue> = snapshot
+        .windows
+        .iter()
+        .map(|w| {
+            let awaiting = w.state.phase == Phase::ResetAwaitingData;
+            let pct = if awaiting { 0.0 } else { w.state.pct };
+            let reached = w.state.limit_reached && !awaiting;
+            let rounded = display_pct(pct);
+            TrayValue {
+                kind: w.state.kind.clone(),
+                main: main.contains(&w.state.kind),
+                pct: if reached { 100 } else { rounded },
+                stale: w.state.stale,
+            }
+        })
+        .collect();
+    values.sort_by_key(|v| !v.main); // stable: snapshot order within each group
+    values.into_iter()
 }
 
 /// Taskbar colour scheme.
@@ -107,16 +123,16 @@ pub struct Reading {
     pub level: Level,
 }
 
-/// The reading for `mode`: the chosen window(s), fresh ones first (`worst` takes the highest).
-/// Only stale values → the highest of them, grey. Nothing → `None`.
-pub fn reading(snapshot: &Snapshot, mode: TrayNumber) -> Option<Reading> {
-    let wanted = |k: &WindowKind| match mode {
-        TrayNumber::Worst => true,
-        TrayNumber::FiveHour => *k == WindowKind::FiveHour,
-        TrayNumber::SevenDay => *k == WindowKind::SevenDay,
-        TrayNumber::Off => false,
-    };
-    let values: Vec<TrayValue> = tray_values(snapshot).filter(|v| wanted(&v.kind)).collect();
+/// The reading for `mode`: the chosen window, or for `worst` (and a chosen window that is not
+/// present) every window; fresh ones first, the highest wins. Only stale values → the highest of
+/// them, grey. Nothing → `None`.
+pub fn reading(snapshot: &Snapshot, mode: &TrayNumber) -> Option<Reading> {
+    if mode.is_off() {
+        return None;
+    }
+    let all: Vec<TrayValue> = tray_values(snapshot).collect();
+    let chosen = mode.window().filter(|k| all.iter().any(|v| v.kind == *k));
+    let values: Vec<TrayValue> = all.into_iter().filter(|v| chosen.as_ref().is_none_or(|k| v.kind == *k)).collect();
     let fresh: Vec<&TrayValue> = values.iter().filter(|v| !v.stale).collect();
     let pool = if fresh.is_empty() { values.iter().collect() } else { fresh };
     let v = pool.into_iter().max_by_key(|v| v.pct)?;
@@ -124,7 +140,7 @@ pub fn reading(snapshot: &Snapshot, mode: TrayNumber) -> Option<Reading> {
 }
 
 /// The number icon for `snapshot`, or `None` for the dot icons.
-pub fn number_icon(snapshot: &Snapshot, mode: TrayNumber, style: Style) -> Option<Image<'static>> {
+pub fn number_icon(snapshot: &Snapshot, mode: &TrayNumber, style: Style) -> Option<Image<'static>> {
     let r = reading(snapshot, mode)?;
     Some(Image::new_owned(render(r, style), style.size, style.size))
 }
@@ -302,6 +318,7 @@ mod tests {
                     burn: None,
                     spark: vec![],
                     worked_since: false,
+                    is_main: false,
                 })
                 .collect(),
             session: None,
@@ -319,30 +336,62 @@ mod tests {
         Some(Reading { pct, level })
     }
 
+    fn worst() -> TrayNumber {
+        TrayNumber::worst()
+    }
+
+    fn key(k: &str) -> TrayNumber {
+        TrayNumber::new(k)
+    }
+
     #[test]
     fn picks_the_value_for_each_mode() {
         let s = snap(&[(WindowKind::FiveHour, 22.4, false), (WindowKind::SevenDay, 61.0, false)]);
-        assert_eq!(reading(&s, TrayNumber::Worst), rd(61, Level::Orange));
-        assert_eq!(reading(&s, TrayNumber::FiveHour), rd(22, Level::Green));
-        assert_eq!(reading(&s, TrayNumber::SevenDay), rd(61, Level::Orange));
-        assert_eq!(reading(&s, TrayNumber::Off), None);
-        assert_eq!(reading(&snap(&[]), TrayNumber::Worst), None);
-        let opus = snap(&[(WindowKind::Other("seven_day_opus".into()), 90.0, false)]);
-        assert_eq!(reading(&opus, TrayNumber::Worst), None, "only the 5-hour and weekly limits");
+        assert_eq!(reading(&s, &worst()), rd(61, Level::Orange));
+        assert_eq!(reading(&s, &key("five_hour")), rd(22, Level::Green));
+        assert_eq!(reading(&s, &key("seven_day")), rd(61, Level::Orange));
+        assert_eq!(reading(&s, &TrayNumber::off()), None);
+        assert_eq!(reading(&snap(&[]), &worst()), None);
+        // A chosen window that is not present shows the worst value instead.
+        assert_eq!(reading(&s, &key("thirty_day")), rd(61, Level::Orange));
+    }
+
+    #[test]
+    fn every_limit_counts_for_worst_and_can_be_chosen() {
+        // A limit Anthropic adds (any key) binds: the tray shows it rather than staying green.
+        let extra = WindowKind::from_key("seven_day_newmodel");
+        let s = snap(&[
+            (WindowKind::FiveHour, 20.0, false),
+            (WindowKind::SevenDay, 50.0, false),
+            (extra.clone(), 91.0, false),
+        ]);
+        assert_eq!(reading(&s, &worst()), rd(91, Level::Red));
+        assert_eq!(reading(&s, &key("seven_day_newmodel")), rd(91, Level::Red));
+        assert_eq!(reading(&s, &key("five_hour")), rd(20, Level::Green));
+        // Only an extra limit: it is shown too.
+        assert_eq!(reading(&snap(&[(extra, 90.0, false)]), &worst()), rd(90, Level::Red));
+        // Main windows come first in the values, whatever the snapshot order.
+        let order: Vec<(String, bool)> = tray_values(&snap(&[
+            (WindowKind::from_key("seven_day_newmodel"), 1.0, false),
+            (WindowKind::from_key("weekly"), 2.0, false),
+        ]))
+        .map(|v| (v.kind.key().to_owned(), v.main))
+        .collect();
+        assert_eq!(order, [("weekly".to_owned(), true), ("seven_day_newmodel".to_owned(), false)]);
     }
 
     #[test]
     fn fresh_beats_stale_and_stale_is_grey() {
         let s = snap(&[(WindowKind::FiveHour, 90.0, true), (WindowKind::SevenDay, 30.0, false)]);
-        assert_eq!(reading(&s, TrayNumber::Worst), rd(30, Level::Green));
-        assert_eq!(reading(&s, TrayNumber::FiveHour), rd(90, Level::Grey));
+        assert_eq!(reading(&s, &worst()), rd(30, Level::Green));
+        assert_eq!(reading(&s, &key("five_hour")), rd(90, Level::Grey));
         let all_stale = snap(&[(WindowKind::FiveHour, 12.0, true), (WindowKind::SevenDay, 45.0, true)]);
-        assert_eq!(reading(&all_stale, TrayNumber::Worst), rd(45, Level::Grey));
+        assert_eq!(reading(&all_stale, &worst()), rd(45, Level::Grey));
     }
 
     #[test]
     fn thresholds_rounding_and_full() {
-        let one = |p: f32| reading(&snap(&[(WindowKind::FiveHour, p, false)]), TrayNumber::FiveHour);
+        let one = |p: f32| reading(&snap(&[(WindowKind::FiveHour, p, false)]), &key("five_hour"));
         assert_eq!(one(39.4), rd(39, Level::Green));
         assert_eq!(one(39.6), rd(40, Level::Orange), "the colour follows the number shown");
         assert_eq!(one(70.0), rd(70, Level::Red));
@@ -352,7 +401,7 @@ mod tests {
         assert_eq!(one(-3.0), rd(0, Level::Green));
         let mut awaiting = snap(&[(WindowKind::FiveHour, 100.0, false)]);
         awaiting.windows[0].state.phase = Phase::ResetAwaitingData;
-        assert_eq!(reading(&awaiting, TrayNumber::FiveHour), rd(0, Level::Green));
+        assert_eq!(reading(&awaiting, &key("five_hour")), rd(0, Level::Green));
     }
 
     #[test]
@@ -431,8 +480,8 @@ mod tests {
     fn number_icon_is_none_when_off() {
         let s = snap(&[(WindowKind::FiveHour, 50.0, false)]);
         let st = style(20, Theme::Light);
-        assert!(number_icon(&s, TrayNumber::Off, st).is_none());
-        let img = number_icon(&s, TrayNumber::Worst, st).unwrap();
+        assert!(number_icon(&s, &TrayNumber::off(), st).is_none());
+        let img = number_icon(&s, &worst(), st).unwrap();
         assert_eq!((img.width(), img.height()), (20, 20));
     }
 }
