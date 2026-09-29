@@ -54,7 +54,7 @@ impl TrayValue {
 
 /// The snapshot's five-hour and weekly windows with the tray's rules applied.
 pub fn tray_values(snapshot: &Snapshot) -> impl Iterator<Item = TrayValue> + '_ {
-    snapshot.windows.iter().filter(|w| matches!(w.state.kind, WindowKind::FiveHour | WindowKind::SevenDay)).map(|w| {
+    snapshot.windows.iter().filter(|w| w.state.kind.is_main()).map(|w| {
         let awaiting = w.state.phase == Phase::ResetAwaitingData;
         let pct = if awaiting { 0.0 } else { w.state.pct };
         let reached = w.state.limit_reached && !awaiting;
