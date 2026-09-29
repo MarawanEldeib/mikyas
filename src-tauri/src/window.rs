@@ -416,7 +416,12 @@ pub fn resize_anchored(window: &WebviewWindow, from: ViewMode, view: ViewMode) {
             let expanded = shared.ui().dock_expanded;
             dock::place(window, side, &settings, view, expanded);
         }
-        None => resize_free(window, from, view, view_size(view, &settings, extra_rows(&lock(&shared.snapshot)))),
+        None => {
+            // Read the count first: the snapshot lock must not be held across window calls, which
+            // wait for the main thread (this runs on the pipeline thread too, see `on_snapshot`).
+            let extra = extra_rows(&lock(&shared.snapshot));
+            resize_free(window, from, view, view_size(view, &settings, extra));
+        }
     }
 }
 
