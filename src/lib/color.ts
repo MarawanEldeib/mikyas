@@ -6,14 +6,18 @@ import type { Accent } from "./types";
 
 export type Level = "ok" | "warn" | "crit";
 
-/** Lower bound (inclusive) of the orange band. */
+// WARN_AT and CRIT_AT mirror crates/core/src/level.rs (the tray and the statusline use that);
+// rust-sync.test.ts fails when they differ.
+/** Lowest shown % (inclusive) of the orange band. */
 export const WARN_AT = 40;
-/** Lower bound (inclusive) of the red band. */
+/** Lowest shown % (inclusive) of the red band. */
 export const CRIT_AT = 70;
 
-/** Colour band for a usage percentage. Non-finite input is treated as 0. */
+/** Colour band for a usage percentage, judged by the whole number shown for it (as
+ *  `formatPct` shows it, and as Rust's `display_pct` rounds): 39.6 shows "40" and is orange.
+ *  Non-finite input is treated as 0. */
 export function level(pct: number): Level {
-  const p = Number.isFinite(pct) ? pct : 0;
+  const p = Math.round(clampPct(pct));
   if (p >= CRIT_AT) return "crit";
   if (p >= WARN_AT) return "warn";
   return "ok";

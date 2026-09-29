@@ -36,6 +36,7 @@ pub mod ctx_alerts;
 pub mod engine;
 pub mod fingerprint;
 pub mod history;
+pub mod level;
 pub mod model_names;
 pub mod pace_alerts;
 pub mod paths;

@@ -309,9 +309,10 @@ mod tests {
     #[test]
     fn level_thresholds() {
         assert_eq!(Level::for_pct(0.0), Level::Green);
-        assert_eq!(Level::for_pct(39.9), Level::Green);
+        assert_eq!(Level::for_pct(39.4), Level::Green);
+        assert_eq!(Level::for_pct(39.9), Level::Orange, "shown as 40");
         assert_eq!(Level::for_pct(40.0), Level::Orange);
-        assert_eq!(Level::for_pct(69.9), Level::Orange);
+        assert_eq!(Level::for_pct(69.4), Level::Orange);
         assert_eq!(Level::for_pct(70.0), Level::Red);
         assert_eq!(Level::for_pct(100.0), Level::Red);
     }

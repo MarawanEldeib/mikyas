@@ -2,6 +2,7 @@
 // Rust file and fails when the TypeScript copy drifts from it.
 
 import { describe, expect, it } from "vitest";
+import { CRIT_AT, WARN_AT } from "./color";
 import { MAX_NOTES, MAX_NOTE_CHARS, RELEASES_PREFIX } from "./update";
 
 type NodeFs = { readFileSync(path: URL, encoding: "utf8"): string };
@@ -36,5 +37,18 @@ describe("updates.rs", () => {
   it("notes are cut the same way", () => {
     expect(MAX_NOTES).toBe(rustConst(rs, "MAX_NOTES"));
     expect(MAX_NOTE_CHARS).toBe(rustConst(rs, "MAX_NOTE_CHARS"));
+  });
+});
+
+describe("level.rs", () => {
+  const rs = source("crates/core/src/level.rs");
+
+  it("colour bands start at the same %", () => {
+    expect(WARN_AT).toBe(rustConst(rs, "WARN_AT"));
+    expect(CRIT_AT).toBe(rustConst(rs, "CRIT_AT"));
+  });
+
+  it("rounds to the shown number the way the UI does", () => {
+    expect(rs).toContain("pct.clamp(0.0, 100.0).round() as u8");
   });
 });
