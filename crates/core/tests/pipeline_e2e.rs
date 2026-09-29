@@ -399,9 +399,19 @@ fn damaged_desktop_file_keeps_the_last_good_value() {
     assert!(matches!(widget.desktop_health, DesktopHealth::Ok { .. }));
     assert_eq!(tick.toasts(), 0);
 
-    // A newer Desktop release changed the format: shown as such, no stale numbers.
-    env.write_desktop_raw(br#"{"version":3,"samples":[]}"#);
+    // A newer Desktop release bumped the version but samples still parse: read best-effort, and
+    // the health says so.
+    let t = T0 + 2 * MINUTE_MS;
+    env.write_desktop_raw(
+        format!(r#"{{"version":3,"samples":[{{"t":{t},"u":{{"fh":42,"sd":51}},"new_field":true}}]}}"#).as_bytes(),
+    );
     let tick = widget.tick(T0 + 3 * MINUTE_MS);
+    assert_eq!(tick.five_hour().state.pct, 42.0);
+    assert_eq!(widget.desktop_health, DesktopHealth::Ok { last_sample_ms: Some(t), newer_version: Some(3) });
+
+    // A newer Desktop release changed the format beyond recognition: shown as such, no stale numbers.
+    env.write_desktop_raw(br#"{"version":3,"records":[]}"#);
+    let tick = widget.tick(T0 + 4 * MINUTE_MS);
     assert_eq!(widget.desktop_health, DesktopHealth::SchemaChanged { version: 3 });
     assert!(tick.snap.windows.is_empty(), "{:?}", tick.snap.windows);
     assert_eq!(tick.toasts(), 0);

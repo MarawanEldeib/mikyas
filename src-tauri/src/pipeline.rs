@@ -467,7 +467,7 @@ impl PipelineState {
         let max_t_ms = now.saturating_add(snapshot::FUTURE_SLACK_MS);
         match desktop_usage::load(&self.reader, &self.paths, max_t_ms) {
             Ok(Some(usage)) => {
-                self.desktop_health = DesktopHealth::Ok { last_sample_ms: usage.last_sample_ms };
+                self.desktop_health = usage.health();
                 if self.history_ok {
                     match self.history.backfill_desktop(&usage, self.persisted.desktop_watermark_ms) {
                         Ok(w) => self.persisted.desktop_watermark_ms = w,
@@ -931,7 +931,10 @@ mod tests {
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert_eq!(out.snapshot.windows[0].state.pct, 31.0);
-        assert_eq!(out.snapshot.health.desktop, DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS) });
+        assert_eq!(
+            out.snapshot.health.desktop,
+            DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS), newer_version: None }
+        );
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.desktop_watermark_ms, now - 5 * MINUTE_MS);
     }

@@ -2,6 +2,7 @@
   import { api } from "../ipc";
   import { formatAge, formatTokens } from "../format";
   import { notices } from "../notices";
+  import { desktopHealthLine } from "../sourceHealth";
   import { RELEASES_PREFIX } from "../update";
   import { app, errorText } from "../stores.svelte";
   import type { EffectName } from "../types";
@@ -63,22 +64,7 @@
     app.patch({ ctx_overrides: next });
   }
 
-  const desktop = $derived.by(() => {
-    const d = snap?.health.desktop;
-    switch (d?.state) {
-      case "ok":
-        return {
-          tone: "ok",
-          text: d.last_sample_ms === null ? "Found · no samples yet" : `Found · sample ${formatAge(d.last_sample_ms, app.now)}`,
-        };
-      case "schema_changed":
-        return { tone: "warn", text: `Unsupported format (v${d.version})` };
-      case "unreadable":
-        return { tone: "crit", text: "Found, but can't be read" };
-      default:
-        return { tone: "off", text: "Not found" };
-    }
-  });
+  const desktop = $derived(desktopHealthLine(snap?.health.desktop, app.now));
   const cli = $derived(
     snap?.health.cli_last_capture_ms != null
       ? { tone: "ok", text: `Last capture ${formatAge(snap.health.cli_last_capture_ms, app.now)}` }

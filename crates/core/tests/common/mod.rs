@@ -370,7 +370,7 @@ impl Widget {
     fn poll_desktop(&mut self, now: Ms) {
         match desktop_usage::load(&self.reader, &self.paths, now.saturating_add(snapshot::FUTURE_SLACK_MS)) {
             Ok(Some(usage)) => {
-                self.desktop_health = DesktopHealth::Ok { last_sample_ms: usage.last_sample_ms };
+                self.desktop_health = usage.health();
                 self.persisted.desktop_watermark_ms =
                     self.history.backfill_desktop(&usage, self.persisted.desktop_watermark_ms).unwrap();
                 self.desktop = Some(usage);

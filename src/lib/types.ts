@@ -63,7 +63,12 @@ export interface SessionView {
 
 export type DesktopHealth =
   | { state: "not_found" }
-  | { state: "ok"; last_sample_ms: Ms | null }
+  | {
+      state: "ok";
+      last_sample_ms: Ms | null;
+      /** Set when the file's format is newer than this build knows and was read best-effort. */
+      newer_version?: number | null;
+    }
   | { state: "schema_changed"; version: number }
   | { state: "unreadable" };
 

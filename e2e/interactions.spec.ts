@@ -244,6 +244,11 @@ test.describe("settings", () => {
     await expect(page.getByRole("combobox", { name: "Context size for claude-sonnet-5" })).toHaveCount(0);
   });
 
+  test("Desktop health says when a newer format is read best-effort", async ({ page }) => {
+    await openWidget(page, { view: "settings", params: { scenario: "estimated" } });
+    await expect(page.getByText(/Newer format \(v3\), read best-effort · sample/)).toBeVisible();
+  });
+
   test("Esc goes back, except while typing in a field", async ({ page }) => {
     await openWidget(page, { view: "settings" });
     await page.getByRole("textbox", { name: "Model id" }).focus();

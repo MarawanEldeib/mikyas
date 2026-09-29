@@ -439,7 +439,7 @@ mod tests {
             Self {
                 _tmp: tmp,
                 history,
-                health: DesktopHealth::Ok { last_sample_ms: None },
+                health: DesktopHealth::Ok { last_sample_ms: None, newer_version: None },
                 exact: BTreeMap::new(),
                 names: BTreeMap::new(),
                 overrides: BTreeMap::new(),
