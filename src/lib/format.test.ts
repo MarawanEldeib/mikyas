@@ -11,6 +11,9 @@ import {
   formatAgeShort,
   formatClock,
   formatCountdown,
+  formatDay,
+  formatRoughCountdown,
+  isRough,
   formatPct,
   formatSpan,
   formatTime,
@@ -19,6 +22,7 @@ import {
   modelLabel,
   pillCountdown,
   resetLine,
+  resetWhen,
   sourceStale,
   splitUnits,
   windowLabel,
@@ -243,6 +247,44 @@ describe("reset lines", () => {
     expect(resetLine({ phase: "reset_awaiting_data", reset: exact }, NOW)).toBe("reset — waiting for data");
     expect(resetLine({ phase: "active", reset: { type: "exact", at_ms: NOW - 1 } }, NOW)).toBe("reset — waiting for data");
     expect(pillCountdown({ phase: "reset_awaiting_data", reset: exact }, NOW)).toBe("reset");
+  });
+});
+
+describe("rough resets (margin of half a day or more)", () => {
+  const at = NOW + 2 * DAY + 3 * HOUR; // Sat 15:00
+  const rough: ResetInfo = { type: "estimated", at_ms: at, plus_minus_ms: DAY + 2 * HOUR, confidence: "low" };
+  const tight: ResetInfo = { type: "estimated", at_ms: at, plus_minus_ms: 12 * HOUR - 1, confidence: "low" };
+
+  it("is decided by the margin, not the window kind", () => {
+    expect(isRough(rough)).toBe(true);
+    expect(isRough({ ...rough, plus_minus_ms: 12 * HOUR })).toBe(true);
+    expect(isRough(tight)).toBe(false);
+    expect(isRough({ type: "exact", at_ms: at })).toBe(false);
+    expect(isRough({ type: "unknown" })).toBe(false);
+  });
+  it("shows the day only", () => {
+    expect(resetLine({ phase: "active", reset: rough }, NOW, GB)).toBe("resets ~Sat · in ~2d");
+    expect(resetLine({ phase: "active", reset: rough }, NOW, GB, false)).toBe("resets in ~2d");
+    expect(pillCountdown({ phase: "active", reset: rough }, NOW)).toBe("~2d");
+    expect(resetWhen(rough, at, NOW, GB)).toBe("~Sat");
+    expect(resetWhen(tight, at, NOW, GB)).toBe("~Sat 15:00");
+    expect(resetWhen({ type: "exact", at_ms: at }, at, NOW, GB)).toBe("Sat 15:00");
+  });
+  it("gives the range in the tooltip", () => {
+    expect(estimateTooltip(rough, NOW, GB)).toBe(
+      "Estimated from Claude Desktop history, ±1d 2h (low confidence): between Fri 13:00 and Sun 17:00. Connect Claude Code for the exact time.",
+    );
+    expect(estimateTooltip(rough)).toBe("Estimated from Claude Desktop history, ±1d 2h (low confidence)");
+  });
+  it("formats days and whole-day countdowns", () => {
+    expect(formatDay(NOW + HOUR, NOW, GB)).toBe("today");
+    expect(formatDay(NOW + 6 * DAY, NOW, GB)).toBe("Wed");
+    expect(formatDay(NOW + 8 * DAY, NOW, GB)).toBe("2 Oct");
+    expect(formatDay(Number.NaN, NOW, GB)).toBe("—");
+    expect(formatRoughCountdown(2 * DAY + 13 * HOUR)).toBe("3d");
+    expect(formatRoughCountdown(DAY)).toBe("1d");
+    expect(formatRoughCountdown(DAY - 1)).toBe("<1d");
+    expect(formatRoughCountdown(Number.NaN)).toBe("<1d");
   });
 });
 

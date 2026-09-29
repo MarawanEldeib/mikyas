@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { burnText, formatClock, resetAt, type BurnText } from "../format";
+  import { burnText, isRough, resetAt, resetWhen, type BurnText } from "../format";
   import type { WindowView } from "../types";
 
   interface Props {
@@ -13,9 +13,11 @@
     if (w.phase === "reset_awaiting_data") return null;
     if (w.limit_reached) {
       const at = resetAt(w.reset);
-      const t = w.reset.type === "estimated" ? "~" : "";
       return {
-        text: at !== null && at > now ? `Limit reached — usable again at ${t}${formatClock(at, now)}` : "Limit reached",
+        text:
+          at !== null && at > now
+            ? `Limit reached — usable again ${isRough(w.reset) ? "" : "at "}${resetWhen(w.reset, at, now)}`
+            : "Limit reached",
         tone: "crit",
       };
     }

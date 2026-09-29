@@ -38,7 +38,8 @@ pub const HEADS_UP_WEEKLY_MS: Ms = 60 * MINUTE_MS;
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaceAlertEvent {
     /// At the current pace the window reaches 100% at `t100_ms`, before `reset_at_ms`.
-    Forecast { kind: WindowKind, pct: f32, t100_ms: Ms, reset_at_ms: Ms },
+    /// `reset_plus_minus_ms` is the reset's margin (0 when exact).
+    Forecast { kind: WindowKind, pct: f32, t100_ms: Ms, reset_at_ms: Ms, reset_plus_minus_ms: Ms },
     /// A capped window reopens at `reset_at_ms` (soon).
     HeadsUp { kind: WindowKind, reset_at_ms: Ms },
 }
@@ -110,7 +111,13 @@ fn forecast(view: &WindowView, now_ms: Ms) -> Option<PaceAlertEvent> {
         && w.phase == Phase::Active
         && !w.limit_reached
         && t100_ms.saturating_sub(now_ms) >= MIN_LEAD_MS;
-    ok.then(|| PaceAlertEvent::Forecast { kind: w.kind.clone(), pct: w.pct.min(100.0), t100_ms, reset_at_ms })
+    ok.then(|| PaceAlertEvent::Forecast {
+        kind: w.kind.clone(),
+        pct: w.pct.min(100.0),
+        t100_ms,
+        reset_at_ms,
+        reset_plus_minus_ms: plus_minus(&w.reset),
+    })
 }
 
 /// A heads-up for a capped window whose (future) reset is within the kind's lead.
@@ -189,7 +196,7 @@ mod tests {
     }
 
     fn forecast(pct: f32, t100_ms: Ms) -> PaceAlertEvent {
-        PaceAlertEvent::Forecast { kind: WindowKind::FiveHour, pct, t100_ms, reset_at_ms: R }
+        PaceAlertEvent::Forecast { kind: WindowKind::FiveHour, pct, t100_ms, reset_at_ms: R, reset_plus_minus_ms: 0 }
     }
 
     #[test]
@@ -219,6 +226,7 @@ mod tests {
                 pct: 55.0,
                 t100_ms: next - HOUR_MS,
                 reset_at_ms: next,
+                reset_plus_minus_ms: 0,
             }]
         );
     }

@@ -7,7 +7,7 @@ use mikyas_core::ctx_alerts::CtxAlertEvent;
 use mikyas_core::engine::types::{Entrypoint, WindowKind};
 use mikyas_core::pace_alerts::PaceAlertEvent;
 use mikyas_core::recap::WeeklyRecap;
-use mikyas_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, now_ms};
+use mikyas_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, ROUGH_RESET_PM_MS, now_ms};
 use mikyas_core::turns::FinishedTurn;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -67,13 +67,43 @@ fn clock_text(at_ms: Ms, now: Ms) -> String {
     if at_ms - now < 20 * HOUR_MS { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
 }
 
+/// A reset time as precisely as it is known: "15:40", "~15:40" when estimated, "~Thu" (or
+/// "~today", "~12 Oct") when its margin `plus_minus` makes the time of day meaningless.
+fn reset_when(at_ms: Ms, plus_minus: Ms, now: Ms) -> String {
+    if plus_minus < ROUGH_RESET_PM_MS {
+        let mark = if plus_minus > 0 { "~" } else { "" };
+        return format!("{mark}{}", clock_text(at_ms, now));
+    }
+    let (Some(at), Some(today)) =
+        (Local.timestamp_millis_opt(at_ms).single(), Local.timestamp_millis_opt(now).single())
+    else {
+        return String::new();
+    };
+    let days = (at.date_naive() - today.date_naive()).num_days();
+    match days {
+        0 => "~today".into(),
+        1..=6 => format!("~{}", at.format("%a")),
+        _ => format!("~{}", at.format("%-d %b")),
+    }
+}
+
+/// A span that ends at a reset, as precisely as the reset is known ("1h 12m", "~1h 12m", "~2d").
+fn reset_span(ms: Ms, plus_minus: Ms) -> String {
+    if plus_minus < ROUGH_RESET_PM_MS {
+        let mark = if plus_minus > 0 { "~" } else { "" };
+        return format!("{mark}{}", duration_text(ms));
+    }
+    if ms < DAY_MS { "~<1d".into() } else { format!("~{}d", (ms + DAY_MS / 2) / DAY_MS) }
+}
+
 /// Title and body of a notification for an alert event.
 pub fn alert_text(event: &AlertEvent, now: Ms) -> (String, String) {
     match event {
-        AlertEvent::Threshold { kind, threshold, reset_at_ms, .. } => {
+        AlertEvent::Threshold { kind, threshold, reset_at_ms, reset_plus_minus_ms, .. } => {
             let title = format!("Claude {} limit at {threshold}%", window_name(kind));
+            let pm = *reset_plus_minus_ms;
             let body = match reset_at_ms.filter(|r| *r > now) {
-                Some(r) => format!("Resets {} (in {})", clock_text(r, now), duration_text(r - now)),
+                Some(r) => format!("Resets {} (in {})", reset_when(r, pm, now), reset_span(r - now, pm)),
                 None => "Reset time unknown".into(),
             };
             (title, body)
@@ -113,12 +143,12 @@ fn minutes_up(ms: Ms) -> Ms {
 /// "Claude 5-hour limit reopens in 10 min" / "It resets at 16:52.".
 pub fn pace_text(event: &PaceAlertEvent, now: Ms) -> (String, String) {
     match event {
-        PaceAlertEvent::Forecast { kind, t100_ms, reset_at_ms, .. } => (
+        PaceAlertEvent::Forecast { kind, t100_ms, reset_at_ms, reset_plus_minus_ms, .. } => (
             format!("At this pace: {} limit at {}", window_name(kind), clock_text(*t100_ms, now)),
             format!(
                 "That's {} before it resets ({}).",
-                duration_text(reset_at_ms - t100_ms),
-                clock_text(*reset_at_ms, now)
+                reset_span(reset_at_ms - t100_ms, *reset_plus_minus_ms),
+                reset_when(*reset_at_ms, *reset_plus_minus_ms, now)
             ),
         ),
         PaceAlertEvent::HeadsUp { kind, reset_at_ms } => (
@@ -221,6 +251,7 @@ pub fn simulate(app: &AppHandle, id: &str) {
             threshold: if id == "sim_80" { 80 } else { 95 },
             pct: if id == "sim_80" { 80.4 } else { 95.2 },
             reset_at_ms: Some(now + HOUR_MS + 12 * MINUTE_MS),
+            reset_plus_minus_ms: 0,
         },
         _ => AlertEvent::Reset { kind: WindowKind::SevenDay },
     };
@@ -240,6 +271,7 @@ mod tests {
                 threshold: 80,
                 pct: 80.2,
                 reset_at_ms: Some(now + HOUR_MS + 12 * MINUTE_MS + 5_000),
+                reset_plus_minus_ms: 0,
             },
             now,
         );
@@ -250,6 +282,36 @@ mod tests {
         assert_eq!(window_name(&WindowKind::Other("seven_day_opus".into())), "weekly Opus");
         assert_eq!(duration_text(2 * DAY_MS + 3 * HOUR_MS), "2d 3h");
         assert_eq!(duration_text(30_000), "<1m");
+    }
+
+    #[test]
+    fn estimated_resets_match_their_precision() {
+        let now = 1_790_000_000_000;
+        let at = now + 2 * DAY_MS + 3 * HOUR_MS;
+        let threshold = |pm| AlertEvent::Threshold {
+            kind: WindowKind::SevenDay,
+            threshold: 80,
+            pct: 81.0,
+            reset_at_ms: Some(at),
+            reset_plus_minus_ms: pm,
+        };
+        let day = Local.timestamp_millis_opt(at).unwrap().format("%a").to_string();
+        assert_eq!(alert_text(&threshold(DAY_MS), now).1, format!("Resets ~{day} (in ~2d)"));
+        let (_, b) = alert_text(&threshold(25 * MINUTE_MS), now);
+        assert!(b.starts_with(&format!("Resets ~{day} ")) && b.ends_with("(in ~2d 3h)"), "{b}");
+        assert_eq!(reset_when(now, ROUGH_RESET_PM_MS, now), "~today");
+        assert_eq!(reset_span(DAY_MS - 1, ROUGH_RESET_PM_MS), "~<1d");
+        assert_eq!(reset_span(2 * DAY_MS + 13 * HOUR_MS, ROUGH_RESET_PM_MS), "~3d");
+        assert_eq!(reset_span(HOUR_MS, 0), "1h 0m");
+
+        let forecast = PaceAlertEvent::Forecast {
+            kind: WindowKind::SevenDay,
+            pct: 70.0,
+            t100_ms: now + DAY_MS,
+            reset_at_ms: at,
+            reset_plus_minus_ms: DAY_MS,
+        };
+        assert_eq!(pace_text(&forecast, now).1, format!("That's ~1d before it resets (~{day})."));
     }
 
     #[test]
@@ -297,6 +359,7 @@ mod tests {
             pct: 64.0,
             t100_ms: now + 40 * MINUTE_MS,
             reset_at_ms: now + 40 * MINUTE_MS + HOUR_MS + 12 * MINUTE_MS + 5_000,
+            reset_plus_minus_ms: 0,
         };
         let (t, b) = pace_text(&forecast, now);
         assert!(t.starts_with("At this pace: 5-hour limit at "), "{t}");
@@ -307,6 +370,7 @@ mod tests {
             pct: 70.0,
             t100_ms: now + 2 * DAY_MS,
             reset_at_ms: now + 3 * DAY_MS,
+            reset_plus_minus_ms: 0,
         };
         let (t, b) = pace_text(&weekly, now);
         assert!(t.starts_with("At this pace: weekly limit at "), "{t}");

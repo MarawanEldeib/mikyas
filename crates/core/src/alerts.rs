@@ -97,8 +97,17 @@ impl Default for AlertSettings {
 /// Something the app should turn into an OS notification.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlertEvent {
-    Threshold { kind: WindowKind, threshold: u8, pct: f32, reset_at_ms: Option<Ms> },
-    Reset { kind: WindowKind },
+    /// `reset_plus_minus_ms` is the reset's margin (0 when exact), so the text can match its precision.
+    Threshold {
+        kind: WindowKind,
+        threshold: u8,
+        pct: f32,
+        reset_at_ms: Option<Ms>,
+        reset_plus_minus_ms: Ms,
+    },
+    Reset {
+        kind: WindowKind,
+    },
 }
 
 /// Alert bookkeeping for one window kind.
@@ -178,6 +187,7 @@ impl KindAlertState {
                 threshold,
                 pct,
                 reset_at_ms: window.reset.at_ms(),
+                reset_plus_minus_ms: plus_minus(&window.reset),
             });
             self.fired.extend(crossed());
         }
@@ -229,7 +239,7 @@ mod tests {
     }
 
     fn threshold(t: u8, pct: f32, reset_at_ms: Option<Ms>) -> AlertEvent {
-        AlertEvent::Threshold { kind: WindowKind::FiveHour, threshold: t, pct, reset_at_ms }
+        AlertEvent::Threshold { kind: WindowKind::FiveHour, threshold: t, pct, reset_at_ms, reset_plus_minus_ms: 0 }
     }
 
     fn reset_event() -> AlertEvent {
@@ -431,7 +441,14 @@ mod tests {
             82.0,
             ResetInfo::Estimated { at_ms: R + 50 * MINUTE_MS, plus_minus_ms: HOUR_MS, confidence: Confidence::Low },
         );
-        assert_eq!(step(&mut s, estimated), vec![threshold(80, 82.0, Some(R + 50 * MINUTE_MS))]);
+        let with_margin = AlertEvent::Threshold {
+            kind: WindowKind::FiveHour,
+            threshold: 80,
+            pct: 82.0,
+            reset_at_ms: Some(R + 50 * MINUTE_MS),
+            reset_plus_minus_ms: HOUR_MS,
+        };
+        assert_eq!(step(&mut s, estimated), vec![with_margin]);
         assert_eq!(step(&mut s, fh(82.5)), vec![], "exact time arrives: same window");
         assert_eq!(fh_state(&s).instance_key, Some(R));
         // Exact to exact keeps the narrow alias: 35 min is a new window.
@@ -530,7 +547,13 @@ mod tests {
             events,
             vec![
                 threshold(80, 81.0, Some(R)),
-                AlertEvent::Threshold { kind: WindowKind::SevenDay, threshold: 95, pct: 96.0, reset_at_ms: None },
+                AlertEvent::Threshold {
+                    kind: WindowKind::SevenDay,
+                    threshold: 95,
+                    pct: 96.0,
+                    reset_at_ms: None,
+                    reset_plus_minus_ms: 0
+                },
             ]
         );
         let opus = win(WindowKind::Other("seven_day_opus".into()), 10.0, ResetInfo::Unknown);

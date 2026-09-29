@@ -13,6 +13,13 @@ export const DAY = 24 * HOUR;
 /** Countdowns switch to a per-second "m:ss" display below this many ms. */
 export const SECONDS_BELOW = 10 * MIN;
 
+/**
+ * An estimated reset whose margin is at least this wide is shown by day only ("~Thu"): its
+ * time of day carries no information. Not tied to a window kind — a tighter estimate shows its
+ * clock again. Mirrors `ROUGH_RESET_PM_MS` in crates/core/src/time.rs (toasts).
+ */
+export const ROUGH_RESET_PM = 12 * HOUR;
+
 export type { ClockOptions };
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -203,6 +210,32 @@ export function isEstimated(reset: ResetInfo): boolean {
   return reset.type === "estimated";
 }
 
+/** True when the reset is only known to the day (see {@link ROUGH_RESET_PM}). */
+export function isRough(reset: ResetInfo): boolean {
+  return reset.type === "estimated" && reset.plus_minus_ms >= ROUGH_RESET_PM;
+}
+
+/** Day of a reset: "today", "Thu" up to six calendar days away, "12 Oct" beyond. */
+export function formatDay(atMs: number, now: number, opts: ClockOptions = {}): string {
+  if (!Number.isFinite(atMs)) return "—";
+  const days = Math.abs(calendarDays(atMs, now, opts));
+  if (days === 0) return "today";
+  if (days <= 6) return dtf(opts, { weekday: "short" }).format(atMs);
+  return dtf(opts, { day: "numeric", month: "short" }).format(atMs);
+}
+
+/** Whole days until a rough reset: "2d", "<1d" inside the last day. */
+export function formatRoughCountdown(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs) || remainingMs < DAY) return "<1d";
+  return `${Math.round(remainingMs / DAY)}d`;
+}
+
+/** When a reset happens, as precisely as it is known: "~Thu" when rough, else the clock. */
+export function resetWhen(reset: ResetInfo, at: number, now: number, opts: ClockOptions = {}): string {
+  if (isRough(reset)) return `~${formatDay(at, now, opts)}`;
+  return `${isEstimated(reset) ? "~" : ""}${formatClock(at, now, opts)}`;
+}
+
 /** True when the window is waiting for fresh data after its reset time passed. */
 export function awaitingReset(w: Pick<WindowView, "phase" | "reset">, now: number): boolean {
   if (w.phase === "reset_awaiting_data") return true;
@@ -231,6 +264,7 @@ export function pillCountdown(w: Pick<WindowView, "phase" | "reset">, now: numbe
   if (awaitingReset(w, now)) return "reset";
   const at = resetAt(w.reset);
   if (at === null) return "—";
+  if (isRough(w.reset)) return `~${formatRoughCountdown(at - now)}`;
   return `${isEstimated(w.reset) ? "~" : ""}${formatCountdown(at - now)}`;
 }
 
@@ -254,15 +288,23 @@ export function resetLine(w: Pick<WindowView, "phase" | "reset">, now: number, o
   if (awaitingReset(w, now)) return "reset — waiting for data";
   const at = resetAt(w.reset);
   if (at === null) return "reset time unknown";
+  if (isRough(w.reset)) {
+    const left = `in ~${formatRoughCountdown(at - now)}`;
+    return clock ? `resets ${resetWhen(w.reset, at, now, opts)} · ${left}` : `resets ${left}`;
+  }
   const t = isEstimated(w.reset) ? "~" : "";
   if (!clock) return `resets in ${t}${formatCountdown(at - now)}`;
   return `resets ${t}${formatClock(at, now, opts)} · in ${formatCountdown(at - now)}`;
 }
 
 /** Tooltip for an estimated reset, e.g. "Estimated from Claude Desktop history, ±25m (medium confidence)". */
-export function estimateTooltip(reset: ResetInfo): string | undefined {
+export function estimateTooltip(reset: ResetInfo, now?: number, opts: ClockOptions = {}): string | undefined {
   if (reset.type !== "estimated") return undefined;
-  return `Estimated from Claude Desktop history, ±${formatSpan(reset.plus_minus_ms)} (${reset.confidence} confidence)`;
+  const base = `Estimated from Claude Desktop history, ±${formatSpan(reset.plus_minus_ms)} (${reset.confidence} confidence)`;
+  if (!isRough(reset) || now === undefined) return base;
+  const from = formatClock(reset.at_ms - reset.plus_minus_ms, now, opts);
+  const to = formatClock(reset.at_ms + reset.plus_minus_ms, now, opts);
+  return `${base}: between ${from} and ${to}. Connect Claude Code for the exact time.`;
 }
 
 export type BurnTone = "crit" | "warn" | "muted";

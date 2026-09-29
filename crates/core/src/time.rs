@@ -12,6 +12,10 @@ pub const HOUR_MS: Ms = 60 * MINUTE_MS;
 pub const DAY_MS: Ms = 24 * HOUR_MS;
 pub const FIVE_HOURS_MS: Ms = 5 * HOUR_MS;
 pub const SEVEN_DAYS_MS: Ms = 7 * DAY_MS;
+/// An estimated reset whose margin is at least this wide is shown by day only ("~Thu"): its time
+/// of day carries no information. Not tied to a window kind. Mirrors `ROUGH_RESET_PM` in
+/// src/lib/format.ts (the widget).
+pub const ROUGH_RESET_PM_MS: Ms = 12 * HOUR_MS;
 /// 2001-01-01T00:00:00Z. An epoch number before this is a corrupt value, not a real time.
 pub const MIN_PLAUSIBLE_MS: Ms = 978_307_200_000;
 /// 2200-01-01T00:00:00Z. An epoch number after this is a corrupt value, not a real time.

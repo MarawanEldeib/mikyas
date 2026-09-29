@@ -28,7 +28,7 @@
   // history before the reset should not be coloured by the fresh 0%.
   const muted = $derived(w.stale || w.phase === "reset_awaiting_data");
   const color = $derived(mutedColor({ ...w, pct: p }));
-  const tip = $derived(estimateTooltip(w.reset));
+  const tip = $derived(estimateTooltip(w.reset, now));
   // A reached limit's burn line says when it is usable again ("… at 21:36"); the reset line
   // then keeps only the countdown, so the clock shows once.
   const clock = $derived(!(burn && w.limit_reached));
