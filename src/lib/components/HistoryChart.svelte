@@ -25,6 +25,7 @@
     type PlotBox,
     type RangeKey,
   } from "../history";
+  import { plural } from "../plural";
   import type { HistoryWindow } from "../types";
 
   interface Props {
@@ -58,7 +59,7 @@
     [
       `${label} usage, ${rangeName}`,
       summary.peak === null ? "no data" : `peak ${formatPct(summary.peak)}%`,
-      `${resets.length} ${resets.length === 1 ? "reset" : "resets"}`,
+      plural(resets.length, "reset"),
       value === null ? null : `now ${formatPct(value)}%`,
     ]
       .filter(Boolean)

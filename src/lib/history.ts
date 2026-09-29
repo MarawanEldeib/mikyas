@@ -5,6 +5,7 @@
 import { clampPct } from "./color";
 import { DAY, HOUR, formatPct } from "./format";
 import { dtf, type ClockOptions } from "./intl";
+import { plural } from "./plural";
 import { stepPath, valueOf, type StepPath } from "./step";
 import type { HistoryDay, HistoryWindow, SparkPoint } from "./types";
 
@@ -253,7 +254,7 @@ export function windowSummary(w: Pick<HistoryWindow, "points" | "resets_ms">, d:
 
 /** "no resets", "1 reset", "4 resets". */
 export function resetsText(n: number): string {
-  return n === 0 ? "no resets" : n === 1 ? "1 reset" : `${n} resets`;
+  return n === 0 ? "no resets" : plural(n, "reset");
 }
 
 /** "5-hour peak 93% · 4 resets", or "No 5-hour data" without any. */
