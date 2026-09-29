@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use mikyas_core::alerts::{AlertSettings, AlertState};
 use mikyas_core::capture::CaptureRecord;
+use mikyas_core::engine::context;
 use mikyas_core::engine::snapshot::{self, EngineInputs};
 use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind};
 use mikyas_core::history::History;
@@ -298,6 +299,7 @@ impl PipelineState {
             last_exact_resets: &exact,
             learned_names: &self.persisted.learned_models,
             ctx_overrides: &settings.ctx_overrides,
+            learned_ctx_sizes: &self.persisted.learned_ctx_sizes,
             stale_after_ms: settings.stale_after_ms(),
             show_project: settings.show_project,
             account_mismatch_since_ms: self.mismatch_since,
@@ -392,6 +394,7 @@ impl PipelineState {
             self.persisted.set_exact_resets(&exact);
         }
         snapshot::learn_model_names(&mut self.persisted.learned_models, &self.captures);
+        context::learn_sizes(&mut self.persisted.learned_ctx_sizes, &self.captures);
     }
 
     fn transcript_roots(&self) -> Vec<PathBuf> {
@@ -467,7 +470,7 @@ impl PipelineState {
         let max_t_ms = now.saturating_add(snapshot::FUTURE_SLACK_MS);
         match desktop_usage::load(&self.reader, &self.paths, max_t_ms) {
             Ok(Some(usage)) => {
-                self.desktop_health = DesktopHealth::Ok { last_sample_ms: usage.last_sample_ms };
+                self.desktop_health = usage.health();
                 if self.history_ok {
                     match self.history.backfill_desktop(&usage, self.persisted.desktop_watermark_ms) {
                         Ok(w) => self.persisted.desktop_watermark_ms = w,
@@ -920,6 +923,41 @@ mod tests {
     }
 
     #[test]
+    fn context_sizes_are_learned_from_captures_and_persisted() {
+        use mikyas_core::engine::types::CtxBasis;
+        let (_t, paths) = setup();
+        let now = now_ms();
+        // Another session's capture reports a 400K window for the model; s1 has no capture.
+        std::fs::create_dir_all(paths.capture_dir()).unwrap();
+        let capture = format!(
+            r#"{{"v":1,"session_id":"s0","written_at_ms":{now},"changed_at_ms":{now},"fingerprint":1,
+            "model":{{"id":"claude-opus-5-5"}},"context":{{"context_window_size":400000}}}}"#
+        );
+        std::fs::write(paths.capture_dir().join("s0.json"), capture).unwrap();
+        write_transcript(&paths, "s1", &chrono_like(now - 1_000));
+        let mut engine = PipelineState::new(paths.clone());
+        let out = engine.tick(now, &Settings::default(), &Dirty::all());
+        let session = &out.snapshot.sessions[0];
+        assert_eq!((session.ctx_size, session.ctx_basis, session.ctx_pct), (400_000, CtxBasis::Learned, Some(25.0)));
+        let persisted: PersistedState = load_json(&paths.state_file());
+        assert_eq!(persisted.learned_ctx_sizes.get("claude-opus-5-5"), Some(&400_000));
+
+        // After a restart, without the capture, the learned size still applies.
+        std::fs::remove_file(paths.capture_dir().join("s0.json")).unwrap();
+        let mut restarted = PipelineState::new(paths.clone());
+        let out = restarted.tick(now + 1, &Settings::default(), &Dirty::all());
+        assert_eq!(out.snapshot.sessions[0].ctx_basis, CtxBasis::Learned);
+        // The user's override still wins.
+        let mut settings = Settings::default();
+        settings.ctx_overrides.insert("claude-opus-5-5".into(), 800_000);
+        let out = restarted.tick(now + 2, &settings, &Dirty::all());
+        assert_eq!(
+            (out.snapshot.sessions[0].ctx_size, out.snapshot.sessions[0].ctx_basis),
+            (800_000, CtxBasis::Override)
+        );
+    }
+
+    #[test]
     fn desktop_samples_from_the_future_are_ignored() {
         let (_t, paths) = setup();
         let now = now_ms();
@@ -931,7 +969,10 @@ mod tests {
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
         assert_eq!(out.snapshot.windows[0].state.pct, 31.0);
-        assert_eq!(out.snapshot.health.desktop, DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS) });
+        assert_eq!(
+            out.snapshot.health.desktop,
+            DesktopHealth::Ok { last_sample_ms: Some(now - 5 * MINUTE_MS), newer_version: None }
+        );
         let persisted: PersistedState = load_json(&paths.state_file());
         assert_eq!(persisted.desktop_watermark_ms, now - 5 * MINUTE_MS);
     }

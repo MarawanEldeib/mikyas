@@ -43,7 +43,7 @@ export interface WindowView {
 }
 
 export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";
-export type CtxBasis = "statusline" | "identity" | "desktop_model" | "override" | "heuristic" | "default";
+export type CtxBasis = "statusline" | "identity" | "desktop_model" | "override" | "learned" | "heuristic" | "default";
 
 export interface SessionView {
   /** Opaque stable key for lists (a hash, never the session id). */
@@ -63,7 +63,12 @@ export interface SessionView {
 
 export type DesktopHealth =
   | { state: "not_found" }
-  | { state: "ok"; last_sample_ms: Ms | null }
+  | {
+      state: "ok";
+      last_sample_ms: Ms | null;
+      /** Set when the file's format is newer than this build knows and was read best-effort. */
+      newer_version?: number | null;
+    }
   | { state: "schema_changed"; version: number }
   | { state: "unreadable" };
 

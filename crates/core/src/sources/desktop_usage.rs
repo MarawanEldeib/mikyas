@@ -1,6 +1,7 @@
 //! Claude Desktop's own usage sampler: `<desktop_root>/plan-usage-history.json`.
 //!
-//! Observed format (undocumented, version 2):
+//! Observed format (undocumented, version 2; a newer `version` is read best-effort, see
+//! [`parse_until`]):
 //! ```json
 //! {"version":2,"samples":[{"t":1790000000000,"org":"<uuid>","u":{"fh":29,"sd":59}}]}
 //! ```
@@ -24,7 +25,7 @@ use serde::Deserialize;
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
-use crate::engine::types::{Observation, Sample, Source, WindowKind};
+use crate::engine::types::{DesktopHealth, Observation, Sample, Source, WindowKind};
 use crate::paths::Paths;
 use crate::saferead::SafeReader;
 use crate::sources::SourceError;
@@ -41,13 +42,25 @@ const MAX_KEY_LEN: usize = 32;
 /// Parsed usage history of the account that owns the newest sample. Holds no account identifier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopUsage {
-    /// Always [`SUPPORTED_VERSION`] for a successfully parsed file.
+    /// The file's `version`: [`SUPPORTED_VERSION`], or a newer one that was read best-effort.
     pub version: u32,
     /// Per window, samples sorted by `t_ms` ascending, duplicates (same t) removed, pct clamped
     /// to 0..=100, non-numeric values skipped.
     pub series: BTreeMap<WindowKind, Vec<Sample>>,
     /// `t` of the newest kept sample; `None` if the file holds no usable sample.
     pub last_sample_ms: Option<Ms>,
+}
+
+impl DesktopUsage {
+    /// The file's version when it is newer than [`SUPPORTED_VERSION`] (read best-effort).
+    pub fn newer_version(&self) -> Option<u32> {
+        (self.version > SUPPORTED_VERSION).then_some(self.version)
+    }
+
+    /// Source health of a successfully loaded file.
+    pub fn health(&self) -> DesktopHealth {
+        DesktopHealth::Ok { last_sample_ms: self.last_sample_ms, newer_version: self.newer_version() }
+    }
 }
 
 /// A structurally valid sample. Deliberately not `Debug`: it carries the org string, which must
@@ -65,8 +78,11 @@ pub fn parse(bytes: &[u8]) -> Result<DesktopUsage, SourceError> {
     parse_until(bytes, MAX_PLAUSIBLE_MS)
 }
 
-/// Parses the file. `version != 2` → `Err(SourceError::SchemaChanged(v))`; missing/invalid
-/// structure → `Err(SourceError::Parse(..))`. Truncated JSON (Desktop mid-write) is a Parse
+/// Parses the file. An older `version` than 2 → `Err(SourceError::SchemaChanged(v))`. A newer one
+/// is read best-effort with the same rules (unknown fields and keys are ignored); it is only
+/// `SchemaChanged` when it has no `samples` array, or a non-empty one in which no sample has both a
+/// valid `t` and a valid `u`. Missing/invalid structure of a version-2 file →
+/// `Err(SourceError::Parse(..))`. Truncated JSON (Desktop mid-write) is a Parse
 /// error — callers keep their previous good value. Samples with a missing/invalid `t`, or one
 /// after `max_t_ms` (written while the clock ran ahead), are skipped individually.
 ///
@@ -86,12 +102,23 @@ pub fn parse_until(bytes: &[u8], max_t_ms: Ms) -> Result<DesktopUsage, SourceErr
         return Err(parse_error("top level is not an object"));
     };
     let version = version.as_ref().and_then(as_version).ok_or_else(|| parse_error("missing or invalid version"))?;
-    if version != SUPPORTED_VERSION {
+    let newer = version > SUPPORTED_VERSION;
+    if version < SUPPORTED_VERSION {
         return Err(SourceError::SchemaChanged(version));
     }
-    let entries = samples.ok_or_else(|| parse_error("missing samples array"))?;
+    let entries = match samples {
+        Some(entries) => entries,
+        None if newer => return Err(SourceError::SchemaChanged(version)),
+        None => return Err(parse_error("missing samples array")),
+    };
 
-    let raw: Vec<RawSample<'_>> = entries.into_iter().filter_map(|e| raw_sample(e, max_t_ms)).collect();
+    let any_entries = !entries.is_empty();
+    let mut raw: Vec<RawSample<'_>> = entries.into_iter().filter_map(raw_sample).collect();
+    // A newer format whose samples no longer carry a recognisable `t` and `u` is not guessed at.
+    if newer && any_entries && !raw.iter().any(|s| s.usage.is_some()) {
+        return Err(SourceError::SchemaChanged(version));
+    }
+    raw.retain(|s| s.t_ms <= max_t_ms);
     // `max_by_key` returns the last of equal maxima, i.e. the later entry of an append-only file.
     let owner =
         raw.iter().filter(|s| s.org.is_some() || s.usage.is_some()).max_by_key(|s| s.t_ms).map(|s| s.org.as_deref());
@@ -212,9 +239,9 @@ fn as_version(v: &Value) -> Option<u32> {
     u32::try_from(n).ok()
 }
 
-fn raw_sample(entry: Entry<'_>, max_t_ms: Ms) -> Option<RawSample<'_>> {
+fn raw_sample(entry: Entry<'_>) -> Option<RawSample<'_>> {
     let Entry::Object { t, org, u } = entry else { return None };
-    let t_ms = t.as_ref().and_then(json_time_to_ms).filter(|t| *t <= max_t_ms)?;
+    let t_ms = t.as_ref().and_then(json_time_to_ms)?;
     let usage = u.map(|pairs| {
         pairs
             .into_iter()
@@ -787,11 +814,16 @@ mod tests {
 
     #[test]
     fn version_handling() {
-        assert!(matches!(parse(br#"{"version":3,"samples":[]}"#), Err(SourceError::SchemaChanged(3))));
-        // A new schema is reported as such even if its structure is unrecognisable.
+        // A new schema is reported as such when its structure is unrecognisable.
         assert!(matches!(parse(br#"{"version":3,"data":{"x":1}}"#), Err(SourceError::SchemaChanged(3))));
+        assert!(matches!(parse(br#"{"version":3,"samples":{}}"#), Err(SourceError::SchemaChanged(3))));
         assert!(matches!(parse(br#"{"version":1,"samples":[]}"#), Err(SourceError::SchemaChanged(1))));
-        assert!(parse(br#"{"version":2.0,"samples":[]}"#).is_ok());
+        assert!(matches!(parse(br#"{"version":0,"samples":[]}"#), Err(SourceError::SchemaChanged(0))));
+        let u = parse(br#"{"version":2.0,"samples":[]}"#).unwrap();
+        assert_eq!(
+            (u.newer_version(), u.health()),
+            (None, DesktopHealth::Ok { last_sample_ms: None, newer_version: None })
+        );
         for bad in [
             &br#"{"samples":[]}"#[..],
             br#"{"version":"2","samples":[]}"#,
@@ -801,6 +833,45 @@ mod tests {
         ] {
             assert!(matches!(parse(bad), Err(SourceError::Parse(_))), "{}", String::from_utf8_lossy(bad));
         }
+    }
+
+    #[test]
+    fn newer_version_is_read_best_effort() {
+        // Unknown top-level fields, sample fields and `u` keys are ignored; `t` and `u` still parse.
+        let u = parse(
+            br#"{"version":3,"meta":{"k":1},"samples":[
+                {"t":1790208000000,"org":"x","u":{"fh":29,"sd":59,"zz_new":4},"src":"app","extra":[1]},
+                {"t":1790208900000,"org":"x","u":{"fh":31,"sd":60}}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(u.version, 3);
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 29.0), s(1_790_208_900_000, 31.0)]);
+        assert_eq!(series(&u, "zz_new"), [s(1_790_208_000_000, 4.0)]);
+        assert_eq!(u.newer_version(), Some(3));
+        assert_eq!(u.health(), DesktopHealth::Ok { last_sample_ms: Some(1_790_208_900_000), newer_version: Some(3) });
+        // An empty samples array has nothing to disagree with.
+        assert_eq!(parse(br#"{"version":4,"samples":[]}"#).unwrap().newer_version(), Some(4));
+        // Some odd samples next to a recognisable one: the recognisable one is kept.
+        let u = parse(br#"{"version":3,"samples":[{"time":1},{"t":1790208000000,"u":{"fh":5}}]}"#).unwrap();
+        assert_eq!(series(&u, "fh"), [s(1_790_208_000_000, 5.0)]);
+    }
+
+    #[test]
+    fn newer_version_without_recognisable_samples_is_a_schema_change() {
+        for doc in [
+            &br#"{"version":3,"records":[]}"#[..],
+            br#"{"version":3,"samples":[{"time":1790208000000,"usage":{"fh":1}}]}"#,
+            br#"{"version":3,"samples":[{"t":"2026-09-20","u":{"fh":1}}]}"#,
+            br#"{"version":3,"samples":[{"t":1790208000000,"u":[29,59]}]}"#,
+            br#"{"version":3,"samples":[{"t":1790208000000,"u":{"fh":"29%"}}]}"#,
+            br#"{"version":3,"samples":[[1790208000000,29,59]]}"#,
+        ] {
+            assert!(matches!(parse(doc), Err(SourceError::SchemaChanged(3))), "{}", String::from_utf8_lossy(doc));
+        }
+        // Samples that are only too new (clock ahead) do not make the format unrecognised.
+        let u = parse_until(br#"{"version":3,"samples":[{"t":1790208000000,"u":{"fh":5}}]}"#, 1).unwrap();
+        assert_eq!((u.series.len(), u.newer_version()), (0, Some(3)));
     }
 
     #[test]
@@ -1108,7 +1179,8 @@ mod tests {
 
     const T: Ms = 1_790_208_000_000;
     const TRUNCATED: &str = r#"{"version":2,"samples":[{"t":1790208000000,"u":{"fh""#;
-    const V3: &str = r#"{"version":3,"samples":[]}"#;
+    /// A newer format that is not readable best-effort.
+    const V3: &str = r#"{"version":3,"records":[]}"#;
 
     #[test]
     fn load_without_files_is_none() {
@@ -1183,6 +1255,18 @@ mod tests {
         assert_eq!(u.last_sample_ms, Some(T + 10 * MINUTE_MS));
         assert_eq!(series(&u, "fh").last().map(|s| s.pct), Some(20.0));
         assert_eq!(env.load().unwrap().unwrap().last_sample_ms, Some(T + 3 * DAY_MS));
+    }
+
+    #[test]
+    fn load_reads_a_newer_version_best_effort() {
+        let env = Env::new();
+        env.write(0, &doc(T, 10).replace(r#""version":2"#, r#""version":3"#));
+        let u = env.load().unwrap().unwrap();
+        assert_eq!((u.last_sample_ms, u.newer_version()), (Some(T), Some(3)));
+        // Competes with other roots like any readable file.
+        env.write(1, &doc(T + MINUTE_MS, 20));
+        let u = env.load().unwrap().unwrap();
+        assert_eq!((u.last_sample_ms, u.newer_version()), (Some(T + MINUTE_MS), None));
     }
 
     #[test]

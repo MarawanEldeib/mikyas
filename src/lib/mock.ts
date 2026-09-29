@@ -389,7 +389,8 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
       ctx_is_estimate: true,
       display_name: "Opus 5.5",
     }),
-    desktop: desktopOk(6 * MIN),
+    // A newer Desktop file format that still parses: read best-effort, and Settings says so.
+    desktop: (t0) => ({ state: "ok", last_sample_ms: t0 - 6 * MIN, newer_version: 3 }),
   },
   warnings: {
     ...NORMAL,

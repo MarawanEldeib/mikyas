@@ -1,7 +1,8 @@
 <script lang="ts">
   import { api } from "../ipc";
-  import { formatAge, formatTokens } from "../format";
+  import { formatAge } from "../format";
   import { notices } from "../notices";
+  import { desktopHealthLine } from "../sourceHealth";
   import { RELEASES_PREFIX } from "../update";
   import { app, errorText } from "../stores.svelte";
   import { DEFAULT_THRESHOLDS, thresholdPair } from "../thresholds";
@@ -12,6 +13,7 @@
   import IconButton from "./IconButton.svelte";
   import SettingsAutomations from "./SettingsAutomations.svelte";
   import SettingsContext from "./SettingsContext.svelte";
+  import SettingsCtxOverrides from "./SettingsCtxOverrides.svelte";
   import SettingsLayout from "./SettingsLayout.svelte";
   import SettingsSystem from "./SettingsSystem.svelte";
   import StatusBanner from "./StatusBanner.svelte";
@@ -30,57 +32,13 @@
     { value: "blur", label: "Blur" },
     { value: "none", label: "None (solid)" },
   ];
-  const SIZES = [200_000, 1_000_000];
 
   // The saved list may be shorter than the two steppers (Rust keeps it as set); fill in for display.
   const t = $derived(thresholdPair(s?.thresholds, DEFAULT_THRESHOLDS));
 
   const failed = (e: unknown) => (app.error = errorText(e));
 
-  // ---- context-window overrides
-  let newModel = $state("");
-  let newSize = $state(1_000_000);
-  let modelError = $state<string | null>(null);
-  const overrides = $derived(Object.entries(s?.ctx_overrides ?? {}).sort(([a], [b]) => a.localeCompare(b)));
-
-  function addOverride(e: SubmitEvent) {
-    e.preventDefault();
-    const id = newModel.trim().replace(/\[1m\]$/i, "");
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id)) {
-      modelError = "Use a model id like claude-opus-5-5";
-      return;
-    }
-    modelError = null;
-    app.patch({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: newSize } });
-    newModel = "";
-  }
-
-  function setOverride(id: string, size: number) {
-    app.patch({ ctx_overrides: { ...(s?.ctx_overrides ?? {}), [id]: size } });
-  }
-
-  function removeOverride(id: string) {
-    const next = { ...(s?.ctx_overrides ?? {}) };
-    delete next[id];
-    app.patch({ ctx_overrides: next });
-  }
-
-  const desktop = $derived.by(() => {
-    const d = snap?.health.desktop;
-    switch (d?.state) {
-      case "ok":
-        return {
-          tone: "ok",
-          text: d.last_sample_ms === null ? "Found · no samples yet" : `Found · sample ${formatAge(d.last_sample_ms, app.now)}`,
-        };
-      case "schema_changed":
-        return { tone: "warn", text: `Unsupported format (v${d.version})` };
-      case "unreadable":
-        return { tone: "crit", text: "Found, but can't be read" };
-      default:
-        return { tone: "off", text: "Not found" };
-    }
-  });
+  const desktop = $derived(desktopHealthLine(snap?.health.desktop, app.now));
   const cli = $derived(
     snap?.health.cli_last_capture_ms != null
       ? { tone: "ok", text: `Last capture ${formatAge(snap.health.cli_last_capture_ms, app.now)}` }
@@ -235,39 +193,7 @@
 
       <SettingsSystem />
 
-      <h2 class="section">Context window sizes</h2>
-      <div class="group">
-        <p class="row hint">Override the context size used for “ctx %” when a model's window can't be detected.</p>
-        {#each overrides as [id, size] (id)}
-          <div class="row">
-            <code class="model" title={id}>{id}</code>
-            <div class="inline">
-              <select aria-label="Context size for {id}" value={size} onchange={(e) => setOverride(id, Number(e.currentTarget.value))}>
-                {#each SIZES as n (n)}<option value={n}>{formatTokens(n)}</option>{/each}
-                {#if !SIZES.includes(size)}<option value={size}>{formatTokens(size)}</option>{/if}
-              </select>
-              <IconButton icon="close" label="Remove override for {id}" onclick={() => removeOverride(id)} />
-            </div>
-          </div>
-        {/each}
-        <form class="row add" onsubmit={addOverride}>
-          <input
-            class="text"
-            type="text"
-            placeholder="Model id"
-            aria-label="Model id"
-            spellcheck="false"
-            autocomplete="off"
-            bind:value={newModel}
-            aria-invalid={modelError ? "true" : undefined}
-          />
-          <select aria-label="Context size" bind:value={newSize}>
-            {#each SIZES as n (n)}<option value={n}>{formatTokens(n)}</option>{/each}
-          </select>
-          <button type="submit" class="btn">Add</button>
-        </form>
-        {#if modelError}<p class="row hint crit-text" role="alert">{modelError}</p>{/if}
-      </div>
+      <SettingsCtxOverrides />
     {/if}
 
     <h2 class="section">Data sources</h2>
@@ -412,60 +338,6 @@
   .val {
     color: var(--fg-2);
     font-variant-numeric: tabular-nums;
-  }
-  .hint {
-    display: block;
-    min-height: 0;
-    padding-top: 8px;
-    padding-bottom: 8px;
-    color: var(--fg-2);
-    font-size: 11px;
-    line-height: 15px;
-  }
-  .crit-text {
-    color: var(--crit);
-  }
-  .inline {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex: none;
-  }
-  .model {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-weight: 350;
-    font-size: 11px;
-  }
-  .add {
-    justify-content: flex-start;
-  }
-  .text {
-    flex: 1;
-    min-width: 0;
-    height: 28px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-s);
-    background: var(--fill-control);
-    box-shadow:
-      inset 0 0 0 1px var(--stroke-control),
-      inset 0 -1px 0 var(--fg-3);
-    font-family: var(--font-mono);
-    font-weight: 350;
-    font-size: 11px;
-    outline: none;
-  }
-  .text:focus {
-    box-shadow:
-      inset 0 0 0 1px var(--stroke-control),
-      inset 0 -2px 0 var(--accent);
-  }
-  .text::placeholder {
-    color: var(--fg-2);
   }
   select {
     height: 28px;

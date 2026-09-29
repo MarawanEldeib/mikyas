@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use mikyas_core::engine::context::{MAX_CTX_TOKENS, MIN_CTX_TOKENS};
 use mikyas_core::time::{MINUTE_MS, Ms, now_ms};
 
 use crate::diag::log;
@@ -229,7 +230,11 @@ impl Settings {
         self.thresholds.dedup();
         self.stale_min = self.stale_min.clamp(1, 24 * 60);
         self.hotkey = self.hotkey.trim().to_owned();
+        // 0 removes an override; any other size is kept, within 1K..=100M tokens.
         self.ctx_overrides.retain(|k, v| !k.trim().is_empty() && *v > 0);
+        for v in self.ctx_overrides.values_mut() {
+            *v = (*v).clamp(MIN_CTX_TOKENS, MAX_CTX_TOKENS);
+        }
         self.finished_min_minutes = self.finished_min_minutes.clamp(1, 60);
         self
     }
@@ -480,6 +485,29 @@ mod tests {
         s.ctx_overrides.insert("claude-opus-5-5".into(), 1_000_000);
         save(&p, &s).unwrap();
         assert_eq!(load(&p), s);
+    }
+
+    #[test]
+    fn ctx_overrides_accept_any_size_within_bounds() {
+        let next = apply_patch(
+            &Settings::default(),
+            &serde_json::json!({"ctx_overrides": {
+                "claude-a": 400_000, "claude-b": 1, "claude-c": 500_000_000_u64, "claude-d": 0, " ": 5_000,
+                "claude-e": 1_000, "claude-f": 100_000_000_u64
+            }}),
+        )
+        .unwrap();
+        let got: Vec<(&str, u64)> = next.ctx_overrides.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(
+            got,
+            [
+                ("claude-a", 400_000),
+                ("claude-b", MIN_CTX_TOKENS),
+                ("claude-c", MAX_CTX_TOKENS),
+                ("claude-e", 1_000),
+                ("claude-f", 100_000_000)
+            ]
+        );
     }
 
     #[test]

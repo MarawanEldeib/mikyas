@@ -108,6 +108,9 @@ pub struct EngineInputs<'a> {
     /// [`learn_model_names`].
     pub learned_names: &'a BTreeMap<String, String>,
     pub ctx_overrides: &'a BTreeMap<String, u64>,
+    /// Context-window sizes by model id: the persisted map with `captures` already folded in by
+    /// [`context::learn_sizes`].
+    pub learned_ctx_sizes: &'a BTreeMap<String, u64>,
     pub stale_after_ms: Ms,
     pub show_project: bool,
     /// Since when [`account_mismatch_now`] has been true without interruption.
@@ -351,6 +354,7 @@ fn tail_view(
         capture,
         desktop_session,
         overrides: inputs.ctx_overrides,
+        learned: inputs.learned_ctx_sizes,
     });
     let raw_id = tail
         .model_id
@@ -387,6 +391,7 @@ fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, St
         capture: Some(capture),
         desktop_session: None,
         overrides: inputs.ctx_overrides,
+        learned: inputs.learned_ctx_sizes,
     });
     Some(SessionView {
         key: session_key(&capture.session_id),
@@ -430,6 +435,7 @@ mod tests {
         exact: BTreeMap<WindowKind, Ms>,
         names: BTreeMap<String, String>,
         overrides: BTreeMap<String, u64>,
+        learned_ctx: BTreeMap<String, u64>,
     }
 
     impl Fixture {
@@ -439,10 +445,11 @@ mod tests {
             Self {
                 _tmp: tmp,
                 history,
-                health: DesktopHealth::Ok { last_sample_ms: None },
+                health: DesktopHealth::Ok { last_sample_ms: None, newer_version: None },
                 exact: BTreeMap::new(),
                 names: BTreeMap::new(),
                 overrides: BTreeMap::new(),
+                learned_ctx: BTreeMap::new(),
             }
         }
 
@@ -462,6 +469,7 @@ mod tests {
                 last_exact_resets: &self.exact,
                 learned_names: &self.names,
                 ctx_overrides: &self.overrides,
+                learned_ctx_sizes: &self.learned_ctx,
                 stale_after_ms: 20 * MINUTE_MS,
                 show_project: false,
                 account_mismatch_since_ms: None,

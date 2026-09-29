@@ -270,6 +270,8 @@ pub enum CtxBasis {
     DesktopModel,
     /// user override for this model id.
     Override,
+    /// the size Claude Code's status line last reported for this model id (any session).
+    Learned,
     /// a turn larger than 200k tokens was seen, so the window must be 1M.
     Heuristic,
     /// 200k default.
@@ -305,8 +307,16 @@ pub struct SessionView {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum DesktopHealth {
     NotFound,
-    Ok { last_sample_ms: Option<Ms> },
-    SchemaChanged { version: u32 },
+    Ok {
+        last_sample_ms: Option<Ms>,
+        /// The file's version when it is newer than the one this build knows and was read
+        /// best-effort (the UI says so instead of staying silent).
+        #[serde(default)]
+        newer_version: Option<u32>,
+    },
+    SchemaChanged {
+        version: u32,
+    },
     Unreadable,
 }
 
