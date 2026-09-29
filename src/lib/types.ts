@@ -43,7 +43,7 @@ export interface WindowView {
 }
 
 export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";
-export type CtxBasis = "statusline" | "identity" | "desktop_model" | "override" | "heuristic" | "default";
+export type CtxBasis = "statusline" | "identity" | "desktop_model" | "override" | "learned" | "heuristic" | "default";
 
 export interface SessionView {
   /** Opaque stable key for lists (a hash, never the session id). */

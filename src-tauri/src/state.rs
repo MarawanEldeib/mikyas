@@ -31,6 +31,8 @@ pub struct PersistedState {
     pub desktop_watermark_ms: Ms,
     /// Model display names learned from statusline captures, by base model id.
     pub learned_models: BTreeMap<String, String>,
+    /// Context-window sizes Claude Code's status line reported, by model id (`[1m]` kept).
+    pub learned_ctx_sizes: BTreeMap<String, u64>,
     /// Last time captures were pruned and the history compacted.
     pub last_maintenance_ms: Ms,
     /// Context-alert thresholds already announced, by session key (so restarts do not re-fire).

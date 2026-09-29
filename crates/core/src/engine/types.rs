@@ -270,6 +270,8 @@ pub enum CtxBasis {
     DesktopModel,
     /// user override for this model id.
     Override,
+    /// the size Claude Code's status line last reported for this model id (any session).
+    Learned,
     /// a turn larger than 200k tokens was seen, so the window must be 1M.
     Heuristic,
     /// 200k default.

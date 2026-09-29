@@ -1388,6 +1388,7 @@ mod tests {
                 capture: None,
                 desktop_session: None,
                 overrides: &Default::default(),
+                learned: &Default::default(),
             });
             (r.size, r.basis)
         };

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use mikyas_core::alerts::{AlertEvent, AlertSettings, AlertState};
 use mikyas_core::capture::{self, WriteOutcome};
 use mikyas_core::ctx_alerts::{CtxAlertEvent, CtxAlertState};
+use mikyas_core::engine::context;
 use mikyas_core::engine::snapshot::{self, EngineInputs};
 use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind, WindowView};
 use mikyas_core::history::History;
@@ -189,6 +190,7 @@ struct Persisted {
     last_exact_resets: BTreeMap<WindowKind, Ms>,
     desktop_watermark_ms: Ms,
     learned_models: BTreeMap<String, String>,
+    learned_ctx_sizes: BTreeMap<String, u64>,
     ctx_alerts: CtxAlertState,
     pace_alerts: PaceAlertState,
     recap: RecapState,
@@ -331,6 +333,7 @@ impl Widget {
             last_exact_resets: &self.persisted.last_exact_resets,
             learned_names: &self.persisted.learned_models,
             ctx_overrides: &BTreeMap::new(),
+            learned_ctx_sizes: &self.persisted.learned_ctx_sizes,
             stale_after_ms: STALE_AFTER_MS,
             show_project: true,
             account_mismatch_since_ms: self.mismatch_since,
@@ -342,6 +345,7 @@ impl Widget {
         self.captures = statusline::load_captures(&self.reader, &self.paths.capture_dir(), now);
         snapshot::learn_exact_resets(&mut self.persisted.last_exact_resets, &self.captures);
         snapshot::learn_model_names(&mut self.persisted.learned_models, &self.captures);
+        context::learn_sizes(&mut self.persisted.learned_ctx_sizes, &self.captures);
     }
 
     fn scan_transcripts(&mut self) {

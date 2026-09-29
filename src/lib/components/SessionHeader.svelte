@@ -19,6 +19,7 @@
     identity: "1M model detected from the transcript",
     desktop_model: "model from Claude Desktop",
     override: "your override",
+    learned: "reported by Claude Code for this model",
     heuristic: "inferred: a turn exceeded 200K",
     default: "default 200K",
   };
