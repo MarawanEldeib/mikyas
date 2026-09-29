@@ -45,17 +45,21 @@ pub fn window_name(kind: &WindowKind) -> String {
     }
 }
 
-/// "1h 12m", "2d 3h", "8m", "<1m".
+/// "1h 12m", "2d 3h", "8m", "<1m"; a zero minor unit is left out ("12h", "2d"), as in the UI.
 pub fn duration_text(ms: Ms) -> String {
     let ms = ms.max(0);
-    if ms >= DAY_MS {
-        format!("{}d {}h", ms / DAY_MS, ms % DAY_MS / HOUR_MS)
+    let (major, minor) = if ms >= DAY_MS {
+        (format!("{}d", ms / DAY_MS), (ms % DAY_MS / HOUR_MS, "h"))
     } else if ms >= HOUR_MS {
-        format!("{}h {}m", ms / HOUR_MS, ms % HOUR_MS / MINUTE_MS)
+        (format!("{}h", ms / HOUR_MS), (ms % HOUR_MS / MINUTE_MS, "m"))
     } else if ms >= MINUTE_MS {
-        format!("{}m", ms / MINUTE_MS)
+        return format!("{}m", ms / MINUTE_MS);
     } else {
-        "<1m".into()
+        return "<1m".into();
+    };
+    match minor {
+        (0, _) => major,
+        (n, unit) => format!("{major} {n}{unit}"),
     }
 }
 
@@ -282,6 +286,13 @@ mod tests {
         assert_eq!(window_name(&WindowKind::Other("seven_day_opus".into())), "weekly Opus");
         assert_eq!(duration_text(2 * DAY_MS + 3 * HOUR_MS), "2d 3h");
         assert_eq!(duration_text(30_000), "<1m");
+        assert_eq!(duration_text(-5), "<1m");
+        assert_eq!(duration_text(8 * MINUTE_MS + 59_999), "8m");
+        assert_eq!(duration_text(12 * HOUR_MS), "12h");
+        assert_eq!(duration_text(12 * HOUR_MS + 59_999), "12h");
+        assert_eq!(duration_text(HOUR_MS + 12 * MINUTE_MS), "1h 12m");
+        assert_eq!(duration_text(2 * DAY_MS), "2d");
+        assert_eq!(duration_text(2 * DAY_MS + 59 * MINUTE_MS), "2d");
     }
 
     #[test]
@@ -302,7 +313,7 @@ mod tests {
         assert_eq!(reset_when(now, ROUGH_RESET_PM_MS, now), "~today");
         assert_eq!(reset_span(DAY_MS - 1, ROUGH_RESET_PM_MS), "~<1d");
         assert_eq!(reset_span(2 * DAY_MS + 13 * HOUR_MS, ROUGH_RESET_PM_MS), "~3d");
-        assert_eq!(reset_span(HOUR_MS, 0), "1h 0m");
+        assert_eq!(reset_span(HOUR_MS, 0), "1h");
 
         let forecast = PaceAlertEvent::Forecast {
             kind: WindowKind::SevenDay,
@@ -374,7 +385,7 @@ mod tests {
         };
         let (t, b) = pace_text(&weekly, now);
         assert!(t.starts_with("At this pace: weekly limit at "), "{t}");
-        assert!(b.starts_with("That's 1d 0h before it resets ("), "{b}");
+        assert!(b.starts_with("That's 1d before it resets ("), "{b}");
 
         let heads_up = |kind, left| PaceAlertEvent::HeadsUp { kind, reset_at_ms: now + left };
         let (t, b) = pace_text(&heads_up(WindowKind::FiveHour, 10 * MINUTE_MS), now);
