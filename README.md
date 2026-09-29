@@ -179,9 +179,8 @@ Development overrides: `MIKYAS_DATA_DIR`, `CLAUDE_CONFIG_DIR`, `MIKYAS_X` / `MIK
 
 ## Credits
 
-- **Idea:** Eng. Abdulrahman Alhelali — who came up with the idea of a live, always-visible view of
-  Claude usage limits.
-- **Design & development:** Eng. Marawan Eldeib — built and maintains the widget.
+Built and maintained by Eng. Marawan Eldeib. Thanks to Eng. Abdulrahman Alhelali (the original idea
+and first tester) and Eng. Abazar Adam (suggestions).
 
 ## Terms
 

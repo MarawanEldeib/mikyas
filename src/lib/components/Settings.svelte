@@ -297,7 +297,7 @@
     </div>
 
     <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}><Icon name="power" size={13} />Quit Mikyas</button>
-    <p class="credits">Idea by Eng. Abdulrahman Alhelali · Built by Eng. Marawan Eldeib</p>
+    <p class="credits">Built by Eng. Marawan Eldeib</p>
     <p class="legal">
       Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
     </p>
