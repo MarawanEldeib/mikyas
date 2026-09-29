@@ -2,6 +2,7 @@
   import { api } from "../ipc";
   import { formatAge, formatTokens } from "../format";
   import { notices } from "../notices";
+  import { RELEASES_PREFIX } from "../update";
   import { app, errorText } from "../stores.svelte";
   import type { EffectName } from "../types";
   import ConnectPanel from "./ConnectPanel.svelte";
@@ -297,7 +298,14 @@
     </div>
 
     <button type="button" class="btn quit" onclick={() => api.quitApp().catch(failed)}><Icon name="power" size={13} />Quit Mikyas</button>
-    <p class="credits">Built by Eng. Marawan Eldeib</p>
+    <p class="credits">
+      <button
+        type="button"
+        class="credit-link"
+        title="Open Mikyas on GitHub"
+        onclick={() => api.openUrl(`${RELEASES_PREFIX}latest`).catch(failed)}>Built by Eng. Marawan Eldeib</button
+      >
+    </p>
     <p class="legal">
       Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
     </p>
@@ -607,6 +615,19 @@
     text-align: center;
     font-size: 11px;
     color: var(--fg-3);
+  }
+  .credit-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .credit-link:hover,
+  .credit-link:focus-visible {
+    color: var(--fg-2);
+    text-decoration: underline;
   }
   .legal {
     margin: 4px 0 0;

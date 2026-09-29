@@ -274,7 +274,8 @@ test.describe("settings", () => {
   test("about: independence line and third-party licenses", async ({ page }) => {
     const log = mockLog(page);
     await openWidget(page, { view: "settings" });
-    await expect(page.getByText("Built by Eng. Marawan Eldeib", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Built by Eng. Marawan Eldeib" }).click();
+    await expect.poll(() => log.join("\n")).toContain("open_url https://github.com/MarawanEldeib/mikyas/releases/latest");
     await expect(
       page.getByText(
         "Independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.",
