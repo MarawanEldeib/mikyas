@@ -1,6 +1,7 @@
 //! Command-line mode, handled before Tauri starts:
 //! `mikyas.exe --disconnect [--quiet]` restores Claude Code's statusline and exits
-//! (the uninstaller runs it). Anything else starts the app.
+//! (the uninstaller runs it). Anything else starts the app. Without `--quiet` it also prints the
+//! Claude Code `settings.json` it used (`CLAUDE_CONFIG_DIR` or `~/.claude`).
 //!
 //! Exit codes: 0 when the statusline is restored or there was nothing of ours to undo (never
 //! connected, already disconnected, no `settings.json`); 1 when `settings.json` could not be read
@@ -28,17 +29,19 @@ fn handle(
         return None;
     }
     let quiet = args.iter().any(|a| a == "--quiet");
+    let paths = paths();
+    let settings = paths.claude_settings();
     // Writes are best-effort: a release build has no console attached.
-    Some(match crate::connect::disconnect(&paths(), now) {
+    Some(match crate::connect::disconnect(&paths, now) {
         Ok(status) => {
             if !quiet {
-                let _ = writeln!(out, "disconnected: {status:?}");
+                let _ = writeln!(out, "disconnected: {status:?}\nsettings: {}", settings.display());
             }
             0
         }
         Err(e) => {
             if !quiet {
-                let _ = writeln!(err, "disconnect failed: {e}");
+                let _ = writeln!(err, "disconnect failed: {e}\nsettings: {}", settings.display());
             }
             1
         }
@@ -101,6 +104,7 @@ mod tests {
         let (code, out, _) = run(&["--disconnect"], paths(&tmp));
         assert_eq!(code, Some(0));
         assert!(out.starts_with("disconnected: Foreign"), "{out}");
+        assert!(out.ends_with(&format!("\nsettings: {}\n", p.claude_settings().display())), "{out}");
     }
 
     #[test]
@@ -136,8 +140,31 @@ mod tests {
         fs::write(p.claude_settings(), jsonc).unwrap();
         assert_eq!(run(&["--disconnect", "--quiet"], p.clone()), (Some(1), String::new(), String::new()));
         assert_eq!(fs::read_to_string(p.claude_settings()).unwrap(), jsonc);
-        let (code, _, err) = run(&["--disconnect"], p);
+        let (code, _, err) = run(&["--disconnect"], p.clone());
         assert_eq!(code, Some(1));
         assert!(err.starts_with("disconnect failed: "), "{err}");
+        assert!(err.ends_with(&format!("\nsettings: {}\n", p.claude_settings().display())), "{err}");
+    }
+
+    /// The uninstaller (windows/hooks.nsh) can't share these names with the code, so it is
+    /// checked against them here.
+    #[test]
+    fn uninstaller_hooks_match_the_app() {
+        let hooks = include_str!("../windows/hooks.nsh");
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        // The data folder is $LOCALAPPDATA\${PRODUCTNAME}.
+        assert_eq!(conf["productName"], mikyas_core::paths::APP_DIR_NAME);
+        assert!(hooks.contains(r"$LOCALAPPDATA\${PRODUCTNAME}"));
+        assert!(!hooks.contains(r"$LOCALAPPDATA\Mikyas"));
+        assert!(hooks.contains(&format!("ReadEnvStr $MikyasSettings {}", mikyas_core::paths::CLAUDE_CONFIG_DIR_ENV)));
+        assert!(hooks.contains(&format!(r"\bin\{SHIM_EXE_NAME}")));
+        // The files it names inside the data folder and Claude Code's config folder.
+        let p = Paths::with_roots(PathBuf::from("claude"), Vec::new(), PathBuf::from("data"));
+        let name = |path: PathBuf| path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(p.bin_dir(), p.data_root().join("bin"));
+        assert!(hooks.contains(&format!(r"$MikyasDataDir\{}", name(p.wrap_file()))));
+        assert!(hooks.contains(&format!(r"$MikyasDataDir\{}", name(p.backups_dir()))));
+        assert!(hooks.contains(&format!(r#"StrCpy $MikyasSettings "$MikyasSettings\{}""#, name(p.claude_settings()))));
+        assert!(hooks.contains(r#"StrCpy $MikyasSettings "$PROFILE\.claude""#));
     }
 }

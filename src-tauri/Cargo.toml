@@ -34,6 +34,8 @@ webview2-com = "0.38"
 windows-core = "0.61"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # Toast dates and times in the user's locale (GetTimeFormatEx / GetDateFormatEx).
+    "Win32_Globalization",
     "Win32_Graphics_Dwm",
     # Fullscreen auto-hide: window queries only (see src/fullscreen.rs).
     "Win32_Graphics_Gdi",
