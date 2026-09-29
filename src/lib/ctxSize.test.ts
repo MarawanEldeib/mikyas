@@ -54,6 +54,14 @@ describe("normalizeModelId", () => {
     expect(normalizeModelId("claude-opus-5-5")).toBe("claude-opus-5-5");
   });
 
+  it("accepts provider model ids (Bedrock, Vertex, gateways)", () => {
+    for (const id of ["us.anthropic.claude-opus-5-5-v1:0", "claude-opus-5-5@20260901", "anthropic/claude-opus-5-5"]) {
+      expect(normalizeModelId(id)).toBe(id);
+    }
+    expect(normalizeModelId("us.anthropic.claude-opus-5-5-v1:0[1m]")).toBe("us.anthropic.claude-opus-5-5-v1:0");
+    expect(normalizeModelId("x".repeat(129))).toBeNull();
+  });
+
   it("rejects what is not a model id", () => {
     expect(normalizeModelId("not a model!")).toBeNull();
     expect(normalizeModelId("")).toBeNull();

@@ -31,5 +31,7 @@ export function formatCtxSize(n: number): string {
 /** A model id the way overrides are keyed: trimmed, without `[1m]`; `null` if it is not an id. */
 export function normalizeModelId(input: string): string | null {
   const id = input.trim().replace(/\[1m\]$/i, "");
-  return /^[a-z0-9][a-z0-9._-]*$/i.test(id) ? id : null;
+  // Open to provider ids (Bedrock `…-v1:0`, Vertex `…@date`, gateway `org/model`); the length
+  // matches the Rust side's learned-id limit.
+  return id.length <= 128 && /^[a-z0-9][a-z0-9._:@/-]*$/i.test(id) ? id : null;
 }
