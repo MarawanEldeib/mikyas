@@ -52,3 +52,44 @@ describe("level.rs", () => {
     expect(rs).toContain("pct.clamp(0.0, 100.0).round() as u8");
   });
 });
+
+describe("window sizes", () => {
+  const win = source("src-tauri/src/window.rs");
+  const dock = source("src-tauri/src/dock.rs");
+  const css = source("src/app.css");
+
+  /** The mock's `--mock-w` / `--mock-h` for a CSS selector (px, first term of a calc). */
+  function mockSize(selector: string): [number, number] {
+    const at = css.indexOf(`${selector} {`);
+    expect(at, selector).toBeGreaterThanOrEqual(0);
+    const rule = css.slice(at, css.indexOf("}", at));
+    return [Number(grab(rule, /--mock-w: (?:calc\()?([\d.]+)px/)), Number(grab(rule, /--mock-h: (?:calc\()?([\d.]+)px/))];
+  }
+
+  it("the browser mock sizes every view like window.rs", () => {
+    const views = [...win.matchAll(/ViewMode::(\w+) => \(([\d.]+), ([\d.]+)\)/g)];
+    expect(views.length).toBeGreaterThanOrEqual(5);
+    for (const [, name, w, h] of views) {
+      expect(mockSize(`html.mock[data-view="${name.toLowerCase()}"]`), name).toEqual([Number(w), Number(h)]);
+    }
+  });
+
+  it("the mock's card cuts match the rows window.rs removes", () => {
+    const burn = grab(win, /const CARD_BURN_H: f64 = ([\d.* ]+);/)
+      .split("*")
+      .reduce((a, b) => a * Number(b.trim()), 1);
+    expect(css).toContain(`html.mock:has(.card[data-no-burn]) { --cut-burn: ${burn}px; }`);
+    expect(css).toContain(`html.mock:has(.card[data-no-session]) { --cut-session: ${rustConst(win, "CARD_SESSION_H")}px; }`);
+  });
+
+  it("the collapsed dock strip matches dock.rs", () => {
+    const side = /Self::Left \| Self::Right => \(([\d.]+), ([\d.]+)\)/.exec(dock);
+    const top = /Self::Top => \(([\d.]+), ([\d.]+)\)/.exec(dock.slice(dock.indexOf("fn strip_logical")));
+    expect(side && top).toBeTruthy();
+    expect(mockSize(`html.mock[data-dock-collapsed]:is([data-dock="left"], [data-dock="right"])`)).toEqual([
+      Number(side![1]),
+      Number(side![2]),
+    ]);
+    expect(mockSize(`html.mock[data-dock-collapsed][data-dock="top"]`)).toEqual([Number(top![1]), Number(top![2])]);
+  });
+});
