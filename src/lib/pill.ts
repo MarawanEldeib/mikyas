@@ -13,7 +13,7 @@ export function resetPhrase(w: Pick<WindowView, "phase" | "reset">, now: number)
 
 /** "5-hour limit 42% used, resets in 3h 12m" plus limit, worked-since, stale and estimate notes. */
 export function describeWindow(w: WindowView, now: number): string {
-  const parts = [`${windowLabel(w.kind)} limit ${formatPct(w.pct)}% used`];
+  const parts = [`${windowLabel(w)} limit ${formatPct(w.pct)}% used`];
   if (w.limit_reached) parts.push("limit reached");
   if (showWorkedSince(w)) parts.push(WORKED_SINCE_TIP);
   parts.push(resetPhrase(w, now));

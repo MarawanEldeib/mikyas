@@ -108,6 +108,10 @@ export interface HistoryDay {
 
 export interface HistoryWindow {
   kind: WindowKind;
+  /** Window name from Rust (`WindowKind::label`); format.ts `windowLabel` falls back to the kind. */
+  label?: string;
+  /** Compact name (`WindowKind::short_label`). */
+  short?: string;
   /** Hourly buckets (max % per hour) over [from_ms, to_ms]; null = gap. */
   points: SparkPoint[];
   /** Detected reset times (exact or inferred from drops), ascending. */

@@ -37,6 +37,9 @@ pub struct HistoryDay {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryWindow {
     pub kind: WindowKind,
+    /// `WindowKind::label` / `short_label`, so the chart titles match the card.
+    pub label: String,
+    pub short: String,
     pub points: Vec<SparkPoint>,
     pub resets_ms: Vec<i64>,
     pub days: Vec<HistoryDay>,
@@ -58,6 +61,8 @@ impl From<DayUsage> for HistoryDay {
 impl From<WindowHistory> for HistoryWindow {
     fn from(w: WindowHistory) -> Self {
         Self {
+            label: w.kind.label(),
+            short: w.kind.short_label(),
             kind: w.kind,
             points: w.points,
             resets_ms: w.resets_ms,
@@ -157,6 +162,20 @@ mod tests {
         assert!(json["windows"][0]["points"][0].get("t_ms").is_some());
         assert!(json["windows"][0]["days"][0].get("consumed_pct").is_some());
         assert_eq!(json["windows"][1]["days"][1]["samples"], 1);
+    }
+
+    #[test]
+    fn windows_carry_the_core_names() {
+        let (_dir, h) = history_with(&[
+            (NOW - HOUR_MS, WindowKind::SevenDay, 40.0),
+            (NOW - HOUR_MS, WindowKind::from_key("thirty_day"), 12.0),
+        ]);
+        let json = serde_json::to_value(build(&h, 2, NOW, &Utc)).unwrap();
+        assert_eq!(json["windows"][0]["label"], "weekly");
+        assert_eq!(json["windows"][0]["short"], "7d");
+        assert_eq!(json["windows"][1]["kind"], "thirty_day");
+        assert_eq!(json["windows"][1]["label"], "30-day");
+        assert_eq!(json["windows"][1]["short"], "30d");
     }
 
     #[test]

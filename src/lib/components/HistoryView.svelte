@@ -136,7 +136,7 @@
           window={w}
           {domain}
           range={spec.key}
-          label={windowLabel(w.kind)}
+          label={windowLabel(w)}
           rangeName={spec.name}
           current={current(w.kind)}
           now={app.now}
@@ -188,7 +188,7 @@
       {/if}
 
       {#if summary && lead}
-        {@const label = windowLabel(lead.kind)}
+        {@const label = windowLabel(lead)}
         <p class="summary" title="{summaryText(label, summary)} · {spec.name}">
           {#if summary.peak === null}
             <span>No {label} data</span>
