@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CRIT_AT, WARN_AT } from "./color";
+import { windowLabel, windowShort } from "./format";
 import { createMockBackend } from "./mock";
 import { MOCK_HISTORY_DAYS } from "./mock-history";
 import { DEFAULT_CTX_THRESHOLDS, DEFAULT_THRESHOLDS } from "./thresholds";
@@ -78,6 +79,14 @@ describe("window sizes", () => {
     }
   });
 
+  it("the mock's card grows by the extra limit rows like window.rs", () => {
+    const sum = (expr: string) => expr.split(/(?=[+-])/).reduce((a, term) => a + Number(term.replace(/\s/g, "")), 0);
+    const block = sum(grab(win, /const CARD_EXTRA_H: f64 = ([\d.+\- ]+);/));
+    const row = sum(grab(win, /const CARD_EXTRA_ROW_H: f64 = ([\d.+\- ]+);/));
+    expect(css).toContain(`html.mock:has(.card[data-extra-rows]) { --add-extra: calc(${block}px + ${row}px * var(--extra-rows, 0)); }`);
+    expect(win).toContain("h += CARD_EXTRA_H + CARD_EXTRA_ROW_H * extra_rows as f64;");
+  });
+
   it("the mock's card cuts match the rows window.rs removes", () => {
     const burn = grab(win, /const CARD_BURN_H: f64 = ([\d.* ]+);/)
       .split("*")
@@ -106,14 +115,35 @@ describe("history.rs", () => {
   });
 });
 
-describe("settings.rs", () => {
-  it("the UI and the browser mock use the default alert thresholds", async () => {
-    const rs = source("src-tauri/src/settings.rs");
-    const pair = (name: string) => JSON.parse(grab(rs, new RegExp(String.raw`pub const ${name}: \[u8; 2\] = (\[\d+, \d+\]);`))) as number[];
+describe("default thresholds", () => {
+  it("the UI and the browser mock use core's defaults (the one source the app's settings use)", async () => {
+    const list = (path: string, name: string) =>
+      JSON.parse(grab(source(path), new RegExp(String.raw`pub const ${name}: &\[u8\] = &(\[[\d, ]*\]);`))) as number[];
+    const usage = list("crates/core/src/alerts.rs", "DEFAULT_THRESHOLDS");
+    const ctx = list("crates/core/src/ctx_alerts.rs", "DEFAULT_CTX_THRESHOLDS");
+    const settings = source("src-tauri/src/settings.rs");
+    expect(settings).toContain("pub use mikyas_core::alerts::DEFAULT_THRESHOLDS;");
+    expect(settings).toContain("pub use mikyas_core::ctx_alerts::DEFAULT_CTX_THRESHOLDS;");
+    expect(source("crates/core/src/alerts.rs")).toContain("thresholds: DEFAULT_THRESHOLDS.to_vec()");
     const s = await createMockBackend(new URLSearchParams()).invoke<Settings>("get_settings");
-    expect(DEFAULT_THRESHOLDS).toEqual(pair("DEFAULT_THRESHOLDS"));
-    expect(DEFAULT_CTX_THRESHOLDS).toEqual(pair("DEFAULT_CTX_THRESHOLDS"));
-    expect(s.thresholds).toEqual(pair("DEFAULT_THRESHOLDS"));
-    expect(s.ctx_thresholds).toEqual(pair("DEFAULT_CTX_THRESHOLDS"));
+    expect(DEFAULT_THRESHOLDS).toEqual(usage);
+    expect(DEFAULT_CTX_THRESHOLDS).toEqual(ctx);
+    expect(s.thresholds).toEqual(usage);
+    expect(s.ctx_thresholds).toEqual(ctx);
+  });
+});
+
+describe("types.rs window names", () => {
+  it("span.ts names every key the way WindowKind::label / short_label do", () => {
+    const rs = source("crates/core/src/engine/types.rs");
+    const table = rs.slice(rs.indexOf("fn labels_are_derived_from_the_key"));
+    const cases = [...table.slice(0, table.indexOf("];")).matchAll(/\("([^"]+)", "([^"]+)", "([^"]+)"\)/g)];
+    expect(cases.length).toBeGreaterThanOrEqual(10);
+    for (const [, key, label, short] of cases) {
+      // Desktop's two-letter short keys are Rust-only seeds (Rust always sends their names).
+      if (/^[a-z]{2}$/.test(key)) continue;
+      expect(windowLabel(key), key).toBe(label);
+      expect(windowShort(key), key).toBe(short);
+    }
   });
 });

@@ -165,12 +165,12 @@ test.describe("settings", () => {
 
   test("steppers: buttons, arrow keys, typing and clamping", async ({ page }) => {
     await openWidget(page, { view: "settings" });
-    const first = page.getByRole("textbox", { name: "First alert threshold" });
+    const first = page.getByRole("textbox", { name: "Alert 1 usage threshold" });
     await expect(first).toHaveValue("80");
-    await page.getByRole("button", { name: "Increase First alert threshold" }).click();
+    await page.getByRole("button", { name: "Increase Alert 1 usage threshold" }).click();
     await expect(first).toHaveValue("81");
-    await page.getByRole("button", { name: "Decrease First alert threshold" }).click();
-    await page.getByRole("button", { name: "Decrease First alert threshold" }).click();
+    await page.getByRole("button", { name: "Decrease Alert 1 usage threshold" }).click();
+    await page.getByRole("button", { name: "Decrease Alert 1 usage threshold" }).click();
     await expect(first).toHaveValue("79");
     await first.focus();
     await page.keyboard.press("ArrowUp");
@@ -188,6 +188,27 @@ test.describe("settings", () => {
     await stale.blur();
     await expect(stale).toHaveValue("1");
     await expect(page.getByRole("button", { name: "Decrease Minutes until data is stale" })).toBeDisabled();
+  });
+
+  test("alert thresholds: any number, added and removed down to none", async ({ page }) => {
+    await openWidget(page, { view: "settings" });
+    const usage = page.getByRole("group", { name: /usage threshold$/ });
+    await expect(usage).toHaveCount(2);
+    // A third alert goes above the highest.
+    await page.getByRole("button", { name: "Add alert" }).first().click();
+    await expect(usage).toHaveCount(3);
+    await expect(page.getByRole("textbox", { name: "Alert 3 usage threshold" })).toHaveValue("100");
+    // Removing every alert leaves none (alerts off), and they can come back.
+    for (const v of [100, 95, 80]) await page.getByRole("button", { name: `Remove usage alert at ${v}%` }).click();
+    await expect(usage).toHaveCount(0);
+    await expect(page.getByText("No alerts").first()).toBeVisible();
+    await page.getByRole("button", { name: "Add alert" }).first().click();
+    await expect(page.getByRole("textbox", { name: "Alert usage threshold" })).toHaveValue("80");
+    // Values below the old floor of 10 are allowed.
+    const only = page.getByRole("textbox", { name: "Alert usage threshold" });
+    await only.fill("5");
+    await only.press("Enter");
+    await expect(only).toHaveValue("5");
   });
 
   test("hotkey field records a shortcut, Esc cancels, Tab leaves", async ({ page }) => {
@@ -233,19 +254,20 @@ test.describe("settings", () => {
 
   test("context overrides: add, validate and remove", async ({ page }) => {
     await openWidget(page, { view: "settings" });
-    const model = page.getByRole("textbox", { name: "Model id" });
+    const model = page.getByRole("combobox", { name: "Model id" });
     await model.fill("not a model!");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Use a model id like" })).toBeVisible();
     await model.fill("claude-sonnet-5[1m]");
     // Any size can be typed, not just the quick picks.
     const size = page.getByRole("combobox", { name: "Context size", exact: true });
     await size.fill("5G");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Use a size like 400K" })).toBeVisible();
     await size.fill("400,000");
-    await page.getByRole("button", { name: "Add" }).click();
-    const row = page.getByRole("combobox", { name: "Context size for claude-sonnet-5" });
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    // A tagged id keeps its tag: the override is for that long-context variant only.
+    const row = page.getByRole("combobox", { name: "Context size for claude-sonnet-5[1m]" });
     await expect(row).toHaveValue("400K");
     await expect(page.getByRole("alert")).toHaveCount(0);
     // Editing a row: a valid entry is saved in its short form, an invalid one reverts.
@@ -254,9 +276,9 @@ test.describe("settings", () => {
     await expect(row).toHaveValue("1.5M");
     await row.fill("999");
     await row.press("Enter");
-    await expect(page.getByRole("alert").filter({ hasText: "claude-sonnet-5: Use a size like" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "claude-sonnet-5[1m]: Use a size like" })).toBeVisible();
     await expect(row).toHaveValue("1.5M");
-    await page.getByRole("button", { name: "Remove override for claude-sonnet-5" }).click();
+    await page.getByRole("button", { name: "Remove override for claude-sonnet-5[1m]" }).click();
     await expect(row).toHaveCount(0);
   });
 
@@ -267,7 +289,7 @@ test.describe("settings", () => {
 
   test("Esc goes back, except while typing in a field", async ({ page }) => {
     await openWidget(page, { view: "settings" });
-    await page.getByRole("textbox", { name: "Model id" }).focus();
+    await page.getByRole("combobox", { name: "Model id" }).focus();
     await page.keyboard.press("Escape");
     await expect(page.locator(VIEW_ROOT.settings)).toBeVisible();
     await page.getByRole("heading", { name: "Settings" }).click();

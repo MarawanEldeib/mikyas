@@ -24,7 +24,9 @@
 //!    `limit_reached = pct >= 99.5`. pct is clamped to 0..=100.
 //!
 //! Implementation notes:
-//! - CLI observations without `resets_at_ms` can be neither LIVE nor EXPIRED and are ignored.
+//! - CLI observations without `resets_at_ms` (a limit Claude Code reports without a reset time)
+//!   can be neither LIVE nor EXPIRED. Without a LIVE group the newest of them stands in for D when
+//!   it is newer than D (rule 3c, keeping its CLI source), so such a limit is still shown.
 //! - Grouping is anchored on the latest LIVE reset `R`: the winning group is every LIVE
 //!   observation with `resets_at >= R - RESET_GROUP_TOLERANCE_MS`, and `C.resets_at = R`. Every
 //!   reduction is a max, so the result does not depend on the order of `cli`.
@@ -71,8 +73,15 @@ pub fn merge_window_with(
 ) -> Option<WindowState> {
     let mut live: Vec<(Ms, &Observation)> = Vec::new();
     let mut expired: Vec<(Ms, &Observation)> = Vec::new();
+    let mut resetless: Option<&Observation> = None;
     for obs in cli.iter().filter(|o| &o.kind == kind) {
         let Some(reset) = obs.resets_at_ms else {
+            // Newest wins; equal times keep the higher value, so the order of `cli` never matters.
+            let newer =
+                |r: &Observation| (obs.observed_at_ms, sanitize_pct(obs.pct)) > (r.observed_at_ms, sanitize_pct(r.pct));
+            if resetless.is_none_or(newer) {
+                resetless = Some(obs);
+            }
             continue;
         };
         if reset > now_ms {
@@ -83,6 +92,7 @@ pub fn merge_window_with(
     }
     let c = winning_group(&live);
     let d = desktop.filter(|o| &o.kind == kind);
+    let d = if c.is_none() { d.into_iter().chain(resetless).max_by_key(|o| o.observed_at_ms) } else { d };
 
     let draft = match (c, d) {
         // 3a: Desktop is newer than the winning CLI group.
@@ -102,9 +112,9 @@ pub fn merge_window_with(
             let has_reset =
                 expired.iter().any(|&(r, _)| reset_since_d(r)) || estimate.at_ms().is_some_and(reset_since_d);
             if has_reset {
-                Draft::awaiting(estimate, Source::Desktop, d.observed_at_ms)
+                Draft::awaiting(estimate, d.source, d.observed_at_ms)
             } else {
-                Draft::active(sanitize_pct(d.pct), estimate, Source::Desktop, d.observed_at_ms)
+                Draft::active(sanitize_pct(d.pct), estimate, d.source, d.observed_at_ms)
             }
         }
         // 3d / 3e: only expired CLI observations, or nothing at all.
@@ -253,11 +263,19 @@ mod tests {
     }
 
     #[test]
-    fn cli_without_reset_is_ignored() {
+    fn cli_without_reset_is_shown_unless_a_live_value_exists() {
+        // A limit reported without a reset time is still shown, with the estimate (here none).
         let no_reset = cli_kind(FH, 50.0, None, MINUTE_MS);
-        assert_eq!(merge(std::slice::from_ref(&no_reset), None, ResetInfo::Unknown), None);
-        let s = merge(&[no_reset, cli(20.0, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
+        let s = merge(std::slice::from_ref(&no_reset), None, ResetInfo::Unknown).unwrap();
+        assert_eq!((s.pct, s.source, s.reset.clone(), s.phase), (50.0, Source::Cli, ResetInfo::Unknown, Phase::Active));
+        // A live value with an exact reset wins.
+        let s = merge(&[no_reset.clone(), cli(20.0, HOUR_MS, MINUTE_MS)], None, ResetInfo::Unknown).unwrap();
         assert_eq!(s.pct, 20.0);
+        // Against Desktop, the newer of the two counts.
+        let s = merge(std::slice::from_ref(&no_reset), Some(&desk(30.0, 10 * MINUTE_MS)), ResetInfo::Unknown).unwrap();
+        assert_eq!((s.pct, s.source), (50.0, Source::Cli));
+        let s = merge(std::slice::from_ref(&no_reset), Some(&desk(30.0, SECOND_MS)), ResetInfo::Unknown).unwrap();
+        assert_eq!((s.pct, s.source), (30.0, Source::Desktop));
     }
 
     // ---- rule 2: grouping ----
@@ -611,7 +629,8 @@ mod tests {
                     prop_assert_eq!(s.pct, 0.0);
                     prop_assert!(!s.stale);
                 }
-                if s.source == Source::Cli && s.phase == Phase::Active {
+                // A CLI value is shown with its exact reset, unless it came without one.
+                if s.source == Source::Cli && s.phase == Phase::Active && cli.iter().all(|o| o.resets_at_ms.is_some()) {
                     prop_assert!(s.reset.is_exact());
                 }
             }

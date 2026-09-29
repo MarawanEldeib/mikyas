@@ -2,7 +2,7 @@
   import { clampPct, fillColor } from "../color";
   import { ctxLabel, formatAge, formatTokens, modelLabel } from "../format";
   import { app } from "../stores.svelte";
-  import { SURFACE } from "../surface";
+  import { surfaceOf } from "../surface";
   import type { SessionView } from "../types";
   import Icon from "./Icon.svelte";
 
@@ -14,24 +14,35 @@
 
   let { session, now, showProject }: Props = $props();
 
-  const BASIS: Record<SessionView["ctx_basis"], string> = {
-    statusline: "reported by Claude Code",
-    identity: "1M model detected from the transcript",
-    desktop_model: "model from Claude Desktop",
-    override: "your override",
-    learned: "reported by Claude Code for this model",
-    heuristic: "inferred: a turn exceeded 200K",
-    default: "default 200K",
+  // Where the window size came from; the size itself comes from the session, never from this text.
+  const basisText = (s: SessionView): string => {
+    const size = formatTokens(s.ctx_size);
+    switch (s.ctx_basis) {
+      case "statusline":
+        return "reported by Claude Code";
+      case "identity":
+        return `long-context model detected from the transcript (${size})`;
+      case "desktop_model":
+        return "model from Claude Desktop";
+      case "override":
+        return "your override";
+      case "learned":
+        return "reported by Claude Code for this model";
+      case "heuristic":
+        return `inferred: a turn went past the default window (${size} assumed)`;
+      case "default":
+        return `default ${size} (not reported yet)`;
+    }
   };
 
   // An unknown surface gets no icon here (the Sessions view still labels it).
-  const surface = $derived(session && session.entrypoint !== "unknown" ? SURFACE[session.entrypoint] : null);
+  const surface = $derived(session && session.entrypoint !== "unknown" ? surfaceOf(session) : null);
   const ctx = $derived(session?.ctx_pct == null ? null : clampPct(session.ctx_pct));
   const ctxTip = $derived.by(() => {
     if (!session) return "";
     const used = session.ctx_tokens === null ? "" : `${formatTokens(session.ctx_tokens)} of `;
     const est = session.ctx_is_estimate ? " (estimated from the transcript)" : "";
-    return `Context: ${used}${formatTokens(session.ctx_size)} tokens${est}\nWindow size: ${BASIS[session.ctx_basis]}`;
+    return `Context: ${used}${formatTokens(session.ctx_size)} tokens${est}\nWindow size: ${basisText(session)}`;
   });
   // Other sessions of the last 12 hours (the list includes this one).
   const others = $derived(Math.max(0, (app.snapshot?.sessions.length ?? 1) - 1));

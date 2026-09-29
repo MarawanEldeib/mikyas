@@ -23,6 +23,12 @@ export function level(pct: number): Level {
   return "ok";
 }
 
+/** Where a band starts on a continuous 0..1 scale (a chart's colour gradient): half a point below
+ *  its first shown %, so a line at 39.6 (shown "40") is already orange, as {@link level} says. */
+export function bandOffset(at: number): number {
+  return (at - 0.5) / 100;
+}
+
 /** CSS colour for text drawn in a band's colour (AA on the widget surface). */
 export function textColor(pct: number): string {
   return `var(--${level(pct)})`;

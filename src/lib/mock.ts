@@ -8,7 +8,7 @@ import type { Backend, EventName, Unlisten } from "./ipc";
 import { parseCardRows } from "./layout";
 import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
 import { DEFAULT_CTX_THRESHOLDS, DEFAULT_THRESHOLDS } from "./thresholds";
-import { MAIN_KINDS } from "./windows";
+import { durationOf, mainKinds } from "./span";
 import type {
   Burn,
   CommandName,
@@ -425,8 +425,9 @@ const SPECS: Record<Scenario, ScenarioSpec> = {
   },
 };
 
-function isMainKind(kind: string): kind is (typeof MAIN_KINDS)[number] {
-  return (MAIN_KINDS as readonly string[]).includes(kind);
+/** The kinds the history mock simulates (it models the built-in pair only). */
+function isHistoryKind(kind: string): kind is "five_hour" | "seven_day" {
+  return kind === "five_hour" || kind === "seven_day";
 }
 
 function burnFor(w: WinSpec, pct: number, now: number, resetAt: number | null): Burn | null {
@@ -456,10 +457,11 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
         : w.estimate
           ? { type: "estimated", at_ms: resetAt, plus_minus_ms: w.estimate.pm, confidence: w.estimate.confidence }
           : { type: "exact", at_ms: resetAt };
-    // Like Rust's `duration_ms`/`spark_span`: five-hour windows are short, everything else weekly.
-    const short = w.kind === "five_hour" || w.kind.startsWith("five_hour_");
-    const period = short ? 5 * HOUR : 7 * DAY;
-    const span = short ? DAY : 7 * DAY;
+    // Like Rust's `duration_ms`/`spark_span`: the key's own length; the sparkline covers it, at
+    // least a day and at most 30 days (7 days when the length is unknown).
+    const length = durationOf(w.kind);
+    const period = length ?? 7 * DAY;
+    const span = length === null ? 7 * DAY : Math.min(30 * DAY, Math.max(DAY, length));
     return {
       kind: w.kind,
       pct: w.source === "desktop" ? Math.round(pct) : Math.round(pct * 10) / 10,
@@ -485,6 +487,11 @@ export function buildSnapshot(scenario: Scenario, t0: number, now: number): Snap
       spark_span_ms: span,
     };
   });
+  // Like Rust's snapshot: the main windows (from the data) marked and first, shortest to longest.
+  const main = mainKinds(windows.map((w) => w.kind));
+  for (const w of windows) w.is_main = main.includes(w.kind);
+  const rank = (w: WindowView) => (main.includes(w.kind) ? main.indexOf(w.kind) : main.length);
+  windows.sort((a, b) => rank(a) - rank(b));
   const session = spec.session(t0);
   if (session && session.last_active_ms === 0) session.last_active_ms = t0 - (spec.cliAgo ?? MIN);
   // Newest first, like Rust; the header session is the newest one here.
@@ -684,7 +691,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
       return mockHistory({
         // The history mock models the two main windows only.
         windows: spec.windows
-          .flatMap((w) => (isMainKind(w.kind) ? [{ kind: w.kind, w }] : []))
+          .flatMap((w) => (isHistoryKind(w.kind) ? [{ kind: w.kind, w }] : []))
           .map(({ kind, w }) => ({
             kind,
             pct: snapshot.windows.find((live) => live.kind === w.kind)?.pct ?? w.pct,

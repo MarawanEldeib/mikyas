@@ -1,7 +1,7 @@
 //! Assembles a [`Snapshot`] from already-loaded source data. Pure: no file system access (the
 //! [`History`] is an in-memory copy), `now_ms` passed in.
 //!
-//! Per window kind present in any source (FiveHour, SevenDay, then others in key order):
+//! Per window kind present in any source (the main windows of `main_kinds` first, then the others):
 //! 1. `reset_estimate::estimate_reset` over the Desktop-sourced samples of that kind (Desktop
 //!    file series ∪ Desktop rows of the history, samples more than [`FUTURE_SLACK_MS`] in the
 //!    future dropped) with the last exact reset (`last_exact_resets`). A second estimate uses that
@@ -10,10 +10,10 @@
 //! 2. `merge::merge_window_with` of the CLI observations and the newest Desktop observation, with
 //!    both estimates.
 //! 3. `burn::compute` over the history samples (∪ the Desktop series) of that kind.
-//! 4. `History::spark`: 96 buckets over [`spark_span`] (24 h for windows of a day or less, else
-//!    7 d; from `WindowKind::duration_ms`, so new keys need no code). The range end is
-//!    aligned up to the bucket step so the buckets do not shift on every recompute (which would
-//!    make every snapshot look changed).
+//! 4. `History::spark`: 96 buckets over [`spark_span`] (the window's own length from
+//!    `WindowKind::duration_ms`, at least a day and at most 30 days; 7 days when unknown), so new
+//!    keys need no code. The range end is aligned up to the bucket step so the buckets do not
+//!    shift on every recompute (which would make every snapshot look changed).
 //! 5. `worked_since`: the newest transcript assistant activity (any session) is at least
 //!    [`WORKED_SINCE_MS`] newer than the value's `observed_at_ms` (a Desktop value or an old
 //!    capture), so the real % is probably higher.
@@ -23,9 +23,13 @@
 //! `context::resolve`. Without any tail, the newest capture that names a model is shown instead.
 //! The display name uses the learned names (`learned_names`).
 //!
+//! Main windows: [`main_kinds`] of the kinds present sets `WindowView::is_main`; those come first
+//! (shortest, then longest), then the others in key order.
+//!
 //! The caller owns learning: `last_exact_resets` and `learned_names` must already include what
 //! [`learn_exact_resets`] and [`learn_model_names`] take from `captures` (the pipeline folds them
-//! in whenever it reloads the captures), so a build does not repeat that work.
+//! in whenever it reloads the captures), so a build does not repeat that work. Learned names are
+//! keyed by `canonical_model_id`, so provider spellings of one model share them.
 //! `project` only when `show_project`. `key` is [`session_key`] of the session id (an opaque FNV-1a
 //! hash, never the id itself).
 //!
@@ -50,11 +54,11 @@ use crate::engine::merge;
 use crate::engine::reset_estimate;
 use crate::engine::types::{
     DesktopHealth, Entrypoint, Observation, Sample, SessionView, Snapshot, Source, SourceHealth, Warning, WindowKind,
-    WindowView,
+    WindowView, main_kinds,
 };
 use crate::fingerprint::Fnv64;
 use crate::history::History;
-use crate::model_names::{display_name, split_1m};
+use crate::model_names::{canonical_model_id, display_name, split_1m};
 use crate::sources::desktop_sessions::DesktopSession;
 use crate::sources::desktop_usage::{self, DesktopUsage};
 use crate::sources::statusline;
@@ -64,10 +68,12 @@ use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, SECOND_MS};
 pub use crate::time::FUTURE_SLACK_MS;
 /// Sparkline resolution.
 pub const SPARK_BUCKETS: usize = 96;
-/// Sparkline span of short windows (a day or less, e.g. five_hour).
-pub const SPARK_SPAN_FIVE_HOUR_MS: Ms = DAY_MS;
-/// Sparkline span of weekly windows and windows of another or unknown length.
-pub const SPARK_SPAN_WEEKLY_MS: Ms = 7 * DAY_MS;
+/// Shortest sparkline span (windows of a day or less, e.g. five_hour, show a day).
+pub const SPARK_SPAN_MIN_MS: Ms = DAY_MS;
+/// Longest sparkline span.
+pub const SPARK_SPAN_MAX_MS: Ms = 30 * DAY_MS;
+/// Sparkline span of windows of unknown length.
+pub const SPARK_SPAN_UNKNOWN_MS: Ms = 7 * DAY_MS;
 /// Captures written within this long count as "Claude Code is running" for `NoPlanLimits`.
 pub const NO_PLAN_LIMITS_RECENT_MS: Ms = HOUR_MS;
 /// A Desktop/CLI disagreement larger than this many points counts as a mismatch.
@@ -155,8 +161,14 @@ pub fn build_snapshot(inputs: &EngineInputs<'_>, now_ms: Ms) -> Snapshot {
         let spark = spark(inputs.history, kind, now_ms);
         let worked_since =
             newest_activity.is_some_and(|newest| newest.saturating_sub(state.observed_at_ms) >= WORKED_SINCE_MS);
-        windows.push(WindowView { state, burn, spark, worked_since });
+        windows.push(WindowView { state, burn, spark, worked_since, is_main: false });
     }
+    let main = main_kinds(windows.iter().map(|w| &w.state.kind));
+    for w in &mut windows {
+        w.is_main = main.contains(&w.state.kind);
+    }
+    // Main windows first, in `main` order; the sort is stable, so the rest keep key order.
+    windows.sort_by_key(|w| main.iter().position(|k| *k == w.state.kind).unwrap_or(main.len()));
 
     let (session, sessions) = session_views(inputs, now_ms);
     let health = SourceHealth {
@@ -207,7 +219,8 @@ pub fn learn_exact_resets(map: &mut BTreeMap<WindowKind, Ms>, captures: &[Captur
     changed
 }
 
-/// Folds the captures' `model.display_name` into `map` (keyed by base id). Returns whether `map`
+/// Folds the captures' `model.display_name` into `map` (keyed by `canonical_model_id`, so the
+/// Bedrock/Vertex/gateway spellings and dated ids of a model share it). Returns whether `map`
 /// changed.
 pub fn learn_model_names(map: &mut BTreeMap<String, String>, captures: &[CaptureRecord]) -> bool {
     let mut changed = false;
@@ -219,7 +232,7 @@ pub fn learn_model_names(map: &mut BTreeMap<String, String>, captures: &[Capture
         let (Some(id), Some(name)) = (model.id.as_deref(), model.display_name.as_deref()) else {
             continue;
         };
-        let base = split_1m(id.trim()).0;
+        let base = canonical_model_id(id);
         let name = name.trim();
         if base.is_empty() || name.is_empty() || name.len() > 64 {
             continue;
@@ -232,9 +245,11 @@ pub fn learn_model_names(map: &mut BTreeMap<String, String>, captures: &[Capture
     changed
 }
 
-/// How far back the sparkline of `kind` reaches (serialised as `spark_span_ms`).
+/// How far back the sparkline of `kind` reaches (serialised as `spark_span_ms`): the window's
+/// length, clamped to [`SPARK_SPAN_MIN_MS`]..=[`SPARK_SPAN_MAX_MS`]; [`SPARK_SPAN_UNKNOWN_MS`] when
+/// the length is unknown.
 pub fn spark_span(kind: &WindowKind) -> Ms {
-    if kind.is_short_window() { SPARK_SPAN_FIVE_HOUR_MS } else { SPARK_SPAN_WEEKLY_MS }
+    kind.duration_ms().map_or(SPARK_SPAN_UNKNOWN_MS, |d| d.clamp(SPARK_SPAN_MIN_MS, SPARK_SPAN_MAX_MS))
 }
 
 /// Sparkline range `(from, to)` for a kind: `to` is `now` rounded up to the bucket step.
@@ -377,6 +392,7 @@ fn tail_view(
         ctx_basis: ctx.basis,
         ctx_is_estimate: ctx.is_estimate,
         entrypoint: tail.entrypoint,
+        entrypoint_raw: tail.entrypoint_raw.clone(),
         last_active_ms: tail.last_assistant_ms,
         project: if inputs.show_project { tail.project.clone() } else { None },
         concurrent,
@@ -384,7 +400,7 @@ fn tail_view(
 }
 
 /// No transcript found (e.g. `CLAUDE_CONFIG_DIR` points elsewhere): show the newest capture that
-/// names a model.
+/// names a model. A capture does not say which surface ran it, so the entrypoint is Unknown.
 fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, String>) -> Option<SessionView> {
     let capture = inputs
         .captures
@@ -408,7 +424,8 @@ fn capture_only_session(inputs: &EngineInputs<'_>, learned: &BTreeMap<String, St
         ctx_size: ctx.size,
         ctx_basis: ctx.basis,
         ctx_is_estimate: ctx.is_estimate,
-        entrypoint: Entrypoint::Cli,
+        entrypoint: Entrypoint::Unknown,
+        entrypoint_raw: None,
         last_active_ms: capture.changed_at_ms,
         project: None,
         concurrent: 1,
@@ -501,7 +518,9 @@ mod tests {
             }),
             rate_limits: limits
                 .iter()
-                .map(|&(k, p, reset_ms)| (k.to_string(), RateLimit { used_percentage: p, resets_at: reset_ms / 1000 }))
+                .map(|&(k, p, reset_ms)| {
+                    (k.to_string(), RateLimit { used_percentage: p, resets_at: Some(reset_ms / 1000) })
+                })
                 .collect(),
             api_ms: None,
         }
@@ -512,10 +531,12 @@ mod tests {
             path: format!("C:/x/{session}.jsonl").into(),
             session_id: session.into(),
             entrypoint: Entrypoint::Cli,
+            entrypoint_raw: None,
             model_id: Some("claude-sonnet-5".into()),
             ctx_tokens: 50_000,
             max_ctx_tokens_seen: 50_000,
             identity_1m: None,
+            identity_tag: None,
             last_assistant_ms: last_ms,
             project: Some("secret-project".into()),
             turn: TurnInfo::default(),
@@ -532,7 +553,7 @@ mod tests {
             series.insert(WindowKind::SevenDay, to(sd));
         }
         let last = series.values().filter_map(|s| s.last()).map(|s| s.t_ms).max();
-        DesktopUsage { version: 2, series, last_sample_ms: last }
+        DesktopUsage { version: 2, series, raw_keys: BTreeMap::new(), last_sample_ms: last }
     }
 
     #[test]
@@ -693,6 +714,11 @@ mod tests {
         assert_eq!(spark_span(&WindowKind::from_key("five_hour_opus")), DAY_MS);
         assert_eq!(spark_span(&WindowKind::from_key("seven_day_opus")), 7 * DAY_MS);
         assert_eq!(spark_span(&WindowKind::from_key("spend_limit")), 7 * DAY_MS);
+        // The span follows the window's length, within a day and 30 days.
+        assert_eq!(spark_span(&WindowKind::from_key("thirty_day")), 30 * DAY_MS);
+        assert_eq!(spark_span(&WindowKind::from_key("3_day")), 3 * DAY_MS);
+        assert_eq!(spark_span(&WindowKind::from_key("ninety_day")), 30 * DAY_MS);
+        assert_eq!(spark_span(&WindowKind::from_key("thirty_minute")), DAY_MS);
     }
 
     #[test]

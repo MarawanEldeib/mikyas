@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use mikyas_core::engine::types::Snapshot;
 use tauri::webview::PageLoadEvent;
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{
@@ -50,9 +51,16 @@ const CARD_BURN_H: f64 = 2.0 * 18.0;
 const CARD_SESSION_H: f64 = 30.0;
 /// Floor for any row combination: the empty state needs about 110 px of body.
 const CARD_MIN_H: f64 = 160.0;
+/// The block of extra limit rows (Card.svelte `.extra`): the body gap above it (8 px), its top
+/// border (1 px) and padding (6 px), less the gap the last row does not have (2 px)...
+const CARD_EXTRA_H: f64 = 8.0 + 1.0 + 6.0 - 2.0;
+/// ...plus one row (WindowRow.svelte, 18 px) and its gap (2 px) per extra limit.
+const CARD_EXTRA_ROW_H: f64 = 18.0 + 2.0;
 
-/// Card height for the rows the user shows (logical px at scale 1).
-pub fn card_height(rows: &CardRows) -> f64 {
+/// Card height for the rows the user shows and the extra limit rows the snapshot has (logical px
+/// at scale 1). Grows with every limit Claude reports beyond the main two; the window is capped
+/// to the work area when placed, and the card body scrolls when it is (Card.svelte).
+pub fn card_height(rows: &CardRows, extra_rows: usize) -> f64 {
     let mut h = logical_size(ViewMode::Card).1;
     if !rows.burn {
         h -= CARD_BURN_H;
@@ -60,15 +68,39 @@ pub fn card_height(rows: &CardRows) -> f64 {
     if !rows.session {
         h -= CARD_SESSION_H;
     }
+    if extra_rows > 0 {
+        h += CARD_EXTRA_H + CARD_EXTRA_ROW_H * extra_rows as f64;
+    }
     h.max(CARD_MIN_H)
 }
 
-/// Logical window size of a view with the user's card rows and UI scale applied.
-pub fn view_size(view: ViewMode, settings: &Settings) -> (f64, f64) {
+/// The extra limit rows the card shows for `snapshot`: every window that is not a main one.
+pub fn extra_rows(snapshot: &Snapshot) -> usize {
+    snapshot.windows.iter().filter(|w| !w.is_main).count()
+}
+
+/// [`extra_rows`] of the latest snapshot (0 before the app state exists).
+pub fn current_extra_rows(app: &AppHandle) -> usize {
+    app.try_state::<Arc<Shared>>().map_or(0, |shared| extra_rows(&lock(&shared.snapshot)))
+}
+
+/// Logical window size of a view with the user's card rows, the extra limit rows and the UI
+/// scale applied.
+pub fn view_size(view: ViewMode, settings: &Settings, extra: usize) -> (f64, f64) {
     let (w, h) = logical_size(view);
-    let h = if view == ViewMode::Card { card_height(&settings.card_rows) } else { h };
+    let h = if view == ViewMode::Card { card_height(&settings.card_rows, extra) } else { h };
     let s = f64::from(settings.ui_scale);
     (w * s, h * s)
+}
+
+/// Resizes the card when the number of extra limit rows changed between two snapshots.
+pub fn on_snapshot(app: &AppHandle, shared: &Shared, before: &Snapshot, after: &Snapshot) {
+    if extra_rows(before) == extra_rows(after) || shared.ui().view != ViewMode::Card {
+        return;
+    }
+    if let Some(window) = get(app) {
+        resize_anchored(&window, ViewMode::Card, ViewMode::Card);
+    }
 }
 
 /// Logical → physical px (at least 1).
@@ -88,7 +120,7 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
     // strip) maps back onto the same strip.
     let (w, h) = match Side::from_edge(settings.dock) {
         Some(side) => dock::strip_scaled(side, settings.ui_scale),
-        None => view_size(settings.view, settings),
+        None => view_size(settings.view, settings, current_extra_rows(app)),
     };
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::default())
         .title("Mikyas")
@@ -144,7 +176,8 @@ pub fn create(app: &AppHandle, settings: &Settings) -> tauri::Result<WebviewWind
                 // During a drag tao applies Windows' suggested rect after this handler, which keeps
                 // the logical size to within a pixel; the exact size returns with the next slide.
                 let settings = shared.settings().clone();
-                let (w, h) = physical(view_size(view, &settings), *scale_factor);
+                let extra = extra_rows(&lock(&shared.snapshot));
+                let (w, h) = physical(view_size(view, &settings, extra), *scale_factor);
                 let _ = handle.set_size(PhysicalSize::new(w as u32, h as u32));
             }
         }
@@ -383,7 +416,12 @@ pub fn resize_anchored(window: &WebviewWindow, from: ViewMode, view: ViewMode) {
             let expanded = shared.ui().dock_expanded;
             dock::place(window, side, &settings, view, expanded);
         }
-        None => resize_free(window, from, view, view_size(view, &settings)),
+        None => {
+            // Read the count first: the snapshot lock must not be held across window calls, which
+            // wait for the main thread (this runs on the pipeline thread too, see `on_snapshot`).
+            let extra = extra_rows(&lock(&shared.snapshot));
+            resize_free(window, from, view, view_size(view, &settings, extra));
+        }
     }
 }
 
@@ -410,9 +448,11 @@ fn resize_free(window: &WebviewWindow, from: ViewMode, view: ViewMode, logical: 
 }
 
 /// The visible rect of an undocked view of `(w, h)` resized from `visible`: `anchor` kept, inside
-/// `area`. Visible rects, not outer ones: the invisible frame must not push a widget that sits
-/// flush against an edge away from it.
+/// `area`, and never taller than it (a card with many limit rows then scrolls). Visible rects, not
+/// outer ones: the invisible frame must not push a widget that sits flush against an edge away
+/// from it.
 fn undocked_rect(visible: Rect, (w, h): (i32, i32), area: Rect, anchor: Anchor) -> Rect {
+    let h = h.min(area.3.max(1));
     let (x, y) = anchored_position_with(visible, w, h, area, anchor);
     (x, y, w, h)
 }
@@ -666,7 +706,7 @@ mod tests {
 
     #[test]
     fn card_height_follows_the_visible_rows() {
-        assert_eq!(card_height(&CardRows::default()), 232.0);
+        assert_eq!(card_height(&CardRows::default(), 0), 232.0);
         for bits in 0..16u8 {
             let r = rows(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
             let expected = match (r.burn, r.session) {
@@ -675,26 +715,44 @@ mod tests {
                 (true, false) => 202.0,
                 (false, false) => 166.0,
             };
-            assert_eq!(card_height(&r), expected, "{r:?}");
-            assert!(card_height(&r) >= CARD_MIN_H);
+            assert_eq!(card_height(&r, 0), expected, "{r:?}");
+            assert!(card_height(&r, 0) >= CARD_MIN_H);
         }
+    }
+
+    #[test]
+    fn card_grows_with_extra_limit_rows() {
+        let all = CardRows::default();
+        // Card.svelte: an 8 px gap, a 1 px border and 6 px padding, then 18 px rows 2 px apart.
+        assert_eq!(card_height(&all, 1), 232.0 + 8.0 + 1.0 + 6.0 + 18.0);
+        assert_eq!(card_height(&all, 3), 232.0 + 8.0 + 1.0 + 6.0 + 3.0 * 18.0 + 2.0 * 2.0);
+        assert_eq!(card_height(&rows(true, false, false, true), 2), 166.0 + 15.0 + 38.0);
+    }
+
+    #[test]
+    fn a_card_taller_than_the_screen_is_capped_to_it() {
+        let area = (0, 0, 1920, 300);
+        let r = undocked_rect((1500, 50, 320, 232), (320, 500), area, (false, false));
+        assert_eq!((r.2, r.3), (320, 300));
+        assert!(r.1 >= 0 && r.1 + r.3 <= 300);
     }
 
     #[test]
     fn view_size_applies_scale_and_rows() {
         let close = |(w, h): (f64, f64), (ew, eh): (f64, f64)| (w - ew).abs() < 1e-3 && (h - eh).abs() < 1e-3;
         let mut s = Settings::default();
-        assert!(close(view_size(ViewMode::Card, &s), (320.0, 232.0)));
+        assert!(close(view_size(ViewMode::Card, &s, 0), (320.0, 232.0)));
+        assert!(close(view_size(ViewMode::Card, &s, 1), (320.0, 265.0)));
         s.card_rows = rows(false, false, true, false);
-        assert!(close(view_size(ViewMode::Card, &s), (320.0, 196.0)));
-        assert!(close(view_size(ViewMode::Pill, &s), (240.0, 72.0)), "rows only shape the card");
+        assert!(close(view_size(ViewMode::Card, &s, 0), (320.0, 196.0)));
+        assert!(close(view_size(ViewMode::Pill, &s, 2), (240.0, 72.0)), "rows only shape the card");
         s.ui_scale = 1.15;
-        assert!(close(view_size(ViewMode::Card, &s), (368.0, 225.4)));
-        assert!(close(view_size(ViewMode::History, &s), (414.0, 437.0)));
+        assert!(close(view_size(ViewMode::Card, &s, 0), (368.0, 225.4)));
+        assert!(close(view_size(ViewMode::History, &s, 0), (414.0, 437.0)));
         s.ui_scale = 0.85;
-        assert!(close(view_size(ViewMode::Pill, &s), (204.0, 61.2)));
+        assert!(close(view_size(ViewMode::Pill, &s, 0), (204.0, 61.2)));
         // At 150 % DPI the physical size is rounded once, from the scaled logical size.
-        assert_eq!(physical(view_size(ViewMode::Pill, &s), 1.5), (306, 92));
+        assert_eq!(physical(view_size(ViewMode::Pill, &s, 0), 1.5), (306, 92));
         assert_eq!(physical((0.0, -3.0), 1.0), (1, 1));
     }
 }

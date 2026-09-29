@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use mikyas_core::engine::types::Snapshot;
+use mikyas_core::level::UsageLevel;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -35,8 +36,8 @@ pub struct TrayItems {
     drawn: Mutex<Option<(TrayNumber, Style)>>,
 }
 
-/// Highest usage among fresh five-hour / weekly windows → colour (statusline thresholds:
-/// green < 40, orange 40–69, red ≥ 70). No fresh data → grey.
+/// Highest usage among all fresh windows (a model-specific or new limit that binds counts too) →
+/// colour (statusline thresholds: green < 40, orange 40–69, red ≥ 70). No fresh data → grey.
 pub fn level(snapshot: &Snapshot) -> Level {
     tray_values(snapshot)
         .filter(|v| !v.stale)
@@ -45,10 +46,16 @@ pub fn level(snapshot: &Snapshot) -> Level {
         .map_or(Level::Grey, |pct| Level::for_pct(f32::from(pct)))
 }
 
-/// "5h 22% · 7d 61%" (stale values marked with a trailing "?").
+/// "5h 22% · 7d 61%" (stale values marked with a trailing "?"): the main windows, plus any other
+/// limit that is in the orange band or above or is the highest of all ("7d Opus 91%"), so the
+/// tooltip stays short but never hides the limit that binds. Names are the windows' short labels.
 pub fn tooltip(snapshot: &Snapshot) -> String {
-    let parts: Vec<String> = tray_values(snapshot)
-        .map(|v| format!("{} {}%{}", v.kind.short(), v.pct, if v.stale { "?" } else { "" }))
+    let values: Vec<_> = tray_values(snapshot).collect();
+    let highest = values.iter().map(|v| v.pct).max().unwrap_or(0);
+    let parts: Vec<String> = values
+        .iter()
+        .filter(|v| v.main || v.pct == highest || UsageLevel::for_shown(v.pct) != UsageLevel::Ok)
+        .map(|v| format!("{} {}%{}", v.kind.short_label(), v.pct, if v.stale { "?" } else { "" }))
         .collect();
     if parts.is_empty() { "Mikyas — no data yet".into() } else { parts.join(" · ") }
 }
@@ -119,7 +126,7 @@ pub fn create(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
                 visibility::apply(app, &shared, Event::UserToggle);
             }
         });
-    if let Some(img) = tray_image(app, &snapshot, settings.tray_number) {
+    if let Some(img) = tray_image(app, &snapshot, &settings.tray_number) {
         builder = builder.icon(img);
     }
     builder.build(app)?;
@@ -185,23 +192,23 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 }
 
 /// The number icon (`settings.tray_number`), or the coloured dot when it is off or there is no data.
-fn tray_image(app: &AppHandle, snapshot: &Snapshot, mode: TrayNumber) -> Option<Image<'static>> {
+fn tray_image(app: &AppHandle, snapshot: &Snapshot, mode: &TrayNumber) -> Option<Image<'static>> {
     let style = Style::current(app);
     if let Some(items) = app.try_state::<TrayItems>() {
-        *crate::state::lock(&items.drawn) = Some((mode, style));
+        *crate::state::lock(&items.drawn) = Some((mode.clone(), style));
     }
     crate::tray_icon::number_icon(snapshot, mode, style).or_else(|| icon(level(snapshot)))
 }
 
 fn mode(app: &AppHandle) -> TrayNumber {
-    app.try_state::<Arc<Shared>>().map_or(TrayNumber::Off, |shared| shared.settings().tray_number)
+    app.try_state::<Arc<Shared>>().map_or_else(TrayNumber::off, |shared| shared.settings().tray_number.clone())
 }
 
 /// Refreshes the tooltip and icon from a new snapshot.
 pub fn update(app: &AppHandle, snapshot: &Snapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let _ = tray.set_tooltip(Some(tooltip(snapshot)));
-    let _ = tray.set_icon(tray_image(app, snapshot, mode(app)));
+    let _ = tray.set_icon(tray_image(app, snapshot, &mode(app)));
 }
 
 /// Redraws the icon when the number's setting, the display scale or the taskbar theme changed
@@ -255,6 +262,7 @@ mod tests {
                     burn: None,
                     spark: vec![],
                     worked_since: false,
+                    is_main: false,
                 })
                 .collect(),
             session: None,
@@ -294,7 +302,7 @@ mod tests {
         s.windows[1].state.pct = 20.4;
         assert_eq!(level(&s), Level::Red);
         assert_eq!(tooltip(&s), "5h 100% · 7d 20%");
-        let r = crate::tray_icon::reading(&s, TrayNumber::Worst).unwrap();
+        let r = crate::tray_icon::reading(&s, &TrayNumber::worst()).unwrap();
         assert_eq!((r.pct, r.level), (100, Level::Red));
         // Out-of-range values are clamped the same way everywhere.
         let over = snap(&[(WindowKind::FiveHour, 130.0, false)]);
@@ -304,6 +312,23 @@ mod tests {
         assert_eq!(level(&under), Level::Green);
         // The dot follows the number shown: 39.6 shows as 40, orange.
         assert_eq!(level(&snap(&[(WindowKind::FiveHour, 39.6, false)])), Level::Orange);
+    }
+
+    #[test]
+    fn extra_limits_join_the_tooltip_when_they_matter() {
+        let extra = WindowKind::from_key("seven_day_newmodel");
+        let s = snap(&[
+            (WindowKind::FiveHour, 20.0, false),
+            (WindowKind::SevenDay, 50.0, false),
+            (extra.clone(), 91.0, false),
+        ]);
+        assert_eq!(tooltip(&s), "5h 20% · 7d 50% · 7d Newmodel 91%");
+        assert_eq!(level(&s), Level::Red, "the dot follows the binding limit");
+        // A quiet extra limit stays out; a renamed key gets its derived short name.
+        let quiet =
+            snap(&[(WindowKind::FiveHour, 20.0, false), (WindowKind::SevenDay, 50.0, false), (extra, 5.0, false)]);
+        assert_eq!(tooltip(&quiet), "5h 20% · 7d 50%");
+        assert_eq!(tooltip(&snap(&[(WindowKind::from_key("thirty_day"), 12.0, false)])), "30d 12%");
     }
 
     #[test]

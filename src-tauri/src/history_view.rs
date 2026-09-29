@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use chrono::TimeZone;
-use mikyas_core::engine::types::{SparkPoint, WindowKind};
+use mikyas_core::engine::types::{SparkPoint, WindowKind, main_kinds};
 use mikyas_core::history::{DayUsage, History, RETAIN_MS, ViewRange, WindowHistory};
 use mikyas_core::time::{DAY_MS, Ms, now_ms};
 use serde::Serialize;
@@ -41,6 +41,9 @@ pub struct HistoryWindow {
     /// `WindowKind::label` / `short_label`, so the chart titles match the card.
     pub label: String,
     pub short: String,
+    /// One of the main windows ([`main_kinds`] of the windows in the history); those come first,
+    /// shortest to longest.
+    pub is_main: bool,
     pub points: Vec<SparkPoint>,
     pub resets_ms: Vec<i64>,
     pub days: Vec<HistoryDay>,
@@ -66,6 +69,7 @@ impl From<WindowHistory> for HistoryWindow {
         Self {
             label: w.kind.label(),
             short: w.kind.short_label(),
+            is_main: false,
             kind: w.kind,
             points: w.points,
             resets_ms: w.resets_ms,
@@ -92,7 +96,13 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
     let from_ms = to_ms - i64::from(days) * DAY_MS;
     let day_starts = local_day_starts(from_ms, to_ms - 1, MAX_DAYS as usize, tz);
     let range = ViewRange { from_ms, to_ms, now_ms, day_starts: &day_starts };
-    let windows = history.kinds().iter().map(|kind| HistoryWindow::from(history.view(kind, &range))).collect();
+    let kinds = history.kinds();
+    let main = main_kinds(&kinds);
+    let mut windows: Vec<HistoryWindow> = kinds
+        .iter()
+        .map(|kind| HistoryWindow { is_main: main.contains(kind), ..HistoryWindow::from(history.view(kind, &range)) })
+        .collect();
+    windows.sort_by_key(|w| main.iter().position(|k| *k == w.kind).unwrap_or(main.len()));
     HistoryData { from_ms, to_ms, windows, max_days: MAX_DAYS }
 }
 
@@ -182,6 +192,22 @@ mod tests {
         assert_eq!(json["windows"][1]["kind"], "thirty_day");
         assert_eq!(json["windows"][1]["label"], "30-day");
         assert_eq!(json["windows"][1]["short"], "30d");
+        assert_eq!(
+            (json["windows"][0]["is_main"].as_bool(), json["windows"][1]["is_main"].as_bool()),
+            (Some(true), Some(true))
+        );
+    }
+
+    #[test]
+    fn main_windows_come_first_and_are_marked() {
+        let (_dir, h) = history_with(&[
+            (NOW - HOUR_MS, WindowKind::from_key("seven_day_newmodel"), 40.0),
+            (NOW - HOUR_MS, WindowKind::from_key("weekly"), 12.0),
+            (NOW - HOUR_MS, WindowKind::from_key("4_hour"), 3.0),
+        ]);
+        let d = build(&h, 2, NOW, &Utc);
+        let got: Vec<(&str, bool)> = d.windows.iter().map(|w| (w.kind.key(), w.is_main)).collect();
+        assert_eq!(got, [("4_hour", true), ("weekly", true), ("seven_day_newmodel", false)]);
     }
 
     #[test]

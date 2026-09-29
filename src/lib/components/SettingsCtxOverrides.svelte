@@ -1,13 +1,27 @@
 <script lang="ts">
-  import { CTX_PRESETS, CTX_SIZE_HINT, formatCtxSize, normalizeModelId, parseCtxSize } from "../ctxSize";
+  import { CTX_SIZE_HINT, ctxPresets, formatCtxSize, normalizeModelId, parseCtxSize } from "../ctxSize";
   import { app } from "../stores.svelte";
   import IconButton from "./IconButton.svelte";
 
   const s = $derived(app.settings);
   const overrides = $derived(Object.entries(s?.ctx_overrides ?? {}).sort(([a], [b]) => a.localeCompare(b)));
 
+  const sessions = $derived(app.snapshot?.sessions ?? []);
+  // Quick picks from the data: the sizes the sessions run with and the ones already overridden.
+  const presets = $derived(
+    ctxPresets(
+      sessions.map((x) => x.ctx_size),
+      overrides.map(([, n]) => n),
+    ),
+  );
+  // Model ids seen in the sessions, to pick instead of typing (the id as Claude reports it).
+  const seenIds = $derived([...new Set(sessions.flatMap((x) => (x.model_id ? [x.model_id] : [])))].sort());
+  const example = $derived(app.snapshot?.session?.model_id ?? seenIds[0] ?? null);
+  // The active session's size as the placeholder (nothing is pre-filled, so nothing is saved by mistake).
+  const sizeHint = $derived(app.snapshot?.session ? formatCtxSize(app.snapshot.session.ctx_size) : "Size");
+
   let newModel = $state("");
-  let newSize = $state(formatCtxSize(1_000_000));
+  let newSize = $state("");
   let error = $state<string | null>(null);
 
   function setOverride(id: string, size: number) {
@@ -18,7 +32,7 @@
     e.preventDefault();
     const id = normalizeModelId(newModel);
     if (id === null) {
-      error = "Use a model id like claude-opus-5-5";
+      error = example ? `Use a model id like ${example}` : "Use the model id shown in Sessions";
       return;
     }
     const size = parseCtxSize(newSize);
@@ -56,7 +70,7 @@
   <div class="group">
     <p class="row hint">
       Mikyas learns each model's window from Claude Code's status line. Override it here if “ctx %” looks wrong: type any size, like 400K or
-      1.5M.
+      1.5M. An id ending in a tag such as [1m] sets only that long-context variant.
     </p>
     {#each overrides as [id, size] (id)}
       <div class="row">
@@ -83,6 +97,7 @@
         type="text"
         placeholder="Model id"
         aria-label="Model id"
+        list="ctx-model-ids"
         spellcheck="false"
         autocomplete="off"
         bind:value={newModel}
@@ -93,7 +108,7 @@
         type="text"
         inputmode="decimal"
         list="ctx-size-presets"
-        placeholder="Size"
+        placeholder={sizeHint}
         aria-label="Context size"
         spellcheck="false"
         autocomplete="off"
@@ -105,7 +120,11 @@
   </div>
   <!-- Quick picks for the size fields; any other size in range can be typed. -->
   <datalist id="ctx-size-presets">
-    {#each CTX_PRESETS as n (n)}<option value={formatCtxSize(n)}></option>{/each}
+    {#each presets as n (n)}<option value={formatCtxSize(n)}></option>{/each}
+  </datalist>
+  <!-- Model ids of the current sessions; any other id can be typed. -->
+  <datalist id="ctx-model-ids">
+    {#each seenIds as id (id)}<option value={id}></option>{/each}
   </datalist>
 {/if}
 

@@ -11,10 +11,12 @@
 //! - `model.id`, `model.display_name`
 //! - `context_window.used_percentage`, `context_window.context_window_size`
 //! - `exceeds_200k_tokens`
-//! - `rate_limits.<key>.used_percentage` + `rate_limits.<key>.resets_at` (epoch **seconds**)
-//!   for every key except `spend_limit` (gateway spend, not a plan window). A window missing either
-//!   field, or resetting before 2001 or after 2200, is skipped. `used_percentage` is clamped to
-//!   0..=100; non-finite values are skipped.
+//! - `rate_limits.<key>.used_percentage` + `rate_limits.<key>.resets_at` (epoch **seconds**; the
+//!   spellings `reset_at` and `resets_at_ms` are read too) for every key that is not a spend or
+//!   budget figure (keys containing `spend`, `cost`, `budget` or `credit` are not plan windows). A
+//!   window without a usable `used_percentage` is skipped; one without a reset time, or resetting
+//!   before 2001 or after 2200, is kept with no reset (`resets_at: None`: a rolling or new limit
+//!   is still shown). `used_percentage` is clamped to 0..=100; non-finite values are skipped.
 //! - `cost.total_api_duration_ms` (only used to detect a real new API response)
 //!
 //! [`parse_capture`] applies the same rules again, so a hand-edited file cannot bring back what
@@ -55,8 +57,11 @@ const MAX_LABEL_LEN: usize = 256;
 /// At most this many rate-limit windows are kept, each keyed `[A-Za-z0-9_-]{1,64}`.
 const MAX_WINDOWS: usize = 16;
 const MAX_WINDOW_KEY_LEN: usize = 64;
-/// Gateway spend limit reported alongside the plan windows; not a usage window.
-const SPEND_LIMIT_KEY: &str = "spend_limit";
+/// A rate-limit key containing one of these (any case) is a spend or budget figure reported
+/// alongside the plan windows (e.g. a gateway's `spend_limit`), not a usage window.
+const NON_WINDOW_WORDS: &[&str] = &["spend", "cost", "budget", "credit"];
+/// Field names a window's reset time may come under (the first present wins).
+const RESET_FIELDS: &[&str] = &["resets_at", "reset_at", "resets_at_ms"];
 const RENAME_RETRIES: u32 = 3;
 const RENAME_RETRY_DELAY: Duration = Duration::from_millis(15);
 
@@ -102,8 +107,9 @@ pub struct CtxInfo {
 pub struct RateLimit {
     /// 0..=100
     pub used_percentage: f32,
-    /// Epoch seconds, as Claude Code reports it.
-    pub resets_at: i64,
+    /// Epoch seconds, as Claude Code reports it; `None` for a limit reported without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
 }
 
 /// What [`write_capture`] did.
@@ -190,7 +196,9 @@ pub fn fingerprint(rec: &CaptureRecord) -> u64 {
     let mut h = Fnv64::new();
     h.write_u64(rec.rate_limits.len() as u64);
     for (key, window) in &rec.rate_limits {
-        h.write_str(key).write_f32(window.used_percentage).write_i64(window.resets_at);
+        // `i64::MIN` is never a plausible reset, so "no reset" cannot collide with one (and the
+        // hash of a window with a reset is unchanged from older versions).
+        h.write_str(key).write_f32(window.used_percentage).write_i64(window.resets_at.unwrap_or(i64::MIN));
     }
     match &rec.context {
         Some(ctx) => {
@@ -276,10 +284,11 @@ pub fn parse_capture(bytes: &[u8]) -> Option<CaptureRecord> {
     let rate_limits = rec
         .rate_limits
         .into_iter()
-        .filter(|(key, window)| is_window_key(key) && plausible_resets_at(window.resets_at))
+        .filter(|(key, _)| is_window_key(key))
         .take(MAX_WINDOWS)
         .map(|(key, mut window)| {
             window.used_percentage = window.used_percentage.clamp(0.0, 100.0);
+            window.resets_at = window.resets_at.filter(|&s| plausible_resets_at(s));
             (key, window)
         })
         .collect();
@@ -366,9 +375,10 @@ fn valid_window_key(key: &str) -> bool {
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// A key that may name a plan usage window: well-formed and not the gateway spend limit.
+/// A key that may name a plan usage window: well-formed and not a spend or budget figure.
 fn is_window_key(key: &str) -> bool {
-    key != SPEND_LIMIT_KEY && valid_window_key(key)
+    let lower = key.to_ascii_lowercase();
+    valid_window_key(key) && !NON_WINDOW_WORDS.iter().any(|w| lower.contains(w))
 }
 
 fn rate_limits(obj: &Map<String, Value>) -> BTreeMap<String, RateLimit> {
@@ -377,7 +387,7 @@ fn rate_limits(obj: &Map<String, Value>) -> BTreeMap<String, RateLimit> {
         .filter_map(|(key, window)| {
             let window = window.as_object()?;
             let used_percentage = percent(window.get("used_percentage"))?;
-            let resets_at = epoch_secs(window.get("resets_at")?)?;
+            let resets_at = RESET_FIELDS.iter().find_map(|f| window.get(*f)).and_then(epoch_secs);
             Some((key.clone(), RateLimit { used_percentage, resets_at }))
         })
         .take(MAX_WINDOWS)
@@ -510,7 +520,7 @@ mod tests {
         );
         let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
         assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
-        assert_eq!(rec.rate_limits["five_hour"], RateLimit { used_percentage: 22.4, resets_at: 1_790_208_000 });
+        assert_eq!(rec.rate_limits["five_hour"], RateLimit { used_percentage: 22.4, resets_at: Some(1_790_208_000) });
         assert_eq!(rec.rate_limits["seven_day"].used_percentage, 61.0);
         assert_eq!(rec.api_ms, Some(123_456));
     }
@@ -549,23 +559,62 @@ mod tests {
     }
 
     #[test]
-    fn spend_limit_and_incomplete_windows_are_skipped() {
+    fn spend_figures_and_windows_without_a_value_are_skipped() {
         let json = json!({
             "session_id": SID,
             "rate_limits": {
                 "spend_limit": { "used_percentage": 5, "resets_at": 1_790_000_000 },
+                "spend_limit_monthly": { "used_percentage": 5, "resets_at": 1_790_000_000 },
+                "token_budget": { "used_percentage": 5, "resets_at": 1_790_000_000 },
+                "Cost_Cap": { "used_percentage": 5, "resets_at": 1_790_000_000 },
+                "extra_credits": { "used_percentage": 5, "resets_at": 1_790_000_000 },
                 "no_pct": { "resets_at": 1_790_000_000 },
-                "no_reset": { "used_percentage": 5 },
                 "string_pct": { "used_percentage": "5", "resets_at": 1_790_000_000 },
-                "zero_reset": { "used_percentage": 5, "resets_at": 0 },
                 "not_an_object": 7,
                 "bad key!": { "used_percentage": 5, "resets_at": 1_790_000_000 },
-                "five_hour": { "used_percentage": 5, "resets_at": 1_790_000_000 }
+                "five_hour": { "used_percentage": 5, "resets_at": 1_790_000_000 },
+                "no_reset": { "used_percentage": 6 },
+                "zero_reset": { "used_percentage": 7, "resets_at": 0 }
             }
         });
         let rec = extract_whitelisted(&json, NOW).unwrap();
         let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["five_hour"]);
+        assert_eq!(keys, ["five_hour", "no_reset", "zero_reset"]);
+        // A limit without a (usable) reset time is kept, without one.
+        assert_eq!(rec.rate_limits["no_reset"], RateLimit { used_percentage: 6.0, resets_at: None });
+        assert_eq!(rec.rate_limits["zero_reset"].resets_at, None);
+        // It round-trips through the file and loads again.
+        let back = parse_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        assert_eq!(back.rate_limits, rec.rate_limits);
+    }
+
+    #[test]
+    fn reset_time_field_spellings() {
+        let json = json!({
+            "session_id": SID,
+            "rate_limits": {
+                "a": { "used_percentage": 1, "reset_at": 1_790_000_000 },
+                "b": { "used_percentage": 1, "resets_at_ms": 1_790_000_000_000_i64 },
+                "c": { "used_percentage": 1, "resets_at": 1_790_000_001, "reset_at": 5 }
+            }
+        });
+        let rec = extract_whitelisted(&json, NOW).unwrap();
+        assert_eq!(rec.rate_limits["a"].resets_at, Some(1_790_000_000));
+        assert_eq!(rec.rate_limits["b"].resets_at, Some(1_790_000_000));
+        assert_eq!(rec.rate_limits["c"].resets_at, Some(1_790_000_001), "resets_at comes first");
+    }
+
+    #[test]
+    fn a_record_without_resets_in_old_files_still_loads() {
+        // Files written before resets were optional always carry one; files without one load too.
+        let old = json!({"v": 1, "session_id": SID, "written_at_ms": 1, "changed_at_ms": 1, "fingerprint": 0,
+            "rate_limits": {"five_hour": {"used_percentage": 5.0, "resets_at": 1_790_000_000}}});
+        let rec = parse_capture(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(rec.rate_limits["five_hour"].resets_at, Some(1_790_000_000));
+        let mut hand = old.clone();
+        hand["rate_limits"]["five_hour"]["resets_at"] = json!(3);
+        let rec = parse_capture(&serde_json::to_vec(&hand).unwrap()).unwrap();
+        assert_eq!(rec.rate_limits["five_hour"].resets_at, None, "an implausible reset is dropped, the value kept");
     }
 
     #[test]
@@ -599,15 +648,15 @@ mod tests {
             }
         });
         let rec = extract_whitelisted(&json, NOW).unwrap();
-        assert_eq!(rec.rate_limits["a"].resets_at, 1_790_000_000);
-        assert_eq!(rec.rate_limits["b"].resets_at, 1_790_000_000);
-        assert_eq!(rec.rate_limits["c"].resets_at, 1_790_208_000);
-        assert!(!rec.rate_limits.contains_key("d"));
-        assert!(!rec.rate_limits.contains_key("e"));
+        assert_eq!(rec.rate_limits["a"].resets_at, Some(1_790_000_000));
+        assert_eq!(rec.rate_limits["b"].resets_at, Some(1_790_000_000));
+        assert_eq!(rec.rate_limits["c"].resets_at, Some(1_790_208_000));
+        assert_eq!(rec.rate_limits["d"].resets_at, None);
+        assert_eq!(rec.rate_limits["e"].resets_at, None);
     }
 
     #[test]
-    fn resets_at_before_2001_or_after_2200_is_skipped() {
+    fn resets_at_before_2001_or_after_2200_is_dropped() {
         let json = json!({
             "session_id": SID,
             "rate_limits": {
@@ -625,10 +674,12 @@ mod tests {
             }
         });
         let rec = extract_whitelisted(&json, NOW).unwrap();
-        let keys: Vec<&str> = rec.rate_limits.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["first_second_of_2001", "start_of_2200"]);
-        assert_eq!(rec.rate_limits["first_second_of_2001"].resets_at, 978_307_200);
-        assert_eq!(rec.rate_limits["start_of_2200"].resets_at, 7_258_118_400);
+        let with_reset: Vec<&str> =
+            rec.rate_limits.iter().filter(|(_, w)| w.resets_at.is_some()).map(|(k, _)| k.as_str()).collect();
+        assert_eq!(with_reset, ["first_second_of_2001", "start_of_2200"]);
+        assert_eq!(rec.rate_limits.len(), 11, "the values are kept without the reset");
+        assert_eq!(rec.rate_limits["first_second_of_2001"].resets_at, Some(978_307_200));
+        assert_eq!(rec.rate_limits["start_of_2200"].resets_at, Some(7_258_118_400));
     }
 
     #[test]
@@ -690,7 +741,7 @@ mod tests {
 
         let changes: [fn(&mut CaptureRecord); 7] = [
             |r| r.rate_limits.get_mut("five_hour").unwrap().used_percentage += 1.0,
-            |r| r.rate_limits.get_mut("five_hour").unwrap().resets_at += 1,
+            |r| *r.rate_limits.get_mut("five_hour").unwrap().resets_at.as_mut().unwrap() += 1,
             |r| {
                 r.rate_limits.remove("seven_day_opus");
             },
@@ -856,7 +907,7 @@ mod tests {
         let mut edited = serde_json::to_value(rec_at(NOW)).unwrap();
         let limits = edited["rate_limits"].as_object_mut().unwrap();
         let long_key = "k".repeat(MAX_WINDOW_KEY_LEN + 1);
-        for key in [SPEND_LIMIT_KEY, "bad key!", "", long_key.as_str()] {
+        for key in ["spend_limit", "bad key!", "", long_key.as_str()] {
             limits.insert(key.to_owned(), window.clone());
         }
         for (key, resets_at) in [("zero", 0), ("negative", -1), ("tiny", 5), ("far", i64::MAX)] {
@@ -867,7 +918,10 @@ mod tests {
 
         let read = parse_capture(&serde_json::to_vec(&edited).unwrap()).unwrap();
         let keys: Vec<&str> = read.rate_limits.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
+        assert_eq!(keys, ["far", "five_hour", "negative", "seven_day", "seven_day_opus", "tiny", "zero"]);
+        for key in ["far", "negative", "tiny", "zero"] {
+            assert_eq!(read.rate_limits[key].resets_at, None, "{key}: implausible reset dropped");
+        }
         assert_eq!(read.model, None);
         assert_eq!(read.context, None);
 
@@ -882,7 +936,7 @@ mod tests {
         let mut rec = rec_at(NOW);
         for i in 0..MAX_WINDOWS {
             rec.rate_limits
-                .insert(format!("extra_{i:02}"), RateLimit { used_percentage: 1.0, resets_at: 1_790_000_000 });
+                .insert(format!("extra_{i:02}"), RateLimit { used_percentage: 1.0, resets_at: Some(1_790_000_000) });
         }
         let read = parse_capture(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(read.rate_limits.len(), MAX_WINDOWS);
@@ -973,7 +1027,7 @@ mod tests {
             1 => "[A-Za-z0-9_-]{65,70}",
             1 => Just("bad key!".to_owned()),
             1 => Just(String::new()),
-            1 => Just(SPEND_LIMIT_KEY.to_owned()),
+            1 => Just("spend_limit".to_owned()),
         ];
         let window = prop_oneof![
             19 => (arb_pct(), arb_resets_at())
@@ -1016,10 +1070,10 @@ mod tests {
         fn extraction_never_panics_and_keeps_invariants(json in arb_json()) {
             if let Some(rec) = extract_whitelisted(&json, NOW) {
                 prop_assert!(sanitize_session_id(&rec.session_id).is_some());
-                prop_assert!(!rec.rate_limits.contains_key(SPEND_LIMIT_KEY));
-                for w in rec.rate_limits.values() {
+                for (key, w) in &rec.rate_limits {
+                    prop_assert!(is_window_key(key));
                     prop_assert!((0.0..=100.0).contains(&w.used_percentage));
-                    prop_assert!(RESETS_AT_RANGE.contains(&w.resets_at));
+                    prop_assert!(w.resets_at.is_none_or(|r| RESETS_AT_RANGE.contains(&r)));
                 }
                 if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {
                     prop_assert!((0.0..=100.0).contains(&pct));
@@ -1038,7 +1092,7 @@ mod tests {
             let input = json["rate_limits"].as_object().unwrap();
             prop_assert!(rec.rate_limits.len() <= MAX_WINDOWS);
             for (key, w) in &rec.rate_limits {
-                prop_assert!(key != SPEND_LIMIT_KEY, "{:?}", key);
+                prop_assert!(is_window_key(key), "{:?}", key);
                 prop_assert!(
                     (1..=MAX_WINDOW_KEY_LEN).contains(&key.len())
                         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
@@ -1046,18 +1100,16 @@ mod tests {
                 );
                 prop_assert!(input.contains_key(key));
                 prop_assert!((0.0..=100.0).contains(&w.used_percentage), "{}", w.used_percentage);
-                prop_assert!(RESETS_AT_RANGE.contains(&w.resets_at), "{}", w.resets_at);
+                prop_assert!(w.resets_at.is_none_or(|r| RESETS_AT_RANGE.contains(&r)), "{:?}", w.resets_at);
+                // A plausible reset time given is never lost.
+                let given = epoch_secs(&input[key]["resets_at"]).filter(|s| RESETS_AT_RANGE.contains(s));
+                prop_assert_eq!(w.resets_at, given);
             }
-            // Nothing acceptable is dropped below the cap: a window with a whitelisted key, a
-            // finite numeric percentage and a plausible reset time is kept.
+            // Nothing acceptable is dropped below the cap: a window with a whitelisted key and a
+            // finite numeric percentage is kept (with or without a reset time).
             let acceptable = input
                 .iter()
-                .filter(|(key, w)| {
-                    key.as_str() != SPEND_LIMIT_KEY
-                        && valid_window_key(key)
-                        && w["used_percentage"].as_f64().is_some_and(f64::is_finite)
-                        && epoch_secs(&w["resets_at"]).is_some_and(|s| RESETS_AT_RANGE.contains(&s))
-                })
+                .filter(|(key, w)| is_window_key(key) && w["used_percentage"].as_f64().is_some_and(f64::is_finite))
                 .count();
             prop_assert_eq!(rec.rate_limits.len(), acceptable.min(MAX_WINDOWS));
             if let Some(pct) = rec.context.as_ref().and_then(|c| c.used_percentage) {

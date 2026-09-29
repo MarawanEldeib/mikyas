@@ -36,7 +36,7 @@ export interface WindowView {
   limit_reached: boolean;
   phase: Phase;
   burn: Burn | null;
-  /** 96 points over `spark_span_ms` (24 h for five_hour, 7 d for weekly windows). */
+  /** 96 points over `spark_span_ms` (the window's length, at least a day and at most 30 days). */
   spark: SparkPoint[];
   /** Claude worked after this reading, so the real % is higher (shown as "38% ▲"). */
   worked_since: boolean;
@@ -47,6 +47,9 @@ export interface WindowView {
   short?: string;
   /** How far back `spark` reaches, in ms. */
   spark_span_ms?: Ms;
+  /** One of the main windows the compact views show (Rust `main_kinds`: the shortest and the
+   *  longest window without a scope, chosen from the data). Optional for older data. */
+  is_main?: boolean;
 }
 
 export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";
@@ -63,6 +66,9 @@ export interface SessionView {
   ctx_basis: CtxBasis;
   ctx_is_estimate: boolean;
   entrypoint: Entrypoint;
+  /** The transcript's own `entrypoint` value (e.g. "sdk-py"), for naming surfaces `entrypoint`
+   *  does not know. */
+  entrypoint_raw?: string | null;
   last_active_ms: Ms;
   project: string | null;
   concurrent: number;
@@ -90,7 +96,7 @@ export type Warning = { type: "account_mismatch" } | { type: "no_plan_limits" };
 /** Emitted by Rust as the `snapshot` event and returned by `get_snapshot`. */
 export interface Snapshot {
   generated_ms: Ms;
-  /** five_hour first, then seven_day, then others. */
+  /** The main windows first (shortest, then longest), then the others. */
   windows: WindowView[];
   session: SessionView | null;
   /** Every session active in the last 12 h, newest first, max 8; includes `session`. */
@@ -117,6 +123,8 @@ export interface HistoryWindow {
   label?: string;
   /** Compact name (`WindowKind::short_label`). */
   short?: string;
+  /** One of the main windows (as `WindowView.is_main`). */
+  is_main?: boolean;
   /** Hourly buckets (max % per hour) over [from_ms, to_ms]; null = gap. */
   points: SparkPoint[];
   /** Detected reset times (exact or inferred from drops), ascending. */
@@ -129,7 +137,7 @@ export interface HistoryWindow {
 export interface HistoryData {
   from_ms: Ms;
   to_ms: Ms;
-  /** five_hour first, then seven_day, then others. */
+  /** The main windows first (shortest, then longest), then the others. */
   windows: HistoryWindow[];
   /** The most days a request can return (all the history keeps); longer ranges are hidden. */
   max_days: number;
@@ -138,8 +146,9 @@ export interface HistoryData {
 // ---------------------------------------------------------------------------------------------
 // App shell contract (src-tauri)
 
-/** Window sizes (logical px): pill 240×72, card 320×232, settings 320×440, sessions 320×300,
- *  history 360×380 — all multiplied by `ui_scale`. Only pill/card are persisted. */
+/** Window sizes (logical px): pill 240×72, card 320×232 (plus the extra limit rows), settings
+ *  320×440, sessions 320×300, history 360×380 — all multiplied by `ui_scale`. Only pill/card are
+ *  persisted. */
 export type ViewMode = "pill" | "card" | "settings" | "sessions" | "history";
 export type EffectName = "auto" | "mica" | "acrylic" | "blur" | "none";
 /** Chrome accent. "auto" = neutral chrome; usage colours always follow the thresholds. */
@@ -148,8 +157,10 @@ export type GaugeStyle = "ring" | "bar";
 export type DockEdge = "off" | "left" | "right" | "top";
 /** What the widget's × does: hide to the tray, or quit the app. */
 export type CloseAction = "hide" | "quit";
-/** Which % the tray icon shows; "worst" = the higher of 5-hour and weekly, "off" = coloured dot. */
-export type TrayNumber = "worst" | "five_hour" | "seven_day" | "off";
+/** Which % the tray icon shows: "worst" = the highest of every limit, "off" = coloured dot, or any
+ *  window key ("five_hour", "seven_day_opus", a key Claude adds later; one not present right now
+ *  shows the worst value). */
+export type TrayNumber = "worst" | "off" | (string & {});
 
 export interface CardRows {
   sparklines: boolean;
@@ -168,20 +179,22 @@ export interface Settings {
   /** Opacity while click-through ("ghost") is on, 0.15..1. */
   ghost_opacity: number;
   effect: EffectName;
-  /** Ascending, e.g. [80, 95]. */
+  /** Ascending usage-alert %s, any number of them (empty = no alerts; default DEFAULT_THRESHOLDS). */
   thresholds: number[];
   notify_reset: boolean;
   /** Accelerator string, e.g. "Ctrl+Alt+U". */
   hotkey: string;
   /** Minutes after which data is shown as stale. */
   stale_min: number;
-  /** Context-window size overrides by base model id, e.g. {"claude-opus-5-5": 1000000}. */
+  /** Context-window size overrides by model id, e.g. {"claude-opus-5-5": 400000}; a key with a
+   *  context tag ("claude-opus-5-5[1m]") applies only to that long-context variant. */
   ctx_overrides: Record<string, number>;
   show_project: boolean;
   start_with_windows: boolean;
   /** Toast when the active session's context crosses a threshold (default true). */
   ctx_alerts: boolean;
-  /** Ascending context-% thresholds (default [80, 90]). */
+  /** Ascending context-% thresholds, any number of them (empty = no alerts; default
+   *  DEFAULT_CTX_THRESHOLDS). */
   ctx_thresholds: number[];
   /** Global show/hide shortcut, "" = none (default "Ctrl+Alt+H"). */
   toggle_hotkey: string;
@@ -202,7 +215,7 @@ export interface Settings {
   pace_alerts: boolean;
   /** Toast shortly before a capped limit reopens (default true). */
   reset_heads_up: boolean;
-  /** One summary toast when the weekly limit resets (default true). */
+  /** One summary toast when the longest limit (today the weekly one) resets (default true). */
   weekly_recap: boolean;
   /** Toast when a long Claude turn ends (default true). */
   finished_alerts: boolean;

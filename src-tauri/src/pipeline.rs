@@ -31,14 +31,15 @@ use mikyas_core::alerts::{AlertSettings, AlertState};
 use mikyas_core::capture::CaptureRecord;
 use mikyas_core::engine::context;
 use mikyas_core::engine::snapshot::{self, EngineInputs};
-use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot, WindowKind};
+use mikyas_core::engine::types::{DesktopHealth, SessionView, Snapshot};
 use mikyas_core::history::History;
 use mikyas_core::pace_alerts::PaceSettings;
 use mikyas_core::paths::Paths;
+use mikyas_core::recap::RecapKinds;
 use mikyas_core::saferead::SafeReader;
 use mikyas_core::sources::SourceError;
 use mikyas_core::sources::desktop_sessions::{DesktopSession, DesktopSessionCache};
-use mikyas_core::sources::desktop_usage::{self, DesktopUsage};
+use mikyas_core::sources::desktop_usage::{self, DesktopKeys, DesktopUsage};
 use mikyas_core::sources::statusline::{self, CaptureCache};
 use mikyas_core::sources::transcript::{self, HeadIdentity, TranscriptTail};
 use mikyas_core::time::{DAY_MS, MINUTE_MS, Ms, now_ms};
@@ -64,8 +65,18 @@ pub const TRANSCRIPT_MAX_AGE_MS: Ms = 7 * DAY_MS;
 pub const MAX_TAILS: usize = 40;
 /// Attempts to open `history.jsonl` at startup before running without it for a while.
 const HISTORY_OPEN_ATTEMPTS: u32 = 3;
-/// Local days the weekly recap needs (its window plus the day it started on).
+/// Local days the recap needs when its window's length is unknown (a week plus the day it
+/// started on); otherwise [`recap_days`].
 const RECAP_DAYS: usize = 8;
+/// The recap never looks back further than this many local days.
+const MAX_RECAP_DAYS: usize = 62;
+
+/// Local days a recap of `kinds` needs: the long window's length in days, rounded up, plus the
+/// day it started on.
+fn recap_days(kinds: &RecapKinds) -> usize {
+    let days = |ms: Ms| usize::try_from((ms.max(0) + DAY_MS - 1) / DAY_MS + 1).unwrap_or(RECAP_DAYS);
+    kinds.long.duration_ms().map_or(RECAP_DAYS, days).clamp(2, MAX_RECAP_DAYS)
+}
 
 /// Pipeline input.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,12 +129,14 @@ type Stamp = Vec<(PathBuf, Option<SystemTime>, u64)>;
 
 /// What the weekly recap last looked at: it can only change when the history does, or when the
 /// latest weekly reset time passes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct RecapKey {
     rows: usize,
     newest_ms: Option<Ms>,
-    /// Latest exact weekly reset known, and whether it had passed.
+    /// Latest exact reset of the recapped window known, and whether it had passed.
     weekly_reset: Option<(Ms, bool)>,
+    /// The windows the recap is about (they follow the windows present).
+    kinds: Option<RecapKinds>,
 }
 
 /// All pipeline state; pure except for reading sources and writing its own data files.
@@ -351,29 +364,35 @@ impl PipelineState {
             self.recap_checked = None;
             return;
         }
+        // The recapped windows follow the data: the longest main window and the shortest one, of
+        // the windows shown, else of those in the history (e.g. no source reports right now).
+        let kinds = RecapKinds::from_windows(snap.windows.iter().map(|w| &w.state.kind))
+            .or_else(|| RecapKinds::from_windows(&self.history.kinds()));
         // The recap scans the whole history; only look again when its answer can have changed.
-        let key = self.recap_key(now);
-        if self.recap_checked == Some(key) {
+        let key = self.recap_key(kinds.as_ref(), now);
+        if self.recap_checked.as_ref() == Some(&key) {
             return;
         }
         self.recap_checked = Some(key);
-        let day_starts =
-            local_day_starts(now.saturating_sub(RECAP_DAYS as Ms * DAY_MS), now, RECAP_DAYS, &chrono::Local);
-        if let Some(recap) = self.persisted.recap.evaluate(&self.history, &day_starts, now) {
+        let Some(kinds) = kinds else { return };
+        let days = recap_days(&kinds);
+        let day_starts = local_day_starts(now.saturating_sub(days as Ms * DAY_MS), now, days, &chrono::Local);
+        if let Some(recap) = self.persisted.recap.evaluate_for(&self.history, &day_starts, &kinds, now) {
             alerts.push(Alert::Recap(recap));
         }
     }
 
-    fn recap_key(&self, now: Ms) -> RecapKey {
+    fn recap_key(&self, kinds: Option<&RecapKinds>, now: Ms) -> RecapKey {
         let rows = self.history.rows();
-        let weekly_reset = rows
-            .iter()
-            .rev()
-            // As the recap: only exact reset times count, never estimated ones.
-            .filter(|r| !r.e && WindowKind::from_short(&r.w) == WindowKind::SevenDay)
-            .find_map(|r| r.r)
-            .map(|r| (r, r <= now));
-        RecapKey { rows: rows.len(), newest_ms: rows.last().map(|r| r.t), weekly_reset }
+        let weekly_reset = kinds.and_then(|k| {
+            rows.iter()
+                .rev()
+                // As the recap: only exact reset times count, never estimated ones.
+                .filter(|r| !r.e && r.is_kind(&k.long))
+                .find_map(|r| r.r)
+                .map(|r| (r, r <= now))
+        });
+        RecapKey { rows: rows.len(), newest_ms: rows.last().map(|r| r.t), weekly_reset, kinds: kinds.cloned() }
     }
 
     /// Long turns that ended (in-memory dedupe; only turns that end after the first tick).
@@ -395,6 +414,21 @@ impl PipelineState {
         }
         snapshot::learn_model_names(&mut self.persisted.learned_models, &self.captures);
         context::learn_sizes(&mut self.persisted.learned_ctx_sizes, &self.captures);
+        // Keep only the most recently reported models (the maps would otherwise grow forever).
+        let p = &mut self.persisted;
+        context::note_seen(&mut p.learned_seen, &self.captures);
+        context::cap_learned(&mut p.learned_models, &p.learned_seen, context::MAX_LEARNED);
+        context::cap_learned(&mut p.learned_ctx_sizes, &p.learned_seen, context::MAX_LEARNED);
+        let (names, sizes) = (&p.learned_models, &p.learned_ctx_sizes);
+        p.learned_seen.retain(|k, _| names.contains_key(k) || sizes.contains_key(k));
+    }
+
+    /// How Desktop's usage keys are read: the aliases learned so far and every statusline window
+    /// key seen (see `desktop_usage::DesktopKeys`).
+    fn desktop_keys(&self) -> DesktopKeys {
+        let mut known: std::collections::BTreeSet<String> = self.persisted.last_exact_resets.keys().cloned().collect();
+        known.extend(self.captures.iter().flat_map(|c| c.rate_limits.keys().cloned()));
+        DesktopKeys { aliases: self.persisted.desktop_aliases.clone(), known }
     }
 
     fn transcript_roots(&self) -> Vec<PathBuf> {
@@ -468,8 +502,13 @@ impl PipelineState {
         }
         self.desktop_stamp = stamp;
         let max_t_ms = now.saturating_add(snapshot::FUTURE_SLACK_MS);
-        match desktop_usage::load(&self.reader, &self.paths, max_t_ms) {
+        match desktop_usage::load(&self.reader, &self.paths, max_t_ms, &self.desktop_keys()) {
             Ok(Some(usage)) => {
+                // A Desktop key that turned out to be a statusline window: read the file again
+                // with it on the next poll, so its samples join that window.
+                if desktop_usage::learn_aliases(&mut self.persisted.desktop_aliases, &usage, &self.captures) {
+                    self.desktop_stamp.clear();
+                }
                 self.desktop_health = usage.health();
                 if self.history_ok {
                     match self.history.backfill_desktop(&usage, self.persisted.desktop_watermark_ms) {
@@ -704,9 +743,11 @@ pub fn deliver(app: &AppHandle, shared: &Shared, out: TickOutput) {
         crate::toast::show_alert(app, event);
     }
     if out.changed {
-        *lock(&shared.snapshot) = out.snapshot.clone();
+        let before = std::mem::replace(&mut *lock(&shared.snapshot), out.snapshot.clone());
         crate::tray::update(app, &out.snapshot);
         let _ = app.emit("snapshot", &*out.snapshot);
+        // A limit row appeared or went away: the card's height follows.
+        crate::window::on_snapshot(app, shared, &before, &out.snapshot);
     }
 }
 
@@ -745,7 +786,7 @@ fn pair_turns<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mikyas_core::engine::types::{Source, WindowKind};
+    use mikyas_core::engine::types::{CtxBasis, Source, WindowKind};
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let tmp = tempfile::tempdir().unwrap();
@@ -870,11 +911,14 @@ mod tests {
     fn context_alerts_fire_once_and_survive_restarts() {
         let (_t, paths) = setup();
         let now = now_ms();
-        // 900K tokens: a 1M window (more than 200K were seen), 90% full.
-        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 899_990);
+        // More than the default window was seen, so the heuristic size applies; 90% of it used.
+        let (tokens, size) = heuristic_at(900);
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), tokens);
         let settings = Settings::default();
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &settings, &Dirty::all());
+        let session = &out.snapshot.sessions[0];
+        assert_eq!((session.ctx_basis, session.ctx_size), (CtxBasis::Heuristic, size));
         let fired = context_alerts(&out);
         assert_eq!(fired.len(), 1, "{:?}", out.alerts);
         assert_eq!(fired[0].threshold, 90, "only the highest crossed threshold");
@@ -888,7 +932,7 @@ mod tests {
         assert!(restarted.tick(now + 2, &settings, &Dirty::all()).alerts.is_empty(), "no re-fire");
 
         // Turned off: a second session at 90% stays quiet.
-        write_transcript_ctx(&paths, "s2", &chrono_like(now), 899_990);
+        write_transcript_ctx(&paths, "s2", &chrono_like(now), tokens);
         let off = Settings { ctx_alerts: false, ..Settings::default() };
         let out = restarted.tick(now + 3, &off, &Dirty::all());
         assert!(out.alerts.is_empty());
@@ -901,20 +945,40 @@ mod tests {
     }
 
     #[test]
+    fn recap_days_follow_the_long_window() {
+        let days = |long: &str| recap_days(&RecapKinds { long: WindowKind::from_key(long), short: None });
+        assert_eq!(days("seven_day"), RECAP_DAYS, "a week plus the day it started on");
+        assert_eq!(days("thirty_day"), 31);
+        assert_eq!(days("3_day"), 4);
+        assert_eq!(days("ninety_day"), MAX_RECAP_DAYS, "capped");
+        assert_eq!(days("spend_limit"), RECAP_DAYS, "unknown length");
+    }
+
+    /// Tokens that fill `permille`/1000 of the size the heuristic picks when a session is past
+    /// the default window (nothing learned), and that size.
+    fn heuristic_at(permille: u64) -> (u64, u64) {
+        let size = context::ONE_M_CTX.max(context::DEFAULT_CTX * 2);
+        (size * permille / 1000 - 10, size)
+    }
+
+    #[test]
     fn context_alerts_skip_guesses_over_the_default_size() {
         let (_t, paths) = setup();
         let now = now_ms();
-        // 180K tokens and no capture: 90% of the 200K default, but it may well be a 1M session.
-        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 179_990);
+        // No capture: 90% of the default size, but it may well be a long-context session.
+        let default = context::DEFAULT_CTX;
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), default * 9 / 10 - 10);
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &Settings::default(), &Dirty::all());
-        assert!(out.snapshot.sessions[0].ctx_pct.is_some_and(|p| p >= 89.9));
+        let session = &out.snapshot.sessions[0];
+        assert_eq!((session.ctx_basis, session.ctx_size), (CtxBasis::Default, default));
+        assert!(session.ctx_pct.is_some_and(|p| p >= 89.9));
         assert!(context_alerts(&out).is_empty(), "{:?}", out.alerts);
-        // Once a statusline capture confirms the 200K size, the same estimate alerts.
+        // Once a statusline capture confirms that size, the same estimate alerts.
         std::fs::create_dir_all(paths.capture_dir()).unwrap();
         let capture = format!(
             r#"{{"v":1,"session_id":"s1","written_at_ms":{now},"changed_at_ms":{now},"fingerprint":1,
-            "context":{{"context_window_size":200000}}}}"#
+            "context":{{"context_window_size":{default}}}}}"#
         );
         std::fs::write(paths.capture_dir().join("s1.json"), capture).unwrap();
         let dirty = Dirty { captures: true, ..Dirty::default() };
@@ -981,7 +1045,7 @@ mod tests {
     fn context_thresholds_come_from_settings() {
         let (_t, paths) = setup();
         let now = now_ms();
-        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), 499_990); // 50% of 1M
+        write_transcript_ctx(&paths, "s1", &chrono_like(now - 1_000), heuristic_at(500).0); // 50% full
         let mut engine = PipelineState::new(paths.clone());
         assert!(engine.tick(now, &Settings::default(), &Dirty::all()).alerts.is_empty());
         let low = Settings { ctx_thresholds: vec![40, 45], ..Settings::default() };
@@ -1053,12 +1117,15 @@ mod tests {
         let settings = Settings::default();
         let mut engine = PipelineState::new(paths.clone());
         let out = engine.tick(now, &settings, &Dirty::all());
-        assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(1_000_000));
+        let sized = |out: &TickOutput| out.snapshot.session.as_ref().map(|s| (s.ctx_basis, s.ctx_size));
+        // The tag names the size (`[1m]`).
+        let tagged = mikyas_core::model_names::parse_size_word("1m").unwrap();
+        assert_eq!(sized(&out), Some((CtxBasis::Identity, tagged)));
 
         append(&path, &line("claude-sonnet-5", now - 1_000));
         let dirty = Dirty { transcripts: vec![path.clone()], ..Dirty::default() };
         let out = engine.tick(now + 1, &settings, &dirty);
-        assert_eq!(out.snapshot.session.as_ref().map(|s| s.ctx_size), Some(200_000), "identity was for opus");
+        assert_eq!(sized(&out), Some((CtxBasis::Default, context::DEFAULT_CTX)), "identity was for opus");
     }
 
     #[test]
@@ -1283,10 +1350,12 @@ mod tests {
             path: PathBuf::from(path),
             session_id: session.into(),
             entrypoint: mikyas_core::engine::types::Entrypoint::Cowork,
+            entrypoint_raw: None,
             model_id: Some("claude-opus-5-5".into()),
             ctx_tokens: 1,
             max_ctx_tokens_seen: 1,
             identity_1m: None,
+            identity_tag: None,
             last_assistant_ms: last,
             project: Some("from-transcript".into()),
             turn: TurnInfo { ended_ms: Some(ended), started_ms: Some(0), start_is_lower_bound: false },
@@ -1298,10 +1367,11 @@ mod tests {
             display_name: Some("Opus 5.5".into()),
             ctx_pct: None,
             ctx_tokens: None,
-            ctx_size: 200_000,
+            ctx_size: context::DEFAULT_CTX,
             ctx_basis: mikyas_core::engine::types::CtxBasis::Default,
             ctx_is_estimate: true,
             entrypoint: mikyas_core::engine::types::Entrypoint::Cowork,
+            entrypoint_raw: None,
             last_active_ms: 20,
             project: None,
             concurrent: 1,

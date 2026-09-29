@@ -23,20 +23,22 @@ called SovaWatch (and before that Claude Usage Widget).
 
 ## Why
 
-Claude Pro and Max plans share a 5-hour and a weekly usage limit between Claude, Claude Desktop
-and Claude Code. The numbers live in a settings page or in Claude Code's status line — which is
+Claude subscription plans have rolling usage limits shared between Claude, Claude Desktop and
+Claude Code (today a 5-hour and a weekly one, plus any extra limit Claude reports). The numbers live in a settings page or in Claude Code's status line — which is
 only visible while a terminal is open. This widget keeps them on screen next to whatever you are
 doing: coding, watching a course, reading docs, or working in Claude Desktop.
 
 ## Features
 
 **At a glance**
-- 5-hour and weekly usage with live reset countdowns (exact from Claude Code, estimated with "~"
-  from Claude Desktop)
+- Every usage limit Claude reports (today 5-hour and weekly, plus model-specific or new ones) with
+  live reset countdowns (exact from Claude Code, estimated with "~" from Claude Desktop)
 - Current model and context-window % of your active Claude Code, Desktop Code tab or Cowork session
-  — with 1M-context detection
+  — with long-context (e.g. 1M) detection; new models, window sizes and limits are learned from
+  the data, no update needed
 - Burn-rate forecast: *"On pace for ~72% at reset"* or *"100% at 15:40"*
-- Sparklines, a 14-day **History** view with reset marks, and weekly budget used per day
+- Sparklines, a 14-day **History** view with reset marks, and the weekly (longest) budget used per
+  day
 - **Sessions** view listing every session from the last 12 hours
 - A "▲" marker when Claude has worked since a reading, so an older number never looks final
 
@@ -49,12 +51,12 @@ doing: coding, watching a course, reading docs, or working in Claude Desktop.
 - Remembers its position per monitor setup; accent colours, rings or bars, four UI sizes
 
 **Notifications**
-- Limits at 80% / 95%, and when a limit resets
+- Limits at 80% / 95% (any thresholds you like, or none), and when a limit resets
 - **Pace alert** — warned *before* you run out, plus a heads-up shortly before a capped limit
-  reopens (10 minutes for the 5-hour limit, 1 hour for the weekly one)
+  reopens (10 minutes for limits of a day or less, 1 hour for longer ones)
 - **Claude finished** — when a long Claude Code turn completes while you are elsewhere
-- Context-window alerts ("Opus 5.5 at 90% context — consider /compact")
-- A **weekly recap** when the weekly limit resets
+- Context-window alerts ("Opus 5.5 at 90% context — consider compacting or a new session")
+- A **weekly recap** when the weekly (longest) limit resets
 - A warning if something rewrites your Claude Code status line, with one-click Reconnect
 
 Every notification can be switched off in **Settings** (under Alerts, Context alerts or

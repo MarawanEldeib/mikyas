@@ -221,8 +221,9 @@ export interface DayBar {
   full: string;
 }
 
-/** The last `count` days as bars; `today` is the day containing `now`. */
-export function dayBars(days: readonly HistoryDay[], count: number, now: number, opts: ClockOptions = {}): DayBar[] {
+/** The last `count` days as bars; `today` is the day containing `now`. `limit` names the window
+ *  the days belong to ("weekly", "30-day"). */
+export function dayBars(days: readonly HistoryDay[], count: number, now: number, opts: ClockOptions = {}, limit = "weekly"): DayBar[] {
   const label = dtf(opts, { weekday: count > 7 ? "narrow" : "short" });
   const long = dtf(opts, { weekday: "short", day: "numeric", month: "short" });
   const shown = days.slice(Math.max(0, days.length - count));
@@ -232,7 +233,7 @@ export function dayBars(days: readonly HistoryDay[], count: number, now: number,
     const peak = clampPct(day.peak_pct);
     const hasData = day.samples > 0;
     const amount = hasData ? `${formatPct(value)}%` : "no data";
-    const used = hasData ? `${amount} of the weekly limit used` : amount;
+    const used = hasData ? `${amount} of the ${limit} limit used` : amount;
     return {
       start: day.day_start_ms,
       value,

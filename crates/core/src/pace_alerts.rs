@@ -180,6 +180,7 @@ mod tests {
             }),
             spark: vec![],
             worked_since: false,
+            is_main: false,
         }
     }
 

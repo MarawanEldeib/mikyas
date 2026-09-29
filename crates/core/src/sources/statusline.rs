@@ -149,7 +149,7 @@ fn remove_if_unchanged(path: &Path, before: &fs::Metadata) -> bool {
 }
 
 /// One observation per rate-limit window per record: `kind = WindowKind::from_key(key)`,
-/// `pct = used_percentage`, `resets_at_ms = resets_at * 1000`, `observed_at_ms = changed_at_ms`,
+/// `pct = used_percentage`, `resets_at_ms = resets_at * 1000` (`None` without one), `observed_at_ms = changed_at_ms`,
 /// `source = Cli`. Windows whose reset time is `<= now_ms` are still returned (the merge step
 /// uses expired ones to detect "reset awaiting data").
 pub fn observations(records: &[CaptureRecord]) -> Vec<Observation> {
@@ -163,7 +163,7 @@ pub fn observations(records: &[CaptureRecord]) -> Vec<Observation> {
                 .map(move |(key, w)| Observation {
                     kind: WindowKind::from_key(key),
                     pct: w.used_percentage.clamp(0.0, 100.0),
-                    resets_at_ms: Some(w.resets_at.saturating_mul(1000)),
+                    resets_at_ms: w.resets_at.map(|s| s.saturating_mul(1000)),
                     observed_at_ms: rec.changed_at_ms,
                     source: Source::Cli,
                 })
@@ -219,7 +219,7 @@ mod tests {
     fn record(session_id: &str, changed_at_ms: Ms, windows: &[(&str, f32, i64)]) -> CaptureRecord {
         let rate_limits: BTreeMap<String, RateLimit> = windows
             .iter()
-            .map(|&(k, pct, resets_at)| (k.to_owned(), RateLimit { used_percentage: pct, resets_at }))
+            .map(|&(k, pct, resets_at)| (k.to_owned(), RateLimit { used_percentage: pct, resets_at: Some(resets_at) }))
             .collect();
         let mut rec = CaptureRecord {
             v: CAPTURE_VERSION,

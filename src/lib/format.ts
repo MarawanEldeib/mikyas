@@ -3,6 +3,7 @@
 
 import { clampPct } from "./color";
 import { dtf, type ClockOptions } from "./intl";
+import { spanLabel, spanShort } from "./span";
 import type { Burn, ResetInfo, SessionView, WindowKind, WindowView } from "./types";
 
 export const SEC = 1_000;
@@ -158,16 +159,19 @@ function trimZero(v: number): string {
   return (Math.round(v * 10) / 10).toString();
 }
 
-/** "Opus 5.5" from the display name, falling back to a tidied model id. */
+/** "Opus 5.5" from the display name (Rust names every id it can, provider spellings included),
+ *  else the model id as reported. */
 export function modelName(s: Pick<SessionView, "display_name" | "model_id">): string {
   if (s.display_name) return s.display_name;
-  if (s.model_id) return s.model_id.replace(/^claude-/, "");
+  if (s.model_id) return s.model_id;
   return "Unknown model";
 }
 
-/** Model chip text, e.g. "Opus 5.5 · 1M". */
-export function modelLabel(s: Pick<SessionView, "display_name" | "model_id" | "ctx_size">): string {
-  return `${modelName(s)} · ${formatTokens(s.ctx_size)}`;
+/** Model chip text, e.g. "Opus 5.5 · 1M"; "~200K" when the size is a guess (nothing reported it:
+ *  the default or a size inferred from the tokens seen), like estimated resets. */
+export function modelLabel(s: Pick<SessionView, "display_name" | "model_id" | "ctx_size" | "ctx_basis">): string {
+  const guess = s.ctx_basis === "default" || s.ctx_basis === "heuristic";
+  return `${modelName(s)} · ${guess ? "~" : ""}${formatTokens(s.ctx_size)}`;
 }
 
 /** Context label: "ctx 34%", "ctx ≈34%" when estimated, "ctx —" when unknown. */
@@ -179,25 +183,10 @@ export function ctxLabel(s: Pick<SessionView, "ctx_pct" | "ctx_is_estimate">): s
 /** A window kind alone, or a window carrying the names Rust derived for it. */
 type Named = WindowKind | { kind: WindowKind; label?: string; short?: string };
 
-// Fallback names for data without Rust's `label`/`short` (history windows, older snapshots).
-const BASES: [prefix: string, label: string, short: string][] = [
-  ["five_hour", "5-hour", "5h"],
-  ["seven_day", "weekly", "7d"],
-];
-
+// Fallback names for data without Rust's `label`/`short` (older data): the same generic key
+// parser as Rust (span.ts), so any `<number>_<unit>` key reads the same everywhere.
 function fallbackName(kind: WindowKind, short: boolean): string {
-  for (const [prefix, label, abbr] of BASES) {
-    const base = short ? abbr : label;
-    if (kind === prefix) return base;
-    if (kind.startsWith(`${prefix}_`)) {
-      const rest = kind
-        .slice(prefix.length + 1)
-        .replace(/_+/g, " ")
-        .trim();
-      return rest ? `${base} ${rest.charAt(0).toUpperCase()}${rest.slice(1)}` : base;
-    }
-  }
-  return kind.replace(/_+/g, " ").trim() || kind;
+  return short ? spanShort(kind) : spanLabel(kind);
 }
 
 /** Window name: "5-hour", "weekly", "weekly Opus" (Rust's `WindowKind::label`). */

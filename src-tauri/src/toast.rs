@@ -1,13 +1,16 @@
 //! OS toast notifications for limit, context, pace, weekly-recap, finished-turn and connection
 //! alerts, and the one-time hint after the widget was first hidden from its own × or menu.
 
+use std::collections::BTreeMap;
+
 use chrono::{Local, NaiveDateTime, TimeZone};
 use mikyas_core::alerts::AlertEvent;
 use mikyas_core::ctx_alerts::CtxAlertEvent;
 use mikyas_core::engine::types::{Entrypoint, WindowKind};
+use mikyas_core::model_names::display_name;
 use mikyas_core::pace_alerts::PaceAlertEvent;
 use mikyas_core::recap::WeeklyRecap;
-use mikyas_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, ROUGH_RESET_PM_MS, now_ms};
+use mikyas_core::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, ROUGH_RESET_PM_MS, SEVEN_DAYS_MS, now_ms};
 use mikyas_core::turns::FinishedTurn;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
@@ -263,19 +266,22 @@ pub fn alert_text(event: &AlertEvent, now: Ms, clock: &impl Clock) -> (String, S
     }
 }
 
-/// "Opus 5.5" from a display name, else a tidied model id ("sonnet-5"), else a generic name.
+/// "Opus 5.5" from a display name; a model id core could not name (a provider spelling, an
+/// unknown family) goes through core's one naming rule (`model_names::display_name`), so the
+/// toast, the widget and the shim agree; else a generic name.
 fn model_title(model: Option<&str>) -> String {
     match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => m.strip_prefix("claude-").unwrap_or(m).to_owned(),
+        Some(m) => display_name(m, &BTreeMap::new()),
         None => "Claude session".into(),
     }
 }
 
 /// Title and body of a context-alert notification: "Opus 5.5 at 90% context" /
-/// "Consider /compact or a new session." (+ " · <project>" when the project is shown).
+/// "Consider compacting or starting a new session." (+ " · <project>" when the project is shown).
+/// The advice names no command, so it stays right whatever surface or version runs the session.
 pub fn ctx_alert_text(event: &CtxAlertEvent) -> (String, String) {
     let title = format!("{} at {}% context", model_title(event.model.as_deref()), event.threshold);
-    let mut body = String::from("Consider /compact or a new session.");
+    let mut body = String::from("Consider compacting or starting a new session.");
     if let Some(project) = event.project.as_deref().filter(|p| !p.is_empty()) {
         body.push_str(" · ");
         body.push_str(project);
@@ -308,21 +314,43 @@ pub fn pace_text(event: &PaceAlertEvent, now: Ms, clock: &impl Clock) -> (String
 }
 
 /// "Last week: 82% of your weekly limit" / "Busiest day Tue (35%) · 14 five-hour resets ·
-/// 5-hour peak 100%" (the busiest day is left out when unknown).
+/// 5-hour peak 100%" (the busiest day is left out when unknown). The window names come from the
+/// recap's kinds: a 30-day cycle reads "Last 30-day window: … of your 30-day limit", a 4-hour
+/// short window "… 4-hour resets · 4-hour peak …"; without a short window only the busiest day
+/// is listed.
 pub fn recap_text(recap: &WeeklyRecap, clock: &impl Clock) -> (String, String) {
-    let title = format!("Last week: {:.0}% of your weekly limit", recap.used_pct);
+    let long = &recap.kinds.long;
+    let period = if long.duration_ms() == Some(SEVEN_DAYS_MS) {
+        "Last week".to_owned()
+    } else {
+        format!("Last {} window", window_name(long))
+    };
+    let title = format!("{period}: {:.0}% of your {} limit", recap.used_pct, window_name(long));
     let mut parts = Vec::new();
     if let Some((day_ms, pct)) = recap.busiest_day {
         if let Some(day) = clock.local(day_ms) {
             parts.push(format!("Busiest day {} ({pct:.0}%)", clock.weekday(&day)));
         }
     }
-    parts.push(match recap.five_hour_resets {
-        1 => "1 five-hour reset".to_owned(),
-        n => format!("{n} five-hour resets"),
-    });
-    parts.push(format!("5-hour peak {:.0}%", recap.peak_five_hour_pct));
+    if let Some(short) = &recap.kinds.short {
+        let spelled = spelled_name(short);
+        parts.push(match recap.short_resets {
+            1 => format!("1 {spelled} reset"),
+            n => format!("{n} {spelled} resets"),
+        });
+        parts.push(format!("{} peak {:.0}%", window_name(short), recap.peak_short_pct));
+    }
     (title, parts.join(" · "))
+}
+
+/// A window name that reads well after a count: the key's own span words (`five_hour` →
+/// "five-hour", `4_hour` → "4-hour") plus its scope, else [`window_name`].
+fn spelled_name(kind: &WindowKind) -> String {
+    match kind.span_and_scope() {
+        Some((span, "")) => span.replace('_', "-"),
+        Some((span, scope)) => format!("{} {}", span.replace('_', "-"), scope.replace('_', " ")),
+        None => window_name(kind),
+    }
 }
 
 /// Where a session runs, for toasts without a project name.
@@ -415,6 +443,7 @@ pub fn simulate(app: &AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use mikyas_core::recap::RecapKinds;
 
     use super::*;
 
@@ -573,13 +602,19 @@ mod tests {
     fn context_texts() {
         let (t, b) = ctx_alert_text(&ctx_event(Some("Opus 5.5"), None));
         assert_eq!(t, "Opus 5.5 at 90% context");
-        assert_eq!(b, "Consider /compact or a new session.");
+        assert_eq!(b, "Consider compacting or starting a new session.");
         let (t, b) = ctx_alert_text(&ctx_event(Some("claude-sonnet-5"), Some("demo-app")));
-        assert_eq!(t, "sonnet-5 at 90% context");
-        assert_eq!(b, "Consider /compact or a new session. · demo-app");
+        assert_eq!(t, "Sonnet 5 at 90% context");
+        assert_eq!(b, "Consider compacting or starting a new session. · demo-app");
         let (t, b) = ctx_alert_text(&ctx_event(Some("  "), Some("")));
         assert_eq!(t, "Claude session at 90% context");
-        assert_eq!(b, "Consider /compact or a new session.");
+        assert_eq!(b, "Consider compacting or starting a new session.");
+        // Provider spellings of an id are named like any other.
+        for id in ["us.anthropic.claude-newfam-2-v1:0", "gateway/claude-newfam-2", "claude-newfam-2@20270101"] {
+            assert_eq!(ctx_alert_text(&ctx_event(Some(id), None)).0, "Newfam 2 at 90% context", "{id}");
+        }
+        // Something that is not an id is shown as it is.
+        assert_eq!(ctx_alert_text(&ctx_event(Some("gpt-4o"), None)).0, "gpt-4o at 90% context");
         let alert = Alert::Context(ctx_event(None, None));
         assert_eq!(toast_text(&alert, 0).0, "Claude session at 90% context");
         let limit = Alert::Limit(AlertEvent::Reset { kind: WindowKind::FiveHour });
@@ -630,18 +665,29 @@ mod tests {
     fn recap_texts() {
         let tuesday = utc(2026, 9, 22, 0, 0);
         let recap = WeeklyRecap {
+            kinds: RecapKinds::default(),
             window_end_ms: tuesday + 4 * DAY_MS,
             used_pct: 82.4,
             busiest_day: Some((tuesday, 35.2)),
-            five_hour_resets: 14,
-            peak_five_hour_pct: 100.0,
+            short_resets: 14,
+            peak_short_pct: 100.0,
         };
         let (t, b) = recap_text(&recap, &TestClock);
         assert_eq!(t, "Last week: 82% of your weekly limit");
         assert_eq!(b, "Busiest day Tue (35%) · 14 five-hour resets · 5-hour peak 100%");
-        let quiet = WeeklyRecap { busiest_day: None, five_hour_resets: 1, peak_five_hour_pct: 41.6, ..recap.clone() };
+        let quiet = WeeklyRecap { busiest_day: None, short_resets: 1, peak_short_pct: 41.6, ..recap.clone() };
         assert_eq!(recap_text(&quiet, &TestClock).1, "1 five-hour reset · 5-hour peak 42%");
-        assert_eq!(toast_text(&Alert::Recap(recap), 0).0, "Last week: 82% of your weekly limit");
+        assert_eq!(toast_text(&Alert::Recap(recap.clone()), 0).0, "Last week: 82% of your weekly limit");
+        // Other windows are named from their keys.
+        let month = WeeklyRecap {
+            kinds: RecapKinds { long: WindowKind::from_key("thirty_day"), short: Some(WindowKind::from_key("4_hour")) },
+            ..recap.clone()
+        };
+        let (t, b) = recap_text(&month, &TestClock);
+        assert_eq!(t, "Last 30-day window: 82% of your 30-day limit");
+        assert_eq!(b, "Busiest day Tue (35%) · 14 4-hour resets · 4-hour peak 100%");
+        let alone = WeeklyRecap { kinds: RecapKinds { long: WindowKind::SevenDay, short: None }, ..recap };
+        assert_eq!(recap_text(&alone, &TestClock).1, "Busiest day Tue (35%)");
     }
 
     fn turn(duration_ms: Ms, project: Option<&str>, entrypoint: Entrypoint) -> FinishedTurn {

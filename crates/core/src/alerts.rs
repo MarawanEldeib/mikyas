@@ -78,17 +78,22 @@ pub fn plus_minus(reset: &ResetInfo) -> Ms {
     }
 }
 
+/// Default usage-alert thresholds (%). The one source: the app's settings and the UI's display
+/// fallback use these (the UI copy is guarded by `src/lib/rust-sync.test.ts`). Users may keep any
+/// list, including none.
+pub const DEFAULT_THRESHOLDS: &[u8] = &[80, 95];
+
 /// User-configurable alert behaviour.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlertSettings {
-    /// Ascending percentages, default `[80, 95]`.
+    /// Ascending percentages, default [`DEFAULT_THRESHOLDS`].
     pub thresholds: Vec<u8>,
     pub notify_reset: bool,
 }
 
 impl Default for AlertSettings {
     fn default() -> Self {
-        Self { thresholds: vec![80, 95], notify_reset: true }
+        Self { thresholds: DEFAULT_THRESHOLDS.to_vec(), notify_reset: true }
     }
 }
 

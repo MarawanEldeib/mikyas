@@ -1,9 +1,11 @@
 //! Burn-rate forecast: "at this pace you hit 100% at 15:40 — before the reset".
 //!
 //! `compute(kind, samples, state, now_ms)`:
-//! - Only kinds of known length (`WindowKind::duration_ms`): a day or less fits like FiveHour,
-//!   longer like SevenDay (e.g. `seven_day_opus`). Returns `None` if `state.stale`, `state.phase` is
-//!   ResetAwaitingData, or `state.limit_reached`.
+//! - Only kinds of known length (`WindowKind::duration_ms`). The fit scales with the length
+//!   ([`fit_for`]): windows of a day or less scale the FiveHour fit below by `length / 5 h`, longer
+//!   ones the SevenDay fit by `length / 7 d`, so five_hour and seven_day get exactly the values
+//!   below and e.g. a 30-day window looks back ~4 days. Returns `None` if `state.stale`,
+//!   `state.phase` is ResetAwaitingData, or `state.limit_reached`.
 //! - Window start = `reset.at_ms - duration` when the reset is known, else unknown (then only
 //!   the lookback bound applies). Lookback = FiveHour: 60 min; SevenDay: 24 h — never reaching
 //!   before the window start (samples from a previous window would fake a negative slope).
@@ -28,11 +30,12 @@
 
 use crate::engine::types::{Burn, Phase, Sample, WindowKind, WindowState};
 use crate::history::MIXED_SOURCE_DROP_PCT;
-use crate::time::{HOUR_MS, MINUTE_MS, Ms};
+use crate::time::{DAY_MS, HOUR_MS, MINUTE_MS, Ms, SECOND_MS, SEVEN_DAYS_MS};
 
 pub const MIN_SLOPE_PCT_PER_H: f32 = 0.05;
 
 /// Fit settings of one window kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Fit {
     lookback: Ms,
     step: Ms,
@@ -43,13 +46,21 @@ const FIVE_HOUR_FIT: Fit = Fit { lookback: 60 * MINUTE_MS, step: MINUTE_MS, min_
 
 const SEVEN_DAY_FIT: Fit = Fit { lookback: 24 * HOUR_MS, step: 10 * MINUTE_MS, min_span: 6 * HOUR_MS };
 
+/// The fit for a window of `duration` (see the module docs). The step never drops below 10 s.
+fn fit_for(duration: Ms) -> Fit {
+    let (base, reference) =
+        if duration <= DAY_MS { (FIVE_HOUR_FIT, 5 * HOUR_MS) } else { (SEVEN_DAY_FIT, SEVEN_DAYS_MS) };
+    let scale = |v: Ms| (i128::from(v) * i128::from(duration.max(1)) / i128::from(reference)) as Ms;
+    Fit { lookback: scale(base.lookback), step: scale(base.step).max(10 * SECOND_MS), min_span: scale(base.min_span) }
+}
+
 /// Forecasts when the window reaches 100 % at the recent pace (see the module docs).
 ///
 /// `samples` is this window's history (Desktop samples or history rows, ideally sorted);
 /// `state` is its merged current value.
 pub fn compute(kind: &WindowKind, samples: &[Sample], state: &WindowState, now_ms: Ms) -> Option<Burn> {
     let duration = kind.duration_ms()?;
-    let fit = if kind.is_short_window() { &FIVE_HOUR_FIT } else { &SEVEN_DAY_FIT };
+    let fit = &fit_for(duration);
     if state.stale || state.phase == Phase::ResetAwaitingData || state.limit_reached || !state.pct.is_finite() {
         return None;
     }
@@ -466,5 +477,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fits_scale_with_the_window_length() {
+        assert_eq!(fit_for(5 * HOUR_MS), FIVE_HOUR_FIT);
+        assert_eq!(fit_for(SEVEN_DAYS_MS), SEVEN_DAY_FIT);
+        let month = fit_for(30 * DAY_MS);
+        assert!(month.lookback > SEVEN_DAY_FIT.lookback && month.step > SEVEN_DAY_FIT.step);
+        let hour = fit_for(HOUR_MS);
+        assert_eq!(hour.lookback, 12 * MINUTE_MS);
+        assert_eq!(hour.step, 12 * SECOND_MS);
+        assert_eq!(fit_for(1).step, 10 * SECOND_MS, "the step has a floor");
     }
 }
