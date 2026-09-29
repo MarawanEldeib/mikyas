@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "./format";
 import {
+  FETCH_DAYS,
   HOUR_LABEL_EVERY,
   LABEL_GAP,
   MAX_LABEL_DAYS,
@@ -14,6 +15,7 @@ import {
   plotX,
   plotY,
   rangeDomain,
+  rangesFor,
   resetXs,
   startOfLocalDay,
   summaryText,
@@ -279,5 +281,21 @@ describe("summaries", () => {
     expect(summaryText("5-hour", { peak: 12, resets: 1 })).toBe("5-hour peak 12% · 1 reset");
     expect(summaryText("Weekly", { peak: 0, resets: 0 })).toBe("Weekly peak 0% · no resets");
     expect(summaryText("5-hour", { peak: null, resets: 0 })).toBe("No 5-hour data");
+  });
+});
+
+describe("rangesFor", () => {
+  it("asks for the longest range and shows every range the history can fill", () => {
+    expect(FETCH_DAYS * DAY).toBe(Math.max(...RANGES.map((r) => r.span)));
+    expect(rangesFor(undefined)).toBe(RANGES);
+    expect(rangesFor(Number.NaN)).toBe(RANGES);
+    expect(rangesFor(FETCH_DAYS)).toEqual(RANGES);
+    expect(rangesFor(30)).toEqual(RANGES);
+  });
+
+  it("hides ranges longer than the history keeps, but always keeps the shortest", () => {
+    expect(rangesFor(7).map((r) => r.key)).toEqual(["24h", "7d"]);
+    expect(rangesFor(3).map((r) => r.key)).toEqual(["24h"]);
+    expect(rangesFor(0).map((r) => r.key)).toEqual(["24h"]);
   });
 });

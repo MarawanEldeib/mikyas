@@ -214,5 +214,5 @@ export function mockHistory(spec: MockHistorySpec): HistoryData {
     windows.push(aggregate(w.kind, series, from, to, spec.now));
   }
   windows.sort((a, b) => (a.kind === "five_hour" ? -1 : b.kind === "five_hour" ? 1 : 0));
-  return { from_ms: from, to_ms: to, windows };
+  return { from_ms: from, to_ms: to, windows, max_days: MOCK_HISTORY_DAYS };
 }

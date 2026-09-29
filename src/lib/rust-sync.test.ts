@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CRIT_AT, WARN_AT } from "./color";
+import { MOCK_HISTORY_DAYS } from "./mock-history";
 import { MAX_NOTES, MAX_NOTE_CHARS, RELEASES_PREFIX } from "./update";
 
 type NodeFs = { readFileSync(path: URL, encoding: "utf8"): string };
@@ -91,5 +92,13 @@ describe("window sizes", () => {
       Number(side![2]),
     ]);
     expect(mockSize(`html.mock[data-dock-collapsed][data-dock="top"]`)).toEqual([Number(top![1]), Number(top![2])]);
+  });
+});
+
+describe("history.rs", () => {
+  it("the browser mock keeps as many days as the real history", () => {
+    const days = Number(grab(source("crates/core/src/history.rs"), /pub const RETAIN_MS: Ms = (\d+) \* DAY_MS;/));
+    expect(MOCK_HISTORY_DAYS).toBe(days);
+    expect(source("src-tauri/src/history_view.rs")).toContain("pub const MAX_DAYS: u32 = (RETAIN_MS / DAY_MS) as u32;");
   });
 });

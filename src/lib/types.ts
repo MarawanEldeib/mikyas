@@ -115,6 +115,8 @@ export interface HistoryData {
   to_ms: Ms;
   /** five_hour first, then seven_day, then others. */
   windows: HistoryWindow[];
+  /** The most days a request can return (all the history keeps); longer ranges are hidden. */
+  max_days: number;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -279,7 +281,7 @@ export interface ConnectPreview {
  *  hide_widget() -> void                                 (the ×: hides like the tray, hint once)
  *  show_context_menu({ x?, y? }) -> void                 (native right-click menu at the cursor, or at x/y
  *                                                          logical px when opened from the keyboard)
- *  get_history({ days: number }) -> HistoryData          (days 1..14)
+ *  get_history({ days: number }) -> HistoryData          (days clamped to 1..max_days)
  *  set_dock_expanded({ expanded: boolean, force?: boolean }) -> void
  *                                   (pointer enter/leave while docked; force: the card's "–")
  *  check_updates_now() -> UpdateInfo | null              (explicit click; network)

@@ -7,7 +7,7 @@
 
 <script lang="ts">
   import { formatPct, liveWindow, windowLabel } from "../format";
-  import { FETCH_DAYS, RANGES, barScale, dayBars, rangeDomain, resetsText, summaryText, windowSummary } from "../history";
+  import { FETCH_DAYS, barScale, dayBars, rangeDomain, rangesFor, resetsText, summaryText, windowSummary } from "../history";
   import { api } from "../ipc";
   import { app, errorText } from "../stores.svelte";
   import type { HistoryData } from "../types";
@@ -66,13 +66,15 @@
     const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
     if (!step) return;
     e.preventDefault();
-    const i = RANGES.findIndex((r) => r.key === range);
-    const next = RANGES[(i + step + RANGES.length) % RANGES.length];
+    const i = ranges.findIndex((r) => r.key === spec.key);
+    const next = ranges[(i + step + ranges.length) % ranges.length];
     choose(next.key);
     (e.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-range="${next.key}"]`)?.focus();
   }
 
-  const spec = $derived(RANGES.find((r) => r.key === range) ?? RANGES[1]);
+  const ranges = $derived(rangesFor(data?.max_days));
+  // A range the history cannot fill falls back to the longest one it can.
+  const spec = $derived(ranges.find((r) => r.key === range) ?? ranges[ranges.length - 1]);
   const domain = $derived(data ? rangeDomain(data, spec.span) : null);
   const charts = $derived(mainWindows(data?.windows ?? []));
   const weekly = $derived(data?.windows.find((w) => w.kind === "seven_day") ?? null);
@@ -98,14 +100,14 @@
     <IconButton icon="back" label="Back" size="m" onclick={() => app.back()} />
     <h1>History</h1>
     <div class="seg" role="radiogroup" aria-label="Time range" tabindex="-1" onkeydown={onRangeKey}>
-      {#each RANGES as r (r.key)}
+      {#each ranges as r (r.key)}
         <button
           type="button"
           role="radio"
           data-range={r.key}
-          aria-checked={r.key === range}
+          aria-checked={r.key === spec.key}
           aria-label={r.name}
-          tabindex={r.key === range ? 0 : -1}
+          tabindex={r.key === spec.key ? 0 : -1}
           onclick={() => choose(r.key)}>{r.label}</button
         >
       {/each}
