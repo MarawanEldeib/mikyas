@@ -79,7 +79,8 @@ test.describe("card content per scenario", () => {
     await expect(other).toBeInViewport();
     // The compact views keep the two main windows.
     await openWidget(page, { view: "pill", params: { scenario: "extra" } });
-    await expect(page.locator(VIEW_ROOT.pill)).not.toContainText("Opus");
+    await expect(page.locator(VIEW_ROOT.pill)).not.toContainText("7d Opus");
+    await expect(page.locator(VIEW_ROOT.pill)).not.toContainText("overage");
   });
 
   test("stale: readings are marked old", async ({ page }) => {

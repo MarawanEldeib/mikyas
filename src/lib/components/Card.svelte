@@ -47,6 +47,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
     class="body"
+    class:scroll={extra.length > 0}
     role={extra.length ? "region" : undefined}
     aria-label={extra.length ? "Usage limits" : undefined}
     tabindex={extra.length ? 0 : undefined}
@@ -119,6 +120,10 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  /* Only with extra rows: the two main sections alone fit exactly, and a sub-pixel overflow at
+     some display scales must not show a scrollbar. */
+  .body.scroll {
     overflow-y: auto;
     scrollbar-width: thin;
   }
