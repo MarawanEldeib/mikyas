@@ -1,7 +1,8 @@
 //! Burn-rate forecast: "at this pace you hit 100% at 15:40 — before the reset".
 //!
 //! `compute(kind, samples, state, now_ms)`:
-//! - Only FiveHour and SevenDay. Returns `None` if `state.stale`, `state.phase` is
+//! - Only kinds of known length (`WindowKind::duration_ms`): a day or less fits like FiveHour,
+//!   longer like SevenDay (e.g. `seven_day_opus`). Returns `None` if `state.stale`, `state.phase` is
 //!   ResetAwaitingData, or `state.limit_reached`.
 //! - Window start = `reset.at_ms - duration` when the reset is known, else unknown (then only
 //!   the lookback bound applies). Lookback = FiveHour: 60 min; SevenDay: 24 h — never reaching
@@ -47,15 +48,11 @@ const SEVEN_DAY_FIT: Fit = Fit { lookback: 24 * HOUR_MS, step: 10 * MINUTE_MS, m
 /// `samples` is this window's history (Desktop samples or history rows, ideally sorted);
 /// `state` is its merged current value.
 pub fn compute(kind: &WindowKind, samples: &[Sample], state: &WindowState, now_ms: Ms) -> Option<Burn> {
-    let fit = match kind {
-        WindowKind::FiveHour => &FIVE_HOUR_FIT,
-        WindowKind::SevenDay => &SEVEN_DAY_FIT,
-        WindowKind::Other(_) => return None,
-    };
+    let duration = kind.duration_ms()?;
+    let fit = if kind.is_short_window() { &FIVE_HOUR_FIT } else { &SEVEN_DAY_FIT };
     if state.stale || state.phase == Phase::ResetAwaitingData || state.limit_reached || !state.pct.is_finite() {
         return None;
     }
-    let duration = kind.duration_ms()?;
     let pct = state.pct.clamp(0.0, 100.0);
     let reset_ms = state.reset.at_ms().filter(|r| *r > now_ms);
     let window_start = reset_ms.map(|r| r.saturating_sub(duration));
@@ -286,12 +283,28 @@ mod tests {
     }
 
     #[test]
-    fn only_five_hour_and_seven_day() {
+    fn only_kinds_of_known_length() {
         let s = per_minute(10.0, 50.0);
-        for kind in [WindowKind::Other("seven_day_opus".into()), WindowKind::Other("xh".into())] {
+        for kind in [WindowKind::Other("xh".into()), WindowKind::Other("spend_limit".into())] {
             let st = state(kind.clone(), 50.0, ResetInfo::Unknown);
             assert_eq!(compute(&kind, &s, &st, NOW), None);
         }
+        // Other five-hour-long keys fit like the five-hour window.
+        let fh_opus = WindowKind::from_key("five_hour_opus");
+        let st = state(WindowKind::FiveHour, 50.0, ResetInfo::Unknown);
+        let expected = compute(&WindowKind::FiveHour, &s, &st, NOW);
+        assert!(expected.is_some());
+        assert_eq!(compute(&fh_opus, &s, &WindowState { kind: fh_opus.clone(), ..st }, NOW), expected);
+    }
+
+    #[test]
+    fn weekly_model_windows_get_the_weekly_forecast() {
+        let s = series(&[(NOW - 20 * HOUR_MS, 40.0), (NOW - 10 * HOUR_MS, 45.0)]);
+        let weekly = state(WindowKind::SevenDay, 50.0, exact(NOW + 3 * DAY_MS));
+        let expected = compute(&WindowKind::SevenDay, &s, &weekly, NOW);
+        assert!(expected.is_some());
+        let opus = WindowKind::from_key("seven_day_opus");
+        assert_eq!(compute(&opus, &s, &WindowState { kind: opus.clone(), ..weekly }, NOW), expected);
     }
 
     #[test]

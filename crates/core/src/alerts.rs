@@ -7,7 +7,8 @@
 //! - A changed key within the alias window ([`alias_between`]) of the stored one, with no pct
 //!   drop, is the SAME instance (an alias — e.g. switching between an estimated and an exact
 //!   reset); update the stored key. The window is the kind's own ([`alias_ms`]: ±30 min for
-//!   five_hour, ±1 day for weekly and other kinds, whose estimates carry ±1 day), widened to the
+//!   windows of a day or less such as five_hour, ±1 day for weekly and other kinds, whose
+//!   estimates carry ±1 day), widened to the
 //!   `plus_minus_ms` of the stored or the new reset time (an estimate can be that far off the exact
 //!   time that replaces it), but never beyond half the window's length.
 //! - A NEW instance starts when pct drops by [`RESET_DROP_PCT`] (2) points or more versus the
@@ -51,12 +52,9 @@ pub const INSTANCE_ALIAS_MS: Ms = 30 * MINUTE_MS;
 /// weekly reset estimates carry ±1 day.
 pub const WEEKLY_INSTANCE_ALIAS_MS: Ms = DAY_MS;
 
-/// Alias window of a kind (see the module docs).
+/// Alias window of a kind (see the module docs), from its length (`WindowKind::duration_ms`).
 pub fn alias_ms(kind: &WindowKind) -> Ms {
-    match kind {
-        WindowKind::FiveHour => INSTANCE_ALIAS_MS,
-        _ => WEEKLY_INSTANCE_ALIAS_MS,
-    }
+    if kind.is_short_window() { INSTANCE_ALIAS_MS } else { WEEKLY_INSTANCE_ALIAS_MS }
 }
 
 /// Largest distance (inclusive) between two instance keys of the same window instance, given the
@@ -385,6 +383,8 @@ mod tests {
         assert_eq!(events[0], AlertEvent::Reset { kind: WindowKind::SevenDay });
         assert_eq!(events.len(), 2, "reset + re-armed threshold");
         assert_eq!(alias_ms(&WindowKind::Other("seven_day_opus".into())), DAY_MS);
+        assert_eq!(alias_ms(&WindowKind::Other("five_hour_opus".into())), INSTANCE_ALIAS_MS);
+        assert_eq!(alias_ms(&WindowKind::Other("spend_limit".into())), DAY_MS);
         assert_eq!(alias_ms(&WindowKind::FiveHour), 30 * MINUTE_MS);
     }
 

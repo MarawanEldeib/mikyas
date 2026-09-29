@@ -13,8 +13,8 @@
 //!
 //! Heads-up (per window kind, once per instance): when `limit_reached` (or pct >=
 //! [`LIMIT_REACHED_PCT`]), the phase
-//! is Active and the reset is known, still ahead and `reset - now <= lead` (five_hour: 10 min,
-//! weekly kinds: 60 min). An estimate counts only if its `plus_minus` is within the lead ("reopens
+//! is Active and the reset is known, still ahead and `reset - now <= lead` (windows of a day or
+//! less such as five_hour: 10 min, weekly and other kinds: 60 min). An estimate counts only if its `plus_minus` is within the lead ("reopens
 //! in 10 min" from a ±1 day guess is no heads-up). Stale data does not stop it: a capped window
 //! stays capped until then.
 //!
@@ -123,10 +123,7 @@ fn forecast(view: &WindowView, now_ms: Ms) -> Option<PaceAlertEvent> {
 /// A heads-up for a capped window whose (future) reset is within the kind's lead.
 fn heads_up(w: &WindowState, now_ms: Ms) -> Option<PaceAlertEvent> {
     let capped = w.limit_reached || w.pct >= LIMIT_REACHED_PCT;
-    let lead = match w.kind {
-        WindowKind::FiveHour => HEADS_UP_FIVE_HOUR_MS,
-        _ => HEADS_UP_WEEKLY_MS,
-    };
+    let lead = if w.kind.is_short_window() { HEADS_UP_FIVE_HOUR_MS } else { HEADS_UP_WEEKLY_MS };
     if plus_minus(&w.reset) > lead {
         return None;
     }
@@ -329,6 +326,10 @@ mod tests {
         assert_eq!(run(capped(WindowKind::SevenDay, R), R - HOUR_MS - 1), vec![]);
         let opus = WindowKind::Other("seven_day_opus".into());
         assert_eq!(run(capped(opus.clone(), R), R - 45 * MINUTE_MS), heads_up(opus));
+        // The lead follows the window's length: a five-hour-long key gets the short lead.
+        let fh_opus = WindowKind::from_key("five_hour_opus");
+        assert_eq!(run(capped(fh_opus.clone(), R), R - 10 * MINUTE_MS), heads_up(fh_opus.clone()));
+        assert_eq!(run(capped(fh_opus, R), R - 45 * MINUTE_MS), vec![]);
         // 99.5% counts as capped; 99% does not.
         let almost = view(WindowKind::FiveHour, 99.5, ResetInfo::Exact { at_ms: R }, None);
         assert_eq!(run(almost, R - MINUTE_MS).len(), 1);
