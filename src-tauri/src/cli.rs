@@ -158,5 +158,13 @@ mod tests {
         assert!(!hooks.contains(r"$LOCALAPPDATA\Mikyas"));
         assert!(hooks.contains(&format!("ReadEnvStr $MikyasSettings {}", mikyas_core::paths::CLAUDE_CONFIG_DIR_ENV)));
         assert!(hooks.contains(&format!(r"\bin\{SHIM_EXE_NAME}")));
+        // The files it names inside the data folder and Claude Code's config folder.
+        let p = Paths::with_roots(PathBuf::from("claude"), Vec::new(), PathBuf::from("data"));
+        let name = |path: PathBuf| path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(p.bin_dir(), p.data_root().join("bin"));
+        assert!(hooks.contains(&format!(r"$MikyasDataDir\{}", name(p.wrap_file()))));
+        assert!(hooks.contains(&format!(r"$MikyasDataDir\{}", name(p.backups_dir()))));
+        assert!(hooks.contains(&format!(r#"StrCpy $MikyasSettings "$MikyasSettings\{}""#, name(p.claude_settings()))));
+        assert!(hooks.contains(r#"StrCpy $MikyasSettings "$PROFILE\.claude""#));
     }
 }
