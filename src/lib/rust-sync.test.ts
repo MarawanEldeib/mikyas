@@ -3,7 +3,9 @@
 
 import { describe, expect, it } from "vitest";
 import { CRIT_AT, WARN_AT } from "./color";
+import { createMockBackend } from "./mock";
 import { MOCK_HISTORY_DAYS } from "./mock-history";
+import type { Settings } from "./types";
 import { MAX_NOTES, MAX_NOTE_CHARS, RELEASES_PREFIX } from "./update";
 
 type NodeFs = { readFileSync(path: URL, encoding: "utf8"): string };
@@ -100,5 +102,15 @@ describe("history.rs", () => {
     const days = Number(grab(source("crates/core/src/history.rs"), /pub const RETAIN_MS: Ms = (\d+) \* DAY_MS;/));
     expect(MOCK_HISTORY_DAYS).toBe(days);
     expect(source("src-tauri/src/history_view.rs")).toContain("pub const MAX_DAYS: u32 = (RETAIN_MS / DAY_MS) as u32;");
+  });
+});
+
+describe("settings.rs", () => {
+  it("the browser mock starts with the default alert thresholds", async () => {
+    const rs = source("src-tauri/src/settings.rs");
+    const pair = (name: string) => JSON.parse(grab(rs, new RegExp(String.raw`pub const ${name}: \[u8; 2\] = (\[\d+, \d+\]);`))) as number[];
+    const s = await createMockBackend(new URLSearchParams()).invoke<Settings>("get_settings");
+    expect(s.thresholds).toEqual(pair("DEFAULT_THRESHOLDS"));
+    expect(s.ctx_thresholds).toEqual(pair("DEFAULT_CTX_THRESHOLDS"));
   });
 });

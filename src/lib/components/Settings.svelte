@@ -31,8 +31,6 @@
   ];
   const SIZES = [200_000, 1_000_000];
 
-  const t = $derived([s?.thresholds[0] ?? 80, s?.thresholds[1] ?? 95] as const);
-
   const failed = (e: unknown) => (app.error = errorText(e));
 
   // ---- context-window overrides
@@ -134,22 +132,22 @@
           <span class="label">First alert at</span>
           <Stepper
             label="First alert threshold"
-            value={t[0]}
+            value={s.thresholds[0]}
             min={10}
-            max={t[1] - 1}
+            max={s.thresholds[1] - 1}
             suffix="%"
-            onchange={(v) => app.patch({ thresholds: [v, t[1]] })}
+            onchange={(v) => app.patch({ thresholds: [v, s.thresholds[1]] })}
           />
         </div>
         <div class="row">
           <span class="label">Second alert at</span>
           <Stepper
             label="Second alert threshold"
-            value={t[1]}
-            min={t[0] + 1}
+            value={s.thresholds[1]}
+            min={s.thresholds[0] + 1}
             max={100}
             suffix="%"
-            onchange={(v) => app.patch({ thresholds: [t[0], v] })}
+            onchange={(v) => app.patch({ thresholds: [s.thresholds[0], v] })}
           />
         </div>
         <div class="row">

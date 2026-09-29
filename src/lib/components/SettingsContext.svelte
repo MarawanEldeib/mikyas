@@ -3,12 +3,8 @@
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
+  // Rust always sends at least two ascending thresholds (settings.rs `ensure_pair`).
   const s = $derived(app.settings);
-  // Two ascending thresholds; a hand-edited list with fewer entries falls back to the defaults.
-  const t = $derived.by(() => {
-    const [first = 80, second = 90] = s?.ctx_thresholds ?? [];
-    return [first, Math.min(100, Math.max(first + 1, second))] as const;
-  });
 </script>
 
 {#if s}
@@ -24,22 +20,22 @@
         <span class="label">First alert at</span>
         <Stepper
           label="First context alert threshold"
-          value={t[0]}
+          value={s.ctx_thresholds[0]}
           min={10}
-          max={t[1] - 1}
+          max={s.ctx_thresholds[1] - 1}
           suffix="%"
-          onchange={(v) => app.patch({ ctx_thresholds: [v, t[1]] })}
+          onchange={(v) => app.patch({ ctx_thresholds: [v, s.ctx_thresholds[1]] })}
         />
       </div>
       <div class="row">
         <span class="label">Second alert at</span>
         <Stepper
           label="Second context alert threshold"
-          value={t[1]}
-          min={t[0] + 1}
+          value={s.ctx_thresholds[1]}
+          min={s.ctx_thresholds[0] + 1}
           max={100}
           suffix="%"
-          onchange={(v) => app.patch({ ctx_thresholds: [t[0], v] })}
+          onchange={(v) => app.patch({ ctx_thresholds: [s.ctx_thresholds[0], v] })}
         />
       </div>
     </fieldset>
