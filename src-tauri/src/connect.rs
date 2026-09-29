@@ -45,6 +45,12 @@ pub const MASK: &str = "\u{2022}\u{2022}\u{2022}";
 const MAX_SETTINGS_BYTES: u64 = 4 * 1024 * 1024;
 const CAS_ATTEMPTS: u32 = 3;
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Longest wait for `pwsh -Command $PSVersionTable...` (a cold PowerShell start can take a few
+/// seconds; a hung one must not stall Connect).
+const PWSH_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Oldest pwsh Claude Code picks for its commands (its documented Windows behaviour, see
+/// [`detect_shell`]); older ones fall through to Windows PowerShell.
+const PWSH_MIN_VERSION: (u32, u32) = (7, 4);
 /// Keeps console windows of spawned shells from flashing up.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -110,7 +116,7 @@ pub fn detect_shell() -> Shell {
     if let Some(bash) = candidates.into_iter().find(|p| p.is_file()) {
         return Shell { kind: ShellKind::Bash, exe: bash };
     }
-    if let Some(pwsh) = find_on_path("pwsh.exe").filter(|p| pwsh_at_least_7_4(p)) {
+    if let Some(pwsh) = find_on_path("pwsh.exe").filter(|p| pwsh_is_new_enough(p)) {
         return Shell { kind: ShellKind::Pwsh, exe: pwsh };
     }
     let legacy = find_on_path("powershell.exe").unwrap_or_else(|| PathBuf::from("powershell.exe"));
@@ -121,11 +127,12 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
 }
 
-fn pwsh_at_least_7_4(exe: &Path) -> bool {
+fn pwsh_is_new_enough(exe: &Path) -> bool {
     let mut cmd = Command::new(exe);
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"]);
-    let Ok(out) = run_with_timeout(cmd, None, Duration::from_secs(10)) else { return false };
-    parse_version_at_least(&String::from_utf8_lossy(&out.stdout), 7, 4)
+    let Ok(out) = run_with_timeout(cmd, None, PWSH_VERSION_TIMEOUT) else { return false };
+    let (major, minor) = PWSH_MIN_VERSION;
+    parse_version_at_least(&String::from_utf8_lossy(&out.stdout), major, minor)
 }
 
 fn parse_version_at_least(text: &str, major: u32, minor: u32) -> bool {
@@ -887,6 +894,8 @@ mod tests {
         assert!(!parse_version_at_least("7.3.9", 7, 4));
         assert!(!parse_version_at_least("5.1.26100.1", 7, 4));
         assert!(!parse_version_at_least("", 7, 4));
+        let (major, minor) = PWSH_MIN_VERSION;
+        assert!(parse_version_at_least(&format!("{major}.{minor}.0"), major, minor), "the minimum itself is enough");
         assert_eq!(strip_digits(b"a1b22c"), b"abc");
     }
 

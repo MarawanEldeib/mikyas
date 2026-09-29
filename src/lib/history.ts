@@ -112,9 +112,14 @@ export interface TimeAxis {
 
 /** A day label needs at least this much of its day inside the domain. */
 export const MIN_LABELLED_DAY = 10 * HOUR;
+/** The 24h axis labels every this many local hours (00, 06, 12, 18). */
+export const HOUR_LABEL_EVERY = 6;
+/** Safety cap on the day-label walk (far more days than any range), so a broken clock or
+ *  domain can never spin it for long. */
+export const MAX_LABEL_DAYS = 400;
 
 /**
- * X-axis for a range in the user's locale: every 6 hours for 24h (the weekday at midnight),
+ * X-axis for a range in the user's locale: every HOUR_LABEL_EVERY hours for 24h (the weekday at midnight),
  * one weekday per day for 7d, every other date for 14d (counted back from today). Day labels
  * are centred on the visible part of their day; days showing less than MIN_LABELLED_DAY are
  * not labelled.
@@ -131,14 +136,14 @@ export function timeAxis(d: Domain, range: RangeKey, opts: ClockOptions = {}): T
     first.setMinutes(0, 0, 0);
     for (let t = first.getTime() < d.from ? first.getTime() + HOUR : first.getTime(); t < d.to; t += HOUR) {
       const h = new Date(t).getHours();
-      if (h % 6 !== 0 || t - d.from < HOUR || d.to - t < HOUR) continue;
+      if (h % HOUR_LABEL_EVERY !== 0 || t - d.from < HOUR || d.to - t < HOUR) continue;
       labels.push({ t, text: h === 0 ? weekday.format(t) : hour.format(t) });
     }
     return { lines, labels };
   }
   const fmt = range === "7d" ? dtf(opts, { weekday: "short" }) : dtf(opts, { day: "numeric", month: "short" });
   let fromEnd = 0;
-  for (let m = startOfLocalDay(d.to - 1); m + DAY > d.from && fromEnd <= 400; m = addLocalDays(m, -1), fromEnd++) {
+  for (let m = startOfLocalDay(d.to - 1); m + DAY > d.from && fromEnd <= MAX_LABEL_DAYS; m = addLocalDays(m, -1), fromEnd++) {
     const start = Math.max(m, d.from);
     const end = Math.min(addLocalDays(m, 1), d.to);
     if (end - start < MIN_LABELLED_DAY || (range === "14d" && fromEnd % 2 !== 0)) continue;
