@@ -124,11 +124,15 @@ fn resolve_size(inputs: &ContextInputs<'_>) -> (u64, CtxBasis) {
     if let Some(size) = base.and_then(|id| override_for(inputs.overrides, id)) {
         return (size, CtxBasis::Override);
     }
-    let seen = inputs.tail.map_or(0, |t| t.max_ctx_tokens_seen.max(t.ctx_tokens));
+    let mut seen = inputs.tail.map_or(0, |t| t.max_ctx_tokens_seen.max(t.ctx_tokens));
+    // A capture saying the session is past 200K counts as having seen more than 200K.
+    if capture_ctx.is_some_and(|c| c.exceeds_200k == Some(true)) {
+        seen = seen.max(DEFAULT_CTX + 1);
+    }
     if let Some(size) = learned(false).filter(|&s| seen <= s) {
         return (size, CtxBasis::Learned);
     }
-    if seen > DEFAULT_CTX || capture_ctx.is_some_and(|c| c.exceeds_200k == Some(true)) {
+    if seen > DEFAULT_CTX {
         return (learned(true).filter(|&s| s > seen).unwrap_or(ONE_M_CTX), CtxBasis::Heuristic);
     }
     (DEFAULT_CTX, CtxBasis::Default)
@@ -492,6 +496,21 @@ mod tests {
         let l = learned(&[("claude-opus-5-5[1m]", 400_000)]);
         let r = run_learned(Some(&t), None, None, &BTreeMap::new(), &l);
         assert_eq!((r.size, r.basis), (ONE_M_CTX, CtxBasis::Heuristic));
+    }
+
+    #[test]
+    fn capture_saying_over_200k_outgrows_a_learned_200k() {
+        // No tail (capture-only session) and no reported size, but the capture says the session
+        // is past 200K: a learned plain 200K window cannot be right.
+        let mut c = cap_with(Some("claude-opus-5-5"), None, T);
+        c.context.as_mut().unwrap().exceeds_200k = Some(true);
+        let l = learned(&[("claude-opus-5-5", 200_000)]);
+        let r = run_learned(None, Some(&c), None, &BTreeMap::new(), &l);
+        assert_eq!((r.size, r.basis), (ONE_M_CTX, CtxBasis::Heuristic));
+        // A learned window larger than 200K still fits.
+        let l = learned(&[("claude-opus-5-5", 400_000)]);
+        let r = run_learned(None, Some(&c), None, &BTreeMap::new(), &l);
+        assert_eq!((r.size, r.basis), (400_000, CtxBasis::Learned));
     }
 
     #[test]
