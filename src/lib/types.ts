@@ -36,10 +36,17 @@ export interface WindowView {
   limit_reached: boolean;
   phase: Phase;
   burn: Burn | null;
-  /** 96 points: last 24 h for five_hour, last 7 d for seven_day. */
+  /** 96 points over `spark_span_ms` (24 h for five_hour, 7 d for weekly windows). */
   spark: SparkPoint[];
   /** Claude worked after this reading, so the real % is higher (shown as "38% ▲"). */
   worked_since: boolean;
+  /** Window name from Rust (`WindowKind::label`): "5-hour", "weekly", "weekly Opus". Optional:
+   *  format.ts `windowLabel` falls back to the kind. */
+  label?: string;
+  /** Compact name (`WindowKind::short_label`): "5h", "7d", "7d Opus". */
+  short?: string;
+  /** How far back `spark` reaches, in ms. */
+  spark_span_ms?: Ms;
 }
 
 export type Entrypoint = "cli" | "desktop" | "cowork" | "unknown";

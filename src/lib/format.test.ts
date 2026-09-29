@@ -214,10 +214,22 @@ describe("labels", () => {
   });
   it("names windows", () => {
     expect(windowLabel("five_hour")).toBe("5-hour");
-    expect(windowLabel("seven_day")).toBe("7-day");
-    expect(windowLabel("seven_day_opus")).toBe("7-day opus");
+    expect(windowLabel("seven_day")).toBe("weekly");
+    expect(windowLabel("seven_day_opus")).toBe("weekly Opus");
+    expect(windowLabel("five_hour_opus_plus")).toBe("5-hour Opus plus");
+    expect(windowLabel("spend_limit")).toBe("spend limit");
     expect(windowShort("five_hour")).toBe("5h");
     expect(windowShort("seven_day")).toBe("7d");
+    expect(windowShort("seven_day_sonnet")).toBe("7d Sonnet");
+    expect(windowShort("x")).toBe("x");
+    expect(windowLabel("seven_days_extra")).toBe("seven days extra");
+  });
+  it("prefers the names Rust sends with a window", () => {
+    const w = { kind: "thirty_day", label: "30-day", short: "30d" };
+    expect(windowLabel(w)).toBe("30-day");
+    expect(windowShort(w)).toBe("30d");
+    expect(windowLabel({ kind: "seven_day" })).toBe("weekly");
+    expect(windowShort({ kind: "seven_day", label: "", short: "" })).toBe("7d");
   });
 });
 

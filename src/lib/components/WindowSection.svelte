@@ -2,7 +2,7 @@
   import { clampPct } from "../color";
   import { estimateTooltip, formatAgeShort, formatPct, resetLine, windowLabel } from "../format";
   import type { WindowView } from "../types";
-  import { mutedColor } from "../windows";
+  import { mutedColor, sparkSpanText } from "../windows";
   import { WORKED_SINCE_TIP, showWorkedSince } from "../worked";
   import BurnLine from "./BurnLine.svelte";
   import Icon from "./Icon.svelte";
@@ -22,8 +22,8 @@
   let { window: w, now, sparkline = true, burn = true, underControls = false }: Props = $props();
 
   const p = $derived(clampPct(w.pct));
-  const label = $derived(windowLabel(w.kind));
-  const span = $derived(w.kind === "five_hour" ? "24 hours" : "7 days");
+  const label = $derived(windowLabel(w));
+  const span = $derived(sparkSpanText(w));
   // Stale data, or a window that just reset and has no new reading yet, is drawn neutral: the
   // history before the reset should not be coloured by the fresh 0%.
   const muted = $derived(w.stale || w.phase === "reset_awaiting_data");

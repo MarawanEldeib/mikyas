@@ -31,7 +31,7 @@
     window: HistoryWindow;
     domain: Domain;
     range: RangeKey;
-    /** "5-hour", "7-day". */
+    /** "5-hour", "weekly", "weekly Opus". */
     label: string;
     /** Accessible range name, e.g. "last 7 days". */
     rangeName: string;

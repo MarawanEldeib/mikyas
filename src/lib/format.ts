@@ -176,28 +176,40 @@ export function ctxLabel(s: Pick<SessionView, "ctx_pct" | "ctx_is_estimate">): s
   return `ctx ${s.ctx_is_estimate ? "≈" : ""}${formatPct(s.ctx_pct)}%`;
 }
 
-/** Card section title for a window kind. */
-export function windowLabel(kind: WindowKind): string {
-  switch (kind) {
-    case "five_hour":
-      return "5-hour";
-    case "seven_day":
-      return "7-day";
-    default:
-      return kind.replace(/^seven_day_/, "7-day ").replace(/_/g, " ");
+/** A window kind alone, or a window carrying the names Rust derived for it. */
+type Named = WindowKind | { kind: WindowKind; label?: string; short?: string };
+
+// Fallback names for data without Rust's `label`/`short` (history windows, older snapshots).
+const BASES: [prefix: string, label: string, short: string][] = [
+  ["five_hour", "5-hour", "5h"],
+  ["seven_day", "weekly", "7d"],
+];
+
+function fallbackName(kind: WindowKind, short: boolean): string {
+  for (const [prefix, label, abbr] of BASES) {
+    const base = short ? abbr : label;
+    if (kind === prefix) return base;
+    if (kind.startsWith(`${prefix}_`)) {
+      const rest = kind
+        .slice(prefix.length + 1)
+        .replace(/_+/g, " ")
+        .trim();
+      return rest ? `${base} ${rest.charAt(0).toUpperCase()}${rest.slice(1)}` : base;
+    }
   }
+  return kind.replace(/_+/g, " ").trim() || kind;
 }
 
-/** Compact label for a window kind: "5h", "7d". */
-export function windowShort(kind: WindowKind): string {
-  switch (kind) {
-    case "five_hour":
-      return "5h";
-    case "seven_day":
-      return "7d";
-    default:
-      return windowLabel(kind);
-  }
+/** Window name: "5-hour", "weekly", "weekly Opus" (Rust's `WindowKind::label`). */
+export function windowLabel(w: Named): string {
+  if (typeof w === "string") return fallbackName(w, false);
+  return w.label || fallbackName(w.kind, false);
+}
+
+/** Compact window name: "5h", "7d", "7d Opus" (Rust's `WindowKind::short_label`). */
+export function windowShort(w: Named): string {
+  if (typeof w === "string") return fallbackName(w, true);
+  return w.short || fallbackName(w.kind, true);
 }
 
 /** Reset instant, if known. */

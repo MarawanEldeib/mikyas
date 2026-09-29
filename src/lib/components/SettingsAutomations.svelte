@@ -1,13 +1,19 @@
 <script lang="ts">
+  import { windowLabel } from "../format";
   import { app } from "../stores.svelte";
   import type { TrayNumber } from "../types";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
+  // Window names as the card and toasts use them ("5-hour", "weekly"), capitalised as options.
+  const option = (kind: string) => {
+    const name = windowLabel(kind);
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  };
   const TRAY_NUMBERS: { value: TrayNumber; label: string }[] = [
     { value: "worst", label: "Highest limit" },
-    { value: "five_hour", label: "5-hour" },
-    { value: "seven_day", label: "Weekly" },
+    { value: "five_hour", label: option("five_hour") },
+    { value: "seven_day", label: option("seven_day") },
     { value: "off", label: "Off (dot)" },
   ];
 
