@@ -1,19 +1,20 @@
 name: Release
 
-# DISABLED on GitHub: releases are made by hand (mikyas-release skill). Keep it disabled in the
-# Actions tab; this file is kept hardened for when it is turned back on.
+# The only way official releases are built (mikyas-release skill; docs/verify-release.md).
 #
-# Manual only (workflow_dispatch): run it from the Actions tab and pick a tag like v0.2.0 under
-# "Use workflow from" (it refuses to run on a branch). It runs the whole CI workflow as the test
-# gate (lint, Rust/UI/browser/app tests, security), then builds the per-user NSIS installer in a job
-# that holds only a read-only token, then a separate publish job (gated by the `release`
-# environment) attests the build provenance and creates a DRAFT GitHub release with the installer
-# and SHA256SUMS. Review the draft, then publish it by hand. The version in package.json,
-# Cargo.toml and src-tauri/tauri.conf.json must equal the tag (without "v"), and the tagged commit
-# must be on main.
+# Manual only (workflow_dispatch): `gh workflow run release.yml --ref vX.Y.Z` after pushing the
+# tag (it refuses to run on a branch). It runs the whole CI workflow as the test gate (lint,
+# Rust/UI/browser/app tests, security), then builds the per-user NSIS installer with locked
+# dependencies in a job that holds only a read-only token, then a separate publish job (gated by
+# the `release` environment) attests the build provenance and creates a DRAFT GitHub release with
+# the installer and SHA256SUMS. The release skill then writes the bullet notes and publishes the
+# draft. The version in package.json, Cargo.toml and src-tauri/tauri.conf.json must equal the tag
+# (without "v"), and the tagged commit must be on main.
 #
-# Repo settings this relies on (not expressible here): the `release` environment with the owner as
-# required reviewer, a ruleset that lets only admins create `v*` tags, and immutable releases.
+# Repo settings this relies on (not expressible here): the `release` environment (owner as
+# required reviewer, deployments only from `v*` tags), the `v* tags` ruleset (only admins
+# create, move or delete release tags), and immutable releases (a published release's assets and
+# tag can never be changed).
 #
 # Verify a downloaded installer:
 #   gh attestation verify <installer.exe> --repo MarawanEldeib/mikyas
@@ -102,7 +103,7 @@ jobs:
       - name: Build the installer
         run: |
           $env:CARGO_ENCODED_RUSTFLAGS = & ./scripts/release-rustflags.ps1
-          npx --no-install tauri build --bundles nsis
+          npx --no-install tauri build --bundles nsis -- --locked
           if ($LASTEXITCODE -ne 0) { throw "tauri build failed ($LASTEXITCODE)" }
 
       - name: Collect the installer and SHA256SUMS
@@ -155,24 +156,11 @@ jobs:
             dist/SHA256SUMS
           create-storage-record: false # no registry push; needs no artifact-metadata permission
 
+      # Title and body follow the hand-made releases: the tag as title and, once the release
+      # skill has written them, only short bullet notes (the in-app updater shows those).
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: |
-          {
-            echo "Per-user installer for Windows 10/11 (no admin rights needed). It is not code-signed yet,"
-            echo "so SmartScreen may warn: choose **More info → Run anyway**. See INSTALL.md for the"
-            echo "first-run steps."
-            echo
-            echo "SHA-256 (also in SHA256SUMS):"
-            echo '```'
-            cat dist/SHA256SUMS
-            echo '```'
-            echo
-            echo "Verify the build provenance: \`gh attestation verify <file> --repo $GH_REPO\`"
-          } > notes.md
-          gh release create "$TAG" --draft --verify-tag \
-            --title "Mikyas $TAG" --notes-file notes.md \
-            dist/*.exe dist/SHA256SUMS
+        run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "" dist/*.exe dist/SHA256SUMS

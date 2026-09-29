@@ -75,8 +75,9 @@ Automations).
 1. Download `Mikyas_x.y.z_x64-setup.exe` from the
    [latest release](https://github.com/MarawanEldeib/mikyas/releases/latest).
 2. Run it. No admin rights needed — it installs for your user only.
-   The installer is not code-signed yet, so Windows may say *"Windows protected your PC"*:
-   click **More info → Run anyway**.
+   The installer is not code-signed, so Windows may say *"Windows protected your PC"*:
+   click **More info → Run anyway**. To confirm a download is genuine, see
+   [Verifying a release](docs/verify-release.md).
 3. The widget appears in the bottom-right corner of your screen and in the tray. It already works
    from Claude Desktop's own usage data.
 4. For exact, live numbers, open **Settings → Claude Code → Connect**
@@ -154,7 +155,7 @@ Requirements: Windows 10/11, Rust (see `rust-toolchain.toml`), Node 20+, Visual 
 ```powershell
 npm install
 .\scripts\build-sidecar.ps1     # builds mikyas-capture.exe into src-tauri\binaries\
-npx tauri build                 # app + per-user NSIS installer (target\release\bundle\nsis\)
+npx tauri build -- --locked     # app + per-user NSIS installer (target\release\bundle\nsis\)
 ```
 
 Checks: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,

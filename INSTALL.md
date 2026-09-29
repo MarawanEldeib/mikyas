@@ -14,11 +14,12 @@ Optional: check the download against `SHA256SUMS` from the same release. In Powe
 Get-FileHash "$env:USERPROFILE\Downloads\Mikyas_*_x64-setup.exe" -Algorithm SHA256
 ```
 
-The hash must match the line in `SHA256SUMS`.
+The hash must match the line in `SHA256SUMS`. Releases from v0.3.0 on also carry a signed build
+attestation. See [Verifying a release](docs/verify-release.md).
 
 ## 2. Run the installer
 
-The installer is not code-signed yet, so Windows SmartScreen may show **"Windows protected your
+The installer is not code-signed, so Windows SmartScreen may show **"Windows protected your
 PC"**. Click **More info → Run anyway**.
 
 It installs for your Windows user only (no administrator rights) into

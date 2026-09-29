@@ -26,7 +26,7 @@ try {
     $savedFlags = $env:CARGO_ENCODED_RUSTFLAGS
     $env:CARGO_ENCODED_RUSTFLAGS = & (Join-Path $PSScriptRoot 'release-rustflags.ps1')
     try {
-        cargo build -p mikyas-capture --release --bin mikyas-capture --target $triple
+        cargo build -p mikyas-capture --release --bin mikyas-capture --target $triple --locked
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
     } finally {
         $env:CARGO_ENCODED_RUSTFLAGS = $savedFlags
