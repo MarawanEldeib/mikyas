@@ -238,10 +238,26 @@ test.describe("settings", () => {
     await page.getByRole("button", { name: "Add" }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Use a model id like" })).toBeVisible();
     await model.fill("claude-sonnet-5[1m]");
+    // Any size can be typed, not just the quick picks.
+    const size = page.getByRole("combobox", { name: "Context size", exact: true });
+    await size.fill("5G");
     await page.getByRole("button", { name: "Add" }).click();
-    await expect(page.getByRole("combobox", { name: "Context size for claude-sonnet-5" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "Use a size like 400K" })).toBeVisible();
+    await size.fill("400,000");
+    await page.getByRole("button", { name: "Add" }).click();
+    const row = page.getByRole("combobox", { name: "Context size for claude-sonnet-5" });
+    await expect(row).toHaveValue("400K");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    // Editing a row: a valid entry is saved in its short form, an invalid one reverts.
+    await row.fill("1.5m");
+    await row.press("Enter");
+    await expect(row).toHaveValue("1.5M");
+    await row.fill("999");
+    await row.press("Enter");
+    await expect(page.getByRole("alert").filter({ hasText: "claude-sonnet-5: Use a size like" })).toBeVisible();
+    await expect(row).toHaveValue("1.5M");
     await page.getByRole("button", { name: "Remove override for claude-sonnet-5" }).click();
-    await expect(page.getByRole("combobox", { name: "Context size for claude-sonnet-5" })).toHaveCount(0);
+    await expect(row).toHaveCount(0);
   });
 
   test("Desktop health says when a newer format is read best-effort", async ({ page }) => {
