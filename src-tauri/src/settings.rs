@@ -163,7 +163,8 @@ pub struct Settings {
 /// Settings the app keeps for itself: `apply_patch` ignores them.
 const INTERNAL_KEYS: &[&str] = &["hide_hint_shown"];
 
-/// Default usage-alert thresholds (%). The UI has no copy: settings always reach it sanitized.
+/// Default usage-alert thresholds (%). Lists are kept as the user sets them (empty = no alerts);
+/// the UI mirrors these for its display fallback (`src/lib/thresholds.ts`, guarded by rust-sync.test.ts).
 pub const DEFAULT_THRESHOLDS: [u8; 2] = [80, 95];
 /// Default context-alert thresholds (%).
 pub const DEFAULT_CTX_THRESHOLDS: [u8; 2] = [80, 90];
@@ -219,7 +220,6 @@ impl Settings {
         self.ctx_thresholds.retain(|t| (1..=100).contains(t));
         self.ctx_thresholds.sort_unstable();
         self.ctx_thresholds.dedup();
-        ensure_pair(&mut self.ctx_thresholds, DEFAULT_CTX_THRESHOLDS);
         self.toggle_hotkey = self.toggle_hotkey.trim().to_owned();
         self.ui_scale = clamp_or(self.ui_scale, 0.85, 1.3, 1.0);
         self.opacity = clamp_or(self.opacity, 0.3, 1.0, 1.0);
@@ -227,7 +227,6 @@ impl Settings {
         self.thresholds.retain(|t| (1..=100).contains(t));
         self.thresholds.sort_unstable();
         self.thresholds.dedup();
-        ensure_pair(&mut self.thresholds, DEFAULT_THRESHOLDS);
         self.stale_min = self.stale_min.clamp(1, 24 * 60);
         self.hotkey = self.hotkey.trim().to_owned();
         self.ctx_overrides.retain(|k, v| !k.trim().is_empty() && *v > 0);
@@ -237,21 +236,6 @@ impl Settings {
 
     pub fn stale_after_ms(&self) -> Ms {
         Ms::from(self.stale_min) * MINUTE_MS
-    }
-}
-
-/// Settings edits thresholds as an ascending pair, so a sorted, deduplicated list of 1..=100 keeps
-/// at least two: an empty one gets the defaults, a lone value keeps its place and gains the next
-/// default above it (else the next whole %; a lone 100 becomes 99, 100). Longer lists are kept.
-fn ensure_pair(list: &mut Vec<u8>, defaults: [u8; 2]) {
-    match list.as_slice() {
-        [] => *list = defaults.to_vec(),
-        &[only] => {
-            let first = only.min(99);
-            let second = defaults.into_iter().find(|&d| d > first).unwrap_or(first + 1);
-            *list = vec![first, second];
-        }
-        _ => {}
     }
 }
 
@@ -514,26 +498,25 @@ mod tests {
     }
 
     #[test]
-    fn threshold_lists_always_keep_an_ascending_pair() {
+    fn threshold_lists_are_kept_as_the_user_set_them() {
         let patched = |key: &str, list: serde_json::Value| {
             let next = apply_patch(&Settings::default(), &serde_json::json!({ key: list })).unwrap();
             if key == "thresholds" { next.thresholds } else { next.ctx_thresholds }
         };
-        assert_eq!(patched("thresholds", serde_json::json!([])), DEFAULT_THRESHOLDS);
-        assert_eq!(patched("thresholds", serde_json::json!([0, 101])), DEFAULT_THRESHOLDS, "nothing valid left");
-        assert_eq!(patched("thresholds", serde_json::json!([90])), vec![90, 95], "a lone value keeps its place");
-        assert_eq!(patched("thresholds", serde_json::json!([50])), vec![50, 80]);
-        assert_eq!(patched("thresholds", serde_json::json!([97])), vec![97, 98]);
-        assert_eq!(patched("thresholds", serde_json::json!([100, 100])), vec![99, 100]);
-        assert_eq!(patched("thresholds", serde_json::json!([50, 60, 70])), vec![50, 60, 70], "longer lists stay");
-        assert_eq!(patched("ctx_thresholds", serde_json::json!([])), DEFAULT_CTX_THRESHOLDS);
-        assert_eq!(patched("ctx_thresholds", serde_json::json!([85])), vec![85, 90]);
-        for n in 0..=255_u8 {
-            let t = patched("thresholds", serde_json::json!([n]));
-            assert!(
-                t.len() >= 2 && t.windows(2).all(|w| w[0] < w[1]) && t.iter().all(|v| (1..=100).contains(v)),
-                "{n}: {t:?}"
-            );
-        }
+        // An empty list turns the alerts off (alerts.rs); a lone value alerts once.
+        assert_eq!(patched("thresholds", serde_json::json!([])), Vec::<u8>::new());
+        assert_eq!(patched("thresholds", serde_json::json!([0, 101])), Vec::<u8>::new());
+        assert_eq!(patched("thresholds", serde_json::json!([90])), vec![90]);
+        assert_eq!(patched("thresholds", serde_json::json!([100, 100])), vec![100]);
+        assert_eq!(patched("thresholds", serde_json::json!([70, 50, 60])), vec![50, 60, 70]);
+        assert_eq!(patched("ctx_thresholds", serde_json::json!([])), Vec::<u8>::new());
+        assert_eq!(patched("ctx_thresholds", serde_json::json!([85])), vec![85]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"thresholds": [], "ctx_thresholds": [85]}"#).unwrap();
+        let loaded = load(&path);
+        assert!(loaded.thresholds.is_empty(), "a saved empty list stays off across restarts");
+        assert_eq!(loaded.ctx_thresholds, vec![85]);
     }
 }

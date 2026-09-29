@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { CRIT_AT, WARN_AT } from "./color";
 import { createMockBackend } from "./mock";
 import { MOCK_HISTORY_DAYS } from "./mock-history";
+import { DEFAULT_CTX_THRESHOLDS, DEFAULT_THRESHOLDS } from "./thresholds";
 import type { Settings } from "./types";
 import { MAX_NOTES, MAX_NOTE_CHARS, RELEASES_PREFIX } from "./update";
 
@@ -106,10 +107,12 @@ describe("history.rs", () => {
 });
 
 describe("settings.rs", () => {
-  it("the browser mock starts with the default alert thresholds", async () => {
+  it("the UI and the browser mock use the default alert thresholds", async () => {
     const rs = source("src-tauri/src/settings.rs");
     const pair = (name: string) => JSON.parse(grab(rs, new RegExp(String.raw`pub const ${name}: \[u8; 2\] = (\[\d+, \d+\]);`))) as number[];
     const s = await createMockBackend(new URLSearchParams()).invoke<Settings>("get_settings");
+    expect(DEFAULT_THRESHOLDS).toEqual(pair("DEFAULT_THRESHOLDS"));
+    expect(DEFAULT_CTX_THRESHOLDS).toEqual(pair("DEFAULT_CTX_THRESHOLDS"));
     expect(s.thresholds).toEqual(pair("DEFAULT_THRESHOLDS"));
     expect(s.ctx_thresholds).toEqual(pair("DEFAULT_CTX_THRESHOLDS"));
   });
