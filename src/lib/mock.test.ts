@@ -14,7 +14,10 @@ describe("buildSnapshot", () => {
     for (const w of s.windows) {
       expect(w.label).toBeTruthy();
       expect(w.short).toBeTruthy();
-      expect(w.spark_span_ms).toBe(w.kind === "five_hour" ? 24 * 3_600_000 : 7 * 24 * 3_600_000);
+      // Like Rust's `spark_span`: the window's length, at least a day and at most 30 days.
+      const DAY = 24 * 3_600_000;
+      const SPANS: Record<string, number> = { five_hour: DAY, seven_day: 7 * DAY, seven_day_opus: 7 * DAY, monthly_overage: 30 * DAY };
+      expect(w.spark_span_ms, w.kind).toBe(SPANS[w.kind]);
     }
     for (const w of s.windows) {
       expect(w.pct).toBeGreaterThanOrEqual(0);
