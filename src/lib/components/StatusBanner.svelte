@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Notice } from "../notices";
+  import { plural } from "../plural";
   import Icon from "./Icon.svelte";
 
   interface Props {
@@ -22,7 +23,7 @@
       type="button"
       class="chip"
       title={summary}
-      aria-label="{notices.length} warning{notices.length > 1 ? 's' : ''}: {first.title}. Open settings"
+      aria-label="{plural(notices.length, 'warning')}: {first.title}. Open settings"
       onclick={onopen}
     >
       <Icon name="warning" size={12} /><span class="chip-text">{first.title}</span>{#if notices.length > 1}<span class="more"

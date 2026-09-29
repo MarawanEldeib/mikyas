@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { formatPct } from "./format";
 import { ACCENTS, ACCENT_NAMES, clampPct, contrast, fillColor, level, over, parseRgb, textColor, type Rgb } from "./color";
 
 describe("level", () => {
   it("uses fixed bands: green < 40, orange 40–69, red >= 70", () => {
     expect(level(0)).toBe("ok");
-    expect(level(39.9)).toBe("ok");
+    expect(level(39.4)).toBe("ok");
+    expect(level(39.5)).toBe("warn"); // shown as 40
     expect(level(40)).toBe("warn");
-    expect(level(69.99)).toBe("warn");
+    expect(level(69.4)).toBe("warn");
+    expect(level(69.5)).toBe("crit"); // shown as 70
     expect(level(70)).toBe("crit");
     expect(level(100)).toBe("crit");
     expect(level(250)).toBe("crit");
@@ -16,6 +19,13 @@ describe("level", () => {
     expect(level(Number.NaN)).toBe("ok");
     expect(level(Number.POSITIVE_INFINITY)).toBe("ok");
     expect(level(-5)).toBe("ok");
+  });
+
+  it("agrees with the number shown", () => {
+    for (let p = -2; p <= 102; p += 0.05) {
+      const shown = Number(formatPct(p));
+      expect(level(p), `${p}`).toBe(level(shown));
+    }
   });
 });
 

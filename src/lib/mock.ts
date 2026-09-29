@@ -7,6 +7,7 @@ import { DAY, HOUR, MIN, SEC } from "./format";
 import type { Backend, EventName, Unlisten } from "./ipc";
 import { parseCardRows } from "./layout";
 import { MOCK_HISTORY_DAYS, mockHistory } from "./mock-history";
+import { DEFAULT_CTX_THRESHOLDS, DEFAULT_THRESHOLDS } from "./thresholds";
 import type {
   Burn,
   CommandName,
@@ -507,7 +508,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
     opacity: 1,
     ghost_opacity: 0.45,
     effect: pick(params.get("effect"), EFFECTS, "auto"),
-    thresholds: [80, 95],
+    thresholds: [...DEFAULT_THRESHOLDS],
     notify_reset: true,
     hotkey: "Ctrl+Alt+U",
     stale_min: 15,
@@ -515,7 +516,7 @@ export function createMockBackend(params: URLSearchParams): Backend {
     show_project: true,
     start_with_windows: false,
     ctx_alerts: true,
-    ctx_thresholds: [80, 90],
+    ctx_thresholds: [...DEFAULT_CTX_THRESHOLDS],
     toggle_hotkey: "Ctrl+Alt+H",
     auto_hide_fullscreen: true,
     check_updates: false,

@@ -1,14 +1,12 @@
 <script lang="ts">
   import { app } from "../stores.svelte";
+  import { DEFAULT_CTX_THRESHOLDS, thresholdPair } from "../thresholds";
   import Stepper from "./Stepper.svelte";
   import Toggle from "./Toggle.svelte";
 
   const s = $derived(app.settings);
-  // Two ascending thresholds; a hand-edited list with fewer entries falls back to the defaults.
-  const t = $derived.by(() => {
-    const [first = 80, second = 90] = s?.ctx_thresholds ?? [];
-    return [first, Math.min(100, Math.max(first + 1, second))] as const;
-  });
+  // The saved list may be shorter than the two steppers (Rust keeps it as set); fill in for display.
+  const t = $derived(thresholdPair(s?.ctx_thresholds, DEFAULT_CTX_THRESHOLDS));
 </script>
 
 {#if s}

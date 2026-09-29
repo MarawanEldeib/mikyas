@@ -4,6 +4,7 @@
   import { notices } from "../notices";
   import { RELEASES_PREFIX } from "../update";
   import { app, errorText } from "../stores.svelte";
+  import { DEFAULT_THRESHOLDS, thresholdPair } from "../thresholds";
   import type { EffectName } from "../types";
   import ConnectPanel from "./ConnectPanel.svelte";
   import HotkeyField from "./HotkeyField.svelte";
@@ -31,7 +32,8 @@
   ];
   const SIZES = [200_000, 1_000_000];
 
-  const t = $derived([s?.thresholds[0] ?? 80, s?.thresholds[1] ?? 95] as const);
+  // The saved list may be shorter than the two steppers (Rust keeps it as set); fill in for display.
+  const t = $derived(thresholdPair(s?.thresholds, DEFAULT_THRESHOLDS));
 
   const failed = (e: unknown) => (app.error = errorText(e));
 

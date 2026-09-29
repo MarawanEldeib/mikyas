@@ -22,7 +22,10 @@ use crate::engine::types::{
 use crate::sources::desktop_usage::DesktopUsage;
 use crate::time::{DAY_MS, FIVE_HOURS_MS, HOUR_MS, MINUTE_MS, Ms};
 
+/// How long rows are kept (whole days). The History view's longest range follows it: the app
+/// derives `history_view::MAX_DAYS` from it and sends that to the UI.
 pub const RETAIN_MS: Ms = 14 * DAY_MS;
+const _: () = assert!(RETAIN_MS > 0 && RETAIN_MS % DAY_MS == 0, "RETAIN_MS must be whole days");
 /// A drop of at least this many points between consecutive rows of a window is a reset: the
 /// engine-wide [`RESET_DROP_PCT`]. Rows mix CLI values (one decimal) with Desktop integers that
 /// can lag a little, so 79.4 then 78 is still one window. The burn fit, which sees the same mix,

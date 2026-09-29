@@ -9,8 +9,11 @@ import type { DockEdge, UiState, UpdateInfo } from "./types";
 /** This build's version (package.json; CI keeps it equal to Cargo.toml and tauri.conf.json). */
 export const APP_VERSION: string = packageVersion;
 
-/** Every release page of the repository starts with this (Rust enforces it too). */
+/** Every release page of the repository starts with this (Rust enforces it too). These three
+ *  mirror `RELEASES_PREFIX`, `MAX_NOTES` and `MAX_NOTE_CHARS` in src-tauri/src/updates.rs, the
+ *  source of truth; rust-sync.test.ts fails when they drift apart. */
 export const RELEASES_PREFIX = "https://github.com/MarawanEldeib/mikyas/releases/";
+/** Notes shown per release, and their length in characters. */
 export const MAX_NOTES = 5;
 export const MAX_NOTE_CHARS = 80;
 

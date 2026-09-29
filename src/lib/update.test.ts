@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MOCK_UPDATE, MOCK_UPDATE_ONE, createMockBackend } from "./mock";
 import type { UiState, UpdateInfo } from "./types";
-import { APP_VERSION, MAX_NOTE_CHARS, bannerText, bannerVisible, latestUrl, updateRows, updateStatus } from "./update";
+import { APP_VERSION, MAX_NOTES, MAX_NOTE_CHARS, bannerText, bannerVisible, latestUrl, updateRows, updateStatus } from "./update";
 
 const page = (v: string) => `https://github.com/MarawanEldeib/mikyas/releases/tag/v${v}`;
 const ONE: UpdateInfo = { latest: "0.2.0", count: 1, releases: [{ version: "0.2.0", url: page("0.2.0"), notes: ["a"] }], dismissed: false };
@@ -133,7 +133,7 @@ describe("mock update and hidden params", () => {
       expect(u.count).toBe(u.releases.length);
       expect(u.latest).toBe(u.releases[0].version);
       expect(latestUrl(u)).not.toBeNull();
-      expect(u.releases.every((r) => r.notes.length <= 5 && r.notes.every((n) => n.length <= MAX_NOTE_CHARS))).toBe(true);
+      expect(u.releases.every((r) => r.notes.length <= MAX_NOTES && r.notes.every((n) => n.length <= MAX_NOTE_CHARS))).toBe(true);
     }
   });
 

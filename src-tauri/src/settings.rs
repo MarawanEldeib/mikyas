@@ -163,6 +163,12 @@ pub struct Settings {
 /// Settings the app keeps for itself: `apply_patch` ignores them.
 const INTERNAL_KEYS: &[&str] = &["hide_hint_shown"];
 
+/// Default usage-alert thresholds (%). Lists are kept as the user sets them (empty = no alerts);
+/// the UI mirrors these for its display fallback (`src/lib/thresholds.ts`, guarded by rust-sync.test.ts).
+pub const DEFAULT_THRESHOLDS: [u8; 2] = [80, 95];
+/// Default context-alert thresholds (%).
+pub const DEFAULT_CTX_THRESHOLDS: [u8; 2] = [80, 90];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -173,7 +179,7 @@ impl Default for Settings {
             ghost_opacity: 0.45,
             // Mica/Acrylic look flat while the (non-activating) widget is unfocused (M0 effect spike).
             effect: EffectName::None,
-            thresholds: vec![80, 95],
+            thresholds: DEFAULT_THRESHOLDS.to_vec(),
             notify_reset: true,
             hotkey: "Ctrl+Alt+U".into(),
             stale_min: 20,
@@ -181,7 +187,7 @@ impl Default for Settings {
             show_project: false,
             start_with_windows: false,
             ctx_alerts: true,
-            ctx_thresholds: vec![80, 90],
+            ctx_thresholds: DEFAULT_CTX_THRESHOLDS.to_vec(),
             toggle_hotkey: "Ctrl+Alt+H".into(),
             auto_hide_fullscreen: true,
             check_updates: false,
@@ -489,5 +495,28 @@ mod tests {
         assert_eq!(next.ghost_opacity, 0.15);
         assert!(apply_patch(&s, &serde_json::json!({"pinned": "yes"})).is_err());
         assert!(apply_patch(&s, &serde_json::json!([1])).is_err());
+    }
+
+    #[test]
+    fn threshold_lists_are_kept_as_the_user_set_them() {
+        let patched = |key: &str, list: serde_json::Value| {
+            let next = apply_patch(&Settings::default(), &serde_json::json!({ key: list })).unwrap();
+            if key == "thresholds" { next.thresholds } else { next.ctx_thresholds }
+        };
+        // An empty list turns the alerts off (alerts.rs); a lone value alerts once.
+        assert_eq!(patched("thresholds", serde_json::json!([])), Vec::<u8>::new());
+        assert_eq!(patched("thresholds", serde_json::json!([0, 101])), Vec::<u8>::new());
+        assert_eq!(patched("thresholds", serde_json::json!([90])), vec![90]);
+        assert_eq!(patched("thresholds", serde_json::json!([100, 100])), vec![100]);
+        assert_eq!(patched("thresholds", serde_json::json!([70, 50, 60])), vec![50, 60, 70]);
+        assert_eq!(patched("ctx_thresholds", serde_json::json!([])), Vec::<u8>::new());
+        assert_eq!(patched("ctx_thresholds", serde_json::json!([85])), vec![85]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"thresholds": [], "ctx_thresholds": [85]}"#).unwrap();
+        let loaded = load(&path);
+        assert!(loaded.thresholds.is_empty(), "a saved empty list stays off across restarts");
+        assert_eq!(loaded.ctx_thresholds, vec![85]);
     }
 }

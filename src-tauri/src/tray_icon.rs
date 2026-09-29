@@ -3,13 +3,14 @@
 //! - `settings.tray_number` picks the value: `worst` (highest of 5-hour and weekly), `five_hour`,
 //!   `seven_day`, or `off` (the coloured dot icons in `tray.rs`).
 //! - Digits are drawn as strokes (seven-segment shapes, 4×4 supersampled) at 16/20/24/32 px for
-//!   DPI 100–200 %, coloured by level (the statusline thresholds in [`Level::for_pct`]) in shades
+//!   DPI 100–200 %, coloured by level (the shared usage bands, [`Level::for_pct`]) in shades
 //!   readable on a light or dark taskbar (registry `SystemUsesLightTheme`). 100 % is a lock, not
 //!   "100"; stale values are grey. No data at all → `None` (the grey dot).
 //! - [`tray_values`] is the one reading of the snapshot behind the dot's level, the tooltip and
 //!   the number, so all three apply the same reset, limit-reached and clamp rules.
 
 use mikyas_core::engine::types::{Phase, Snapshot, WindowKind};
+use mikyas_core::level::{UsageLevel, display_pct};
 use tauri::image::Image;
 
 use crate::settings::TrayNumber;
@@ -24,14 +25,12 @@ pub enum Level {
 }
 
 impl Level {
-    /// Statusline thresholds: green < 40, orange 40–69, red ≥ 70.
+    /// The shared usage bands ([`mikyas_core::level`]), judged by the shown (rounded) number.
     pub fn for_pct(pct: f32) -> Self {
-        if pct >= 70.0 {
-            Self::Red
-        } else if pct >= 40.0 {
-            Self::Orange
-        } else {
-            Self::Green
+        match UsageLevel::for_pct(pct) {
+            UsageLevel::Ok => Self::Green,
+            UsageLevel::Warn => Self::Orange,
+            UsageLevel::Crit => Self::Red,
         }
     }
 }
@@ -58,7 +57,7 @@ pub fn tray_values(snapshot: &Snapshot) -> impl Iterator<Item = TrayValue> + '_ 
         let awaiting = w.state.phase == Phase::ResetAwaitingData;
         let pct = if awaiting { 0.0 } else { w.state.pct };
         let reached = w.state.limit_reached && !awaiting;
-        let rounded = pct.clamp(0.0, 100.0).round() as u8;
+        let rounded = display_pct(pct);
         TrayValue { kind: w.state.kind.clone(), pct: if reached { 100 } else { rounded }, stale: w.state.stale }
     })
 }

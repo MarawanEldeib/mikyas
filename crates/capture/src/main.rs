@@ -29,6 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mikyas_core::capture::{self, CaptureError, CaptureRecord, MAX_STDIN_BYTES};
+use mikyas_core::level::{UsageLevel, display_pct};
 use mikyas_core::paths::Paths;
 use mikyas_core::time::{self, Ms};
 
@@ -561,17 +562,13 @@ fn printable(s: &str) -> String {
         .collect()
 }
 
+/// The % in the shared usage bands ([`mikyas_core::level`]), coloured by the number shown.
 fn colored_pct(pct: f32) -> String {
-    let pct = if pct.is_finite() {
-        // Clamped first, so the cast cannot truncate.
-        pct.clamp(0.0, 100.0).round() as u8
-    } else {
-        0
-    };
-    let color = match pct {
-        0..40 => GREEN,
-        40..70 => ORANGE,
-        _ => RED,
+    let pct = display_pct(pct);
+    let color = match UsageLevel::for_shown(pct) {
+        UsageLevel::Ok => GREEN,
+        UsageLevel::Warn => ORANGE,
+        UsageLevel::Crit => RED,
     };
     format!("{color}{pct}%{RESET}")
 }
@@ -943,6 +940,7 @@ mod tests {
         assert_eq!(colored_pct(39.4), format!("{GREEN}39%{RESET}"));
         assert_eq!(colored_pct(39.5), format!("{ORANGE}40%{RESET}"));
         assert_eq!(colored_pct(69.0), format!("{ORANGE}69%{RESET}"));
+        assert_eq!(colored_pct(69.5), format!("{RED}70%{RESET}"), "coloured by the number shown");
         assert_eq!(colored_pct(70.0), format!("{RED}70%{RESET}"));
         assert_eq!(colored_pct(250.0), format!("{RED}100%{RESET}"));
         assert_eq!(colored_pct(f32::NAN), format!("{GREEN}0%{RESET}"));

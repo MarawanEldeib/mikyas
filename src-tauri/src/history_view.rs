@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 use mikyas_core::engine::types::{SparkPoint, WindowKind};
-use mikyas_core::history::{DayUsage, History, ViewRange, WindowHistory};
+use mikyas_core::history::{DayUsage, History, RETAIN_MS, ViewRange, WindowHistory};
 use mikyas_core::time::{DAY_MS, Ms, now_ms};
 use serde::Serialize;
 use tauri::State;
@@ -22,8 +22,9 @@ use tauri::State;
 use crate::localtime::{local_day_starts, next_local_hour};
 use crate::state::Shared;
 
-/// Longest range the view asks for (the history keeps 14 days).
-pub const MAX_DAYS: u32 = 14;
+/// Longest range the view can ask for: every day the history keeps ([`RETAIN_MS`]). Sent to the
+/// UI as [`HistoryData::max_days`], which hides the ranges longer than that.
+pub const MAX_DAYS: u32 = (RETAIN_MS / DAY_MS) as u32;
 
 /// One local calendar day of one window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -47,6 +48,8 @@ pub struct HistoryData {
     pub from_ms: i64,
     pub to_ms: i64,
     pub windows: Vec<HistoryWindow>,
+    /// [`MAX_DAYS`]: the most days a request can return.
+    pub max_days: u32,
 }
 
 impl From<DayUsage> for HistoryDay {
@@ -85,7 +88,7 @@ pub fn build<Tz: TimeZone>(history: &History, days: u32, now_ms: Ms, tz: &Tz) ->
     let day_starts = local_day_starts(from_ms, to_ms - 1, MAX_DAYS as usize, tz);
     let range = ViewRange { from_ms, to_ms, now_ms, day_starts: &day_starts };
     let windows = history.kinds().iter().map(|kind| HistoryWindow::from(history.view(kind, &range))).collect();
-    HistoryData { from_ms, to_ms, windows }
+    HistoryData { from_ms, to_ms, windows, max_days: MAX_DAYS }
 }
 
 #[cfg(test)]
@@ -127,7 +130,9 @@ mod tests {
         let one = build(&h, 0, NOW, &Utc);
         assert_eq!(one.to_ms - one.from_ms, DAY_MS);
         let wide = build(&h, 400, NOW, &Utc);
-        assert_eq!(wide.to_ms - wide.from_ms, 14 * DAY_MS);
+        assert_eq!(wide.to_ms - wide.from_ms, RETAIN_MS, "clamped to what the history keeps");
+        assert_eq!(wide.max_days, MAX_DAYS);
+        assert_eq!(i64::from(MAX_DAYS) * DAY_MS, RETAIN_MS);
         // Exactly on the hour still rounds up to the next one.
         assert_eq!(build(&h, 1, 1_790_208_000_000, &Utc).to_ms, 1_790_208_000_000 + HOUR_MS);
     }
@@ -157,6 +162,7 @@ mod tests {
         assert!(json["windows"][0]["points"][0].get("t_ms").is_some());
         assert!(json["windows"][0]["days"][0].get("consumed_pct").is_some());
         assert_eq!(json["windows"][1]["days"][1]["samples"], 1);
+        assert_eq!(json["max_days"], MAX_DAYS, "the UI learns the longest range from here");
     }
 
     #[test]

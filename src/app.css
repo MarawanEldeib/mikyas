@@ -286,7 +286,8 @@ html.mock #app {
 }
 
 /* Window sizes at scale 1 (window.rs; the zoom above scales the stage like Rust scales the
-   window). The card loses 36px without burn lines and 30px without the session header. */
+   window). The card loses 36px without burn lines and 30px without the session header.
+   src/lib/rust-sync.test.ts fails when these drift from window.rs / dock.rs. */
 html.mock[data-view="pill"] { --mock-w: 240px; --mock-h: 72px; }
 html.mock[data-view="card"] { --mock-w: 320px; --mock-h: calc(232px - var(--cut-burn, 0px) - var(--cut-session, 0px)); }
 html.mock[data-view="settings"] { --mock-w: 320px; --mock-h: 440px; }

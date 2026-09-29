@@ -1,10 +1,12 @@
 // Pure geometry and text for the History view: fixed-domain step/area charts (one point per
 // hour, broken at gaps), reset ticks, local time labels, the per-day bars and summary lines.
-// The view fetches FETCH_DAYS once; each range is a slice of that data.
+// The view fetches FETCH_DAYS once; each range is a slice of that data, and ranges longer than
+// the history keeps (`max_days` from Rust) are hidden.
 
 import { clampPct } from "./color";
 import { DAY, HOUR, formatPct } from "./format";
 import { dtf, type ClockOptions } from "./intl";
+import { plural } from "./plural";
 import { stepPath, valueOf, type StepPath } from "./step";
 import type { HistoryDay, HistoryWindow, SparkPoint } from "./types";
 
@@ -27,8 +29,17 @@ export const RANGES: readonly RangeSpec[] = [
   { key: "14d", label: "14d", name: "last 14 days", span: 14 * DAY, bars: 14 },
 ];
 
-/** Days of history the view loads (the most the backend keeps). */
-export const FETCH_DAYS = 14;
+/** Days of history the view asks for: its longest range (Rust clamps the request to what the
+ *  history keeps and returns that as `max_days`). */
+export const FETCH_DAYS = Math.max(...RANGES.map((r) => r.span)) / DAY;
+
+/** The ranges the loaded history can fill: those no longer than `maxDays` (always the shortest,
+ *  and every range while it is unknown). */
+export function rangesFor(maxDays: number | undefined): readonly RangeSpec[] {
+  if (maxDays === undefined || !Number.isFinite(maxDays)) return RANGES;
+  const fit = RANGES.filter((r) => r.span <= maxDays * DAY);
+  return fit.length > 0 ? fit : RANGES.slice(0, 1);
+}
 /** Horizontal grid lines of the charts. */
 export const GRID_PCTS = [50, 80, 100] as const;
 
@@ -111,9 +122,14 @@ export interface TimeAxis {
 
 /** A day label needs at least this much of its day inside the domain. */
 export const MIN_LABELLED_DAY = 10 * HOUR;
+/** The 24h axis labels every this many local hours (00, 06, 12, 18). */
+export const HOUR_LABEL_EVERY = 6;
+/** Safety cap on the day-label walk (far more days than any range), so a broken clock or
+ *  domain can never spin it for long. */
+export const MAX_LABEL_DAYS = 400;
 
 /**
- * X-axis for a range in the user's locale: every 6 hours for 24h (the weekday at midnight),
+ * X-axis for a range in the user's locale: every HOUR_LABEL_EVERY hours for 24h (the weekday at midnight),
  * one weekday per day for 7d, every other date for 14d (counted back from today). Day labels
  * are centred on the visible part of their day; days showing less than MIN_LABELLED_DAY are
  * not labelled.
@@ -130,14 +146,14 @@ export function timeAxis(d: Domain, range: RangeKey, opts: ClockOptions = {}): T
     first.setMinutes(0, 0, 0);
     for (let t = first.getTime() < d.from ? first.getTime() + HOUR : first.getTime(); t < d.to; t += HOUR) {
       const h = new Date(t).getHours();
-      if (h % 6 !== 0 || t - d.from < HOUR || d.to - t < HOUR) continue;
+      if (h % HOUR_LABEL_EVERY !== 0 || t - d.from < HOUR || d.to - t < HOUR) continue;
       labels.push({ t, text: h === 0 ? weekday.format(t) : hour.format(t) });
     }
     return { lines, labels };
   }
   const fmt = range === "7d" ? dtf(opts, { weekday: "short" }) : dtf(opts, { day: "numeric", month: "short" });
   let fromEnd = 0;
-  for (let m = startOfLocalDay(d.to - 1); m + DAY > d.from && fromEnd <= 400; m = addLocalDays(m, -1), fromEnd++) {
+  for (let m = startOfLocalDay(d.to - 1); m + DAY > d.from && fromEnd <= MAX_LABEL_DAYS; m = addLocalDays(m, -1), fromEnd++) {
     const start = Math.max(m, d.from);
     const end = Math.min(addLocalDays(m, 1), d.to);
     if (end - start < MIN_LABELLED_DAY || (range === "14d" && fromEnd % 2 !== 0)) continue;
@@ -253,7 +269,7 @@ export function windowSummary(w: Pick<HistoryWindow, "points" | "resets_ms">, d:
 
 /** "no resets", "1 reset", "4 resets". */
 export function resetsText(n: number): string {
-  return n === 0 ? "no resets" : n === 1 ? "1 reset" : `${n} resets`;
+  return n === 0 ? "no resets" : plural(n, "reset");
 }
 
 /** "5-hour peak 93% · 4 resets", or "No 5-hour data" without any. */

@@ -5,6 +5,7 @@
   import { api } from "../ipc";
   import { connectionBannerVisible } from "../connection";
   import { notices } from "../notices";
+  import { plural } from "../plural";
   import { describeWindow } from "../pill";
   import { app } from "../stores.svelte";
   import { mainWindows, mutedColor } from "../windows";
@@ -86,7 +87,7 @@
     <button type="button" class="expand" aria-label="Show details" data-focus-home onclick={() => app.setView("card")}></button>
   {/if}
   {#if warn.length}
-    <span class="dot" aria-label="{warn.length} warning{warn.length > 1 ? 's' : ''}" role="img" data-under-controls></span>
+    <span class="dot" aria-label={plural(warn.length, "warning")} role="img" data-under-controls></span>
   {/if}
 </div>
 
