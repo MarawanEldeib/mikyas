@@ -70,8 +70,8 @@ test.describe("card content per scenario", () => {
     await expect(opus).toBeAttached();
     await expect(opus.getByRole("progressbar", { name: "weekly Opus usage" })).toHaveAttribute("aria-valuenow", "34");
     await expect(opus).toContainText("resets in 2d 4h");
-    // A key the app has no name for still reads sensibly.
-    const other = card.getByRole("group", { name: "monthly overage limit" });
+    // A key nothing names is read by its shape: `monthly_overage` is a 1-month window.
+    const other = card.getByRole("group", { name: "1-month Overage limit" });
     await expect(other).toContainText("12%");
     await expect(other).toContainText("reset time unknown");
     // The rows scroll into view inside the fixed-height card.

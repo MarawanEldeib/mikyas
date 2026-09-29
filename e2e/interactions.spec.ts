@@ -256,16 +256,16 @@ test.describe("settings", () => {
     await openWidget(page, { view: "settings" });
     const model = page.getByRole("combobox", { name: "Model id" });
     await model.fill("not a model!");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Use a model id like" })).toBeVisible();
     await model.fill("claude-sonnet-5[1m]");
     // Any size can be typed, not just the quick picks.
     const size = page.getByRole("combobox", { name: "Context size", exact: true });
     await size.fill("5G");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Use a size like 400K" })).toBeVisible();
     await size.fill("400,000");
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     // A tagged id keeps its tag: the override is for that long-context variant only.
     const row = page.getByRole("combobox", { name: "Context size for claude-sonnet-5[1m]" });
     await expect(row).toHaveValue("400K");
