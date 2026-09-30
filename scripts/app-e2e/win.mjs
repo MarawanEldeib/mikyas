@@ -31,12 +31,17 @@ export function pidsNamed(name) {
 export function inspectTree(rootPid) {
   const out = ps(`
     $ErrorActionPreference = 'SilentlyContinue'
-    $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name)
+    $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CreationDate)
     $tree = [System.Collections.Generic.List[int]]::new()
     $tree.Add(${Number(rootPid)})
     for ($i = 0; $i -lt $tree.Count; $i++) {
-      $all | Where-Object { $_.ParentProcessId -eq $tree[$i] -and $_.ProcessId -ne $tree[$i] } |
-        ForEach-Object { $tree.Add([int]$_.ProcessId) }
+      $parent = $all | Where-Object { $_.ProcessId -eq $tree[$i] } | Select-Object -First 1
+      # Windows reuses pids: a process that started before its "parent" belongs to an earlier,
+      # dead holder of that pid (e.g. the MSVC linker's vctip.exe on CI), not to this tree.
+      $all | Where-Object {
+        $_.ParentProcessId -eq $tree[$i] -and $_.ProcessId -ne $tree[$i] -and
+        (-not $parent -or -not $_.CreationDate -or $_.CreationDate -ge $parent.CreationDate)
+      } | ForEach-Object { $tree.Add([int]$_.ProcessId) }
     }
     $perf = @(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process |
       Where-Object { $tree -contains [int]$_.IDProcess } |
