@@ -111,7 +111,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !inputs.no_cache }}
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@${{ env.CARGO_LLVM_COV_VERSION }}
       - name: Build the capture shim
@@ -259,12 +259,12 @@ jobs:
           toolchain: stable
       - name: No network client crates (the only network use is the opt-in update check via curl.exe)
         run: ./scripts/ci/no-network-crates.ps1
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - name: cargo-deny (advisories, licenses, bans, sources)
         run: cargo deny --locked check advisories licenses bans sources
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-about@${{ env.CARGO_ABOUT_VERSION }}
       # THIRD_PARTY_NOTICES.md ships in the installer: every Rust crate of the Windows build and
